@@ -38,10 +38,8 @@ jobs:
             linux/arm
             linux/arm64
             windows/amd64
-            windows/arm
             windows/arm64
             darwin/amd64
-            darwin/arm
             darwin/arm64
           )
           for combo in "${COMBOS[@]}"; do
