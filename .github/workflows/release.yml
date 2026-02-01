@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*.*.*"
+      - "v*.*.*-cli"
 
 jobs:
   release:
@@ -30,8 +31,14 @@ jobs:
       - name: Build and package artifacts
         run: |
           set -euo pipefail
-          VERSION=${GITHUB_REF#refs/tags/}
-          VERSION=${VERSION#v}
+          RAW_TAG=${GITHUB_REF#refs/tags/}
+          TAG_VERSION=${RAW_TAG#v}
+          RELEASE_KIND=provider
+          VERSION=$TAG_VERSION
+          if [[ "$TAG_VERSION" == *-cli ]]; then
+            RELEASE_KIND=cli
+            VERSION=${TAG_VERSION%-cli}
+          fi
           RELEASE_DIR=release/dist
           rm -rf "$RELEASE_DIR"
           mkdir -p "$RELEASE_DIR"
@@ -56,29 +63,53 @@ jobs:
             else
               unset GOARM
             fi
-            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -o "$RELEASE_DIR/terraform-provider-grantory${bin_ext}" ./cmd/terraform-provider-grantory
-            zip -j "$RELEASE_DIR/terraform-provider-grantory_${VERSION}_${os}_${arch}.zip" "$RELEASE_DIR/terraform-provider-grantory${bin_ext}"
-            rm "$RELEASE_DIR/terraform-provider-grantory${bin_ext}"
-            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -o "$RELEASE_DIR/grantory${bin_ext}" ./cmd/grantory
-            zip -j "$RELEASE_DIR/grantory_${VERSION}_${os}_${arch}.zip" "$RELEASE_DIR/grantory${bin_ext}"
-            rm "$RELEASE_DIR/grantory${bin_ext}"
+            if [[ "$RELEASE_KIND" == "provider" ]]; then
+              CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -o "$RELEASE_DIR/terraform-provider-grantory${bin_ext}" ./cmd/terraform-provider-grantory
+              zip -j "$RELEASE_DIR/terraform-provider-grantory_${VERSION}_${os}_${arch}.zip" "$RELEASE_DIR/terraform-provider-grantory${bin_ext}"
+              rm "$RELEASE_DIR/terraform-provider-grantory${bin_ext}"
+            else
+              CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -o "$RELEASE_DIR/grantory${bin_ext}" ./cmd/grantory
+              zip -j "$RELEASE_DIR/grantory_${VERSION}_${os}_${arch}.zip" "$RELEASE_DIR/grantory${bin_ext}"
+              rm "$RELEASE_DIR/grantory${bin_ext}"
+            fi
           done
       - name: Create checksum files
         run: |
           set -euo pipefail
-          VERSION=${GITHUB_REF#refs/tags/}
-          VERSION=${VERSION#v}
+          RAW_TAG=${GITHUB_REF#refs/tags/}
+          TAG_VERSION=${RAW_TAG#v}
+          RELEASE_KIND=provider
+          VERSION=$TAG_VERSION
+          if [[ "$TAG_VERSION" == *-cli ]]; then
+            RELEASE_KIND=cli
+            VERSION=${TAG_VERSION%-cli}
+          fi
           cd release/dist
-          sha256sum terraform-provider-grantory_${VERSION}_*.zip > terraform-provider-grantory_${VERSION}_SHA256SUMS
-          sha256sum grantory_${VERSION}_*.zip > grantory_${VERSION}_SHA256SUMS
-          sha256sum terraform-provider-grantory_${VERSION}_*.zip grantory_${VERSION}_*.zip > checksums_${VERSION}_SHA256SUMS
+          if [[ "$RELEASE_KIND" == "provider" ]]; then
+            sha256sum terraform-provider-grantory_${VERSION}_*.zip > terraform-provider-grantory_${VERSION}_SHA256SUMS
+            sha256sum terraform-provider-grantory_${VERSION}_*.zip > checksums_${VERSION}_SHA256SUMS
+          else
+            sha256sum grantory_${VERSION}_*.zip > grantory_${VERSION}_SHA256SUMS
+            sha256sum grantory_${VERSION}_*.zip > checksums_${VERSION}_SHA256SUMS
+          fi
       - name: Sign checksum files
         run: |
           set -euo pipefail
-          VERSION=${GITHUB_REF#refs/tags/}
-          VERSION=${VERSION#v}
+          RAW_TAG=${GITHUB_REF#refs/tags/}
+          TAG_VERSION=${RAW_TAG#v}
+          RELEASE_KIND=provider
+          VERSION=$TAG_VERSION
+          if [[ "$TAG_VERSION" == *-cli ]]; then
+            RELEASE_KIND=cli
+            VERSION=${TAG_VERSION%-cli}
+          fi
           cd release/dist
-          for file in terraform-provider-grantory_${VERSION}_SHA256SUMS grantory_${VERSION}_SHA256SUMS checksums_${VERSION}_SHA256SUMS; do
+          if [[ "$RELEASE_KIND" == "provider" ]]; then
+            FILES=(terraform-provider-grantory_${VERSION}_SHA256SUMS checksums_${VERSION}_SHA256SUMS)
+          else
+            FILES=(grantory_${VERSION}_SHA256SUMS checksums_${VERSION}_SHA256SUMS)
+          fi
+          for file in "${FILES[@]}"; do
             gpg --batch --yes --detach-sign --output "${file}.sig" "${file}"
           done
       - name: Publish release
