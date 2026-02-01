@@ -53,13 +53,14 @@ provider "grantory" {
 
 ## Regenerating provider docs
 
-The terraform docs under `cmd/terraform-provider-grantory/docs` are generated via `tfplugindocs`.
+The terraform docs under `docs` are generated via `tfplugindocs`.
 Run the generator so it consumes the templates and examples:
 
 ```bash
 tfplugindocs generate \
   --provider-dir cmd/terraform-provider-grantory \
-  --provider-name grantory
+  --provider-name grantory \
+  --rendered-website-dir docs
 ```
 
 ## Running the server
