@@ -1,0 +1,14 @@
+.git
+.github
+.cache
+.tmp
+.tmp/*
+tmp
+inttest
+release
+**/*_test.go
+**/*.md
+**/*.tf
+**/*.hcl
+**/*.yaml
+**/*.yml

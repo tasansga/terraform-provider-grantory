@@ -84,6 +84,16 @@ When TLS is enabled, the server listens on both HTTP and HTTPS using those addre
 grantory --http-bind 127.0.0.1:8080 --https-bind 127.0.0.1:8443 --tls-cert ./cert.pem --tls-key ./key.pem
 ```
 
+## Docker image
+
+The Grantory server image is published to Docker Hub as [tasansga/grantory](https://hub.docker.com/r/tasansga/grantory).
+
+```bash
+docker run --rm -p 8080:8080 -v "$PWD/data:/data" tasansga/grantory:latest
+```
+
+Set `DATA_DIR`, `HTTP_BIND`, `HTTPS_BIND`, `TLS_CERT`, `TLS_KEY`, and `LOG_LEVEL` as needed to customize server behavior. The image starts as root, fixes ownership of `DATA_DIR`, then drops privileges to the `grantory` user. If you run the container rootless, ensure the mounted data directory is writable by that user.
+
 ## CLI
 
 While Grantory is a terraform-focused tool, there's also a CLI for administrative purposes. The CLI can talk to SQLite directly (`--backend direct`, the default) or route every operation through the HTTP API (`--backend api`). Check `grantory --help` for details.
