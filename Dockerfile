@@ -13,9 +13,12 @@ COPY . ./
 
 ARG TARGETOS
 ARG TARGETARCH
+ARG VERSION=dev
+ARG COMMIT=unknown
 ENV CGO_ENABLED=1
 RUN GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
-    go build -ldflags "-s -w" -o /out/grantory ./cmd/grantory
+    go build -ldflags "-s -w -X github.com/tasansga/terraform-provider-grantory/internal/cli.Version=${VERSION} -X github.com/tasansga/terraform-provider-grantory/internal/cli.Commit=${COMMIT}" \
+    -o /out/grantory ./cmd/grantory
 
 FROM debian:bookworm-slim
 

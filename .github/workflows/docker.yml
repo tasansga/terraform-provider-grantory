@@ -37,6 +37,7 @@ jobs:
             VERSION=dev
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "commit=${GITHUB_SHA:0:12}" >> "$GITHUB_OUTPUT"
 
       - name: Docker metadata
         id: meta
@@ -53,5 +54,8 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          build-args: |
+            VERSION=${{ steps.vars.outputs.version }}
+            COMMIT=${{ steps.vars.outputs.commit }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
