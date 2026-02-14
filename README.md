@@ -55,19 +55,6 @@ provider "grantory" {
 }
 ```
 
-### Regenerating provider docs
-
-The terraform docs under `docs` are generated via `tfplugindocs`. Run the generator so it consumes the templates and examples:
-
-```bash
-rm -Rf "$(git rev-parse --show-toplevel)/docs" \
-&& tfplugindocs generate \
-  --provider-dir cmd/terraform-provider-grantory \
-  --provider-name grantory \
-  --rendered-website-dir docs \
-&& mv cmd/terraform-provider-grantory/docs "$(git rev-parse --show-toplevel)"
-```
-
 ## Running the server
 
 Grantory runs as an HTTP server. Configure the data directory, HTTP/HTTPS bind addresses, TLS certificates, and log level via flags or the matching environment variables (`DATA_DIR`, `HTTP_BIND`, `HTTPS_BIND`, `TLS_CERT`, `TLS_KEY`, `LOG_LEVEL`). TLS is only activated if `TLS_CERT` and `TLS_KEY` are set.

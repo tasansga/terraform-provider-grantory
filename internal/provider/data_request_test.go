@@ -91,9 +91,3 @@ func (h *requestDataSourceTestHandler) ServeHTTP(w http.ResponseWriter, r *http.
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(response)
 }
-
-func (h *requestDataSourceTestHandler) lastQuery() url.Values {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.last
-}

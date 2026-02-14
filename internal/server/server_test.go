@@ -156,7 +156,11 @@ func TestNamespaceMiddlewareStoresStore(t *testing.T) {
 	cfg := config.Config{DataDir: t.TempDir()}
 	srv, err := New(context.Background(), cfg)
 	assert.NoError(t, err, "New() should succeed")
-	defer srv.Close()
+	defer func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("close server: %v", err)
+		}
+	}()
 
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
 	app.Use(srv.namespaceMiddleware())
@@ -187,7 +191,11 @@ func TestHandleReadinessTLSFailure(t *testing.T) {
 	}
 	srv, err := New(context.Background(), cfg)
 	assert.NoError(t, err, "New() should succeed")
-	defer srv.Close()
+	defer func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("close server: %v", err)
+		}
+	}()
 
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
 	app.Get("/readyz", srv.handleReadiness)
@@ -213,7 +221,11 @@ func TestHandleReadinessTLSSuccess(t *testing.T) {
 	}
 	srv, err := New(context.Background(), cfg)
 	assert.NoError(t, err, "New() should succeed")
-	defer srv.Close()
+	defer func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("close server: %v", err)
+		}
+	}()
 
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
 	app.Get("/readyz", srv.handleReadiness)
@@ -228,7 +240,11 @@ func TestHandleMetricsCountError(t *testing.T) {
 	cfg := config.Config{DataDir: t.TempDir()}
 	srv, err := New(context.Background(), cfg)
 	assert.NoError(t, err, "New() should succeed")
-	defer srv.Close()
+	defer func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("close server: %v", err)
+		}
+	}()
 
 	store, err := srv.nsStore.StoreFor(context.Background(), DefaultNamespace)
 	assert.NoError(t, err, "StoreFor() should succeed")

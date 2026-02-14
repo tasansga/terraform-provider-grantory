@@ -17,6 +17,13 @@ import (
 	"github.com/tasansga/terraform-provider-grantory/internal/storage"
 )
 
+func closeStore(t *testing.T, store *storage.Store) {
+	t.Helper()
+	if err := store.Close(); err != nil {
+		t.Errorf("close store: %v", err)
+	}
+}
+
 func TestListHostsCommand(t *testing.T) {
 	t.Parallel()
 
@@ -57,7 +64,7 @@ func TestMutateHostLabelsCommand(t *testing.T) {
 	assert.NoError(t, err, "mutate host labels command failed")
 
 	store := openStoreForTesting(t, dataDir)
-	defer store.Close()
+	defer closeStore(t, store)
 
 	host, err := store.GetHost(context.Background(), hostID)
 	assert.NoError(t, err, "GetHost() error")
@@ -91,7 +98,7 @@ func TestMutateHostLabelsFromFile(t *testing.T) {
 	assert.NoError(t, err, "mutate host labels command failed")
 
 	store := openStoreForTesting(t, dataDir)
-	defer store.Close()
+	defer closeStore(t, store)
 
 	host, err := store.GetHost(context.Background(), hostID)
 	assert.NoError(t, err, "GetHost() error")
@@ -123,7 +130,7 @@ func TestMutateHostLabelsFromStdin(t *testing.T) {
 	assert.NoError(t, err, "mutate host labels command failed")
 
 	store := openStoreForTesting(t, dataDir)
-	defer store.Close()
+	defer closeStore(t, store)
 
 	host, err := store.GetHost(context.Background(), hostID)
 	assert.NoError(t, err, "GetHost() error")
@@ -162,17 +169,23 @@ func TestNamespaceFlagTargetsNamespace(t *testing.T) {
 	}
 	customStore.SetNamespace("custom-ns")
 	if !assert.NoError(t, customStore.Migrate(ctx), "Store.Migrate() error") {
-		customStore.Close()
+		if err := customStore.Close(); err != nil {
+			t.Errorf("close custom store: %v", err)
+		}
 		t.FailNow()
 	}
 	host := storage.Host{}
 	createdHost, err := customStore.CreateHost(ctx, host)
 	if !assert.NoError(t, err, "CreateHost() error") {
-		customStore.Close()
+		if err := customStore.Close(); err != nil {
+			t.Errorf("close custom store: %v", err)
+		}
 		t.FailNow()
 	}
 	host = createdHost
-	customStore.Close()
+	if err := customStore.Close(); err != nil {
+		t.Errorf("close custom store: %v", err)
+	}
 
 	cmd := NewRootCommand()
 	cmd.SetArgs([]string{"--data-dir", dataDir, "--namespace", "custom-ns", "delete", "hosts", host.ID})
@@ -183,7 +196,11 @@ func TestNamespaceFlagTargetsNamespace(t *testing.T) {
 		t.FailNow()
 	}
 	verifyStore.SetNamespace("custom-ns")
-	defer verifyStore.Close()
+	defer func() {
+		if err := verifyStore.Close(); err != nil {
+			t.Errorf("close verify store: %v", err)
+		}
+	}()
 
 	_, err = verifyStore.GetHost(ctx, host.ID)
 	assert.ErrorIs(t, err, storage.ErrHostNotFound, "expected host to be deleted in namespace")
@@ -443,7 +460,7 @@ func TestDeleteHostsCommand(t *testing.T) {
 	assert.NoError(t, cmd.Execute(), "delete hosts command should succeed")
 
 	store := openStoreForTesting(t, dataDir)
-	defer store.Close()
+	defer closeStore(t, store)
 	_, err := store.GetHost(context.Background(), hostID)
 	assert.ErrorIs(t, err, storage.ErrHostNotFound)
 }
@@ -468,7 +485,7 @@ func TestMutateHostsCommand(t *testing.T) {
 	assert.NoError(t, cmd.Execute(), "mutate hosts should succeed")
 
 	store := openStoreForTesting(t, dataDir)
-	defer store.Close()
+	defer closeStore(t, store)
 	host, err := store.GetHost(context.Background(), hostID)
 	assert.NoError(t, err)
 	assert.Equal(t, "updated", host.Labels["env"])
@@ -488,7 +505,7 @@ func TestDirectBackendMethods(t *testing.T) {
 		t.Fatalf("new store: %v", err)
 	}
 	store.SetNamespace(server.DefaultNamespace)
-	defer store.Close()
+	defer closeStore(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -573,23 +590,41 @@ func TestAPIBackendMethods(t *testing.T) {
 
 		switch {
 		case r.URL.Path == "/hosts" && r.Method == http.MethodGet:
-			json.NewEncoder(w).Encode([]storage.Host{host})
+			if err := json.NewEncoder(w).Encode([]storage.Host{host}); err != nil {
+				t.Errorf("encode hosts: %v", err)
+			}
 		case r.URL.Path == "/requests" && r.Method == http.MethodGet:
-			json.NewEncoder(w).Encode([]storage.Request{request})
+			if err := json.NewEncoder(w).Encode([]storage.Request{request}); err != nil {
+				t.Errorf("encode requests: %v", err)
+			}
 		case r.URL.Path == "/registers" && r.Method == http.MethodGet:
-			json.NewEncoder(w).Encode([]storage.Register{register})
+			if err := json.NewEncoder(w).Encode([]storage.Register{register}); err != nil {
+				t.Errorf("encode registers: %v", err)
+			}
 		case r.URL.Path == "/grants" && r.Method == http.MethodGet:
-			json.NewEncoder(w).Encode([]storage.Grant{grant})
+			if err := json.NewEncoder(w).Encode([]storage.Grant{grant}); err != nil {
+				t.Errorf("encode grants: %v", err)
+			}
 		case r.URL.Path == "/hosts/"+host.ID && r.Method == http.MethodGet:
-			json.NewEncoder(w).Encode(host)
+			if err := json.NewEncoder(w).Encode(host); err != nil {
+				t.Errorf("encode host: %v", err)
+			}
 		case r.URL.Path == "/requests/"+request.ID && r.Method == http.MethodGet:
-			json.NewEncoder(w).Encode(request)
+			if err := json.NewEncoder(w).Encode(request); err != nil {
+				t.Errorf("encode request: %v", err)
+			}
 		case r.URL.Path == "/registers/"+register.ID && r.Method == http.MethodGet:
-			json.NewEncoder(w).Encode(register)
+			if err := json.NewEncoder(w).Encode(register); err != nil {
+				t.Errorf("encode register: %v", err)
+			}
 		case r.URL.Path == "/grants/"+grant.ID && r.Method == http.MethodGet:
-			json.NewEncoder(w).Encode(grant)
+			if err := json.NewEncoder(w).Encode(grant); err != nil {
+				t.Errorf("encode grant: %v", err)
+			}
 		case strings.HasPrefix(r.URL.Path, "/hosts/") && strings.HasSuffix(r.URL.Path, "/labels") && r.Method == http.MethodPatch:
-			io.ReadAll(r.Body)
+			if _, err := io.ReadAll(r.Body); err != nil {
+				t.Errorf("read host labels body: %v", err)
+			}
 			w.WriteHeader(http.StatusOK)
 		case strings.HasPrefix(r.URL.Path, "/hosts/") && r.Method == http.MethodDelete:
 			w.WriteHeader(http.StatusNoContent)
@@ -658,13 +693,21 @@ func TestListCommandsForAllResources(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/hosts":
-			json.NewEncoder(w).Encode([]storage.Host{{ID: "list-host"}})
+			if err := json.NewEncoder(w).Encode([]storage.Host{{ID: "list-host"}}); err != nil {
+				t.Errorf("encode hosts response: %v", err)
+			}
 		case "/requests":
-			json.NewEncoder(w).Encode([]storage.Request{{ID: "list-req"}})
+			if err := json.NewEncoder(w).Encode([]storage.Request{{ID: "list-req"}}); err != nil {
+				t.Errorf("encode requests response: %v", err)
+			}
 		case "/registers":
-			json.NewEncoder(w).Encode([]storage.Register{{ID: "list-reg"}})
+			if err := json.NewEncoder(w).Encode([]storage.Register{{ID: "list-reg"}}); err != nil {
+				t.Errorf("encode registers response: %v", err)
+			}
 		case "/grants":
-			json.NewEncoder(w).Encode([]storage.Grant{{ID: "list-grant"}})
+			if err := json.NewEncoder(w).Encode([]storage.Grant{{ID: "list-grant"}}); err != nil {
+				t.Errorf("encode grants response: %v", err)
+			}
 		default:
 			http.Error(w, "not found", http.StatusNotFound)
 		}
@@ -727,7 +770,7 @@ func prepareTestDataDir(t *testing.T, setup func(context.Context, *storage.Store
 		t.FailNow()
 	}
 	store.SetNamespace(server.DefaultNamespace)
-	defer store.Close()
+	defer closeStore(t, store)
 
 	if err := store.Migrate(ctx); err != nil {
 		assert.NoError(t, err, "Migrate() error")

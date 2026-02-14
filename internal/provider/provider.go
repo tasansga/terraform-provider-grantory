@@ -99,8 +99,6 @@ func configureProvider(ctx context.Context, d *schema.ResourceData) (any, diag.D
 		if envUser != "" && envPassword != "" {
 			user = envUser
 			password = envPassword
-			userSet = true
-			passwordSet = true
 		}
 	}
 

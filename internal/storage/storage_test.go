@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,20 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func closeStore(t *testing.T, store *Store) {
+	t.Helper()
+	if err := store.Close(); err != nil {
+		t.Errorf("close store: %v", err)
+	}
+}
+
+func rollbackTxTest(t *testing.T, tx *sql.Tx) {
+	t.Helper()
+	if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+		t.Errorf("rollback transaction: %v", err)
+	}
+}
 
 func TestNewCreatesConnection(t *testing.T) {
 	t.Parallel()
@@ -20,7 +35,7 @@ func TestNewCreatesConnection(t *testing.T) {
 		assert.NoError(t, err, "New() error")
 		t.FailNow()
 	}
-	defer store.Close()
+	defer closeStore(t, store)
 
 	var enabled int
 	if err := store.DB().QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&enabled); err != nil {
@@ -39,7 +54,7 @@ func TestMigrateCreatesTables(t *testing.T) {
 		assert.NoError(t, err, "New() error")
 		t.FailNow()
 	}
-	defer store.Close()
+	defer closeStore(t, store)
 
 	if err := store.Migrate(ctx); err != nil {
 		assert.NoError(t, err, "Migrate() error")
@@ -68,7 +83,7 @@ func TestHostCRUD(t *testing.T) {
 		assert.NoError(t, err, "New() error")
 		t.FailNow()
 	}
-	defer store.Close()
+	defer closeStore(t, store)
 
 	if err := store.Migrate(ctx); err != nil {
 		assert.NoError(t, err, "Migrate() error")
@@ -123,7 +138,7 @@ func TestCreateHostGeneratesUniqueIDs(t *testing.T) {
 		assert.NoError(t, err, "New() error")
 		t.FailNow()
 	}
-	defer store.Close()
+	defer closeStore(t, store)
 
 	if err := store.Migrate(ctx); err != nil {
 		assert.NoError(t, err, "Migrate() error")
@@ -154,7 +169,7 @@ func TestUpdateHostLabels(t *testing.T) {
 		assert.NoError(t, err, "New() error")
 		t.FailNow()
 	}
-	defer store.Close()
+	defer closeStore(t, store)
 
 	if err := store.Migrate(ctx); err != nil {
 		assert.NoError(t, err, "Migrate() error")
@@ -207,7 +222,7 @@ func TestCreateRequestMissingHost(t *testing.T) {
 		assert.NoError(t, err, "New() error")
 		t.FailNow()
 	}
-	defer store.Close()
+	defer closeStore(t, store)
 
 	if err := store.Migrate(ctx); err != nil {
 		assert.NoError(t, err, "Migrate() error")
@@ -230,7 +245,7 @@ func TestCreateRegisterMissingHost(t *testing.T) {
 		assert.NoError(t, err, "New() error")
 		t.FailNow()
 	}
-	defer store.Close()
+	defer closeStore(t, store)
 
 	if err := store.Migrate(ctx); err != nil {
 		assert.NoError(t, err, "Migrate() error")
@@ -252,7 +267,7 @@ func TestRequestCRUD(t *testing.T) {
 		assert.NoError(t, err, "New() error")
 		t.FailNow()
 	}
-	defer store.Close()
+	defer closeStore(t, store)
 
 	if err := store.Migrate(ctx); err != nil {
 		assert.NoError(t, err, "Migrate() error")
@@ -333,7 +348,7 @@ func TestRegisterCRUD(t *testing.T) {
 		assert.NoError(t, err, "New() error")
 		t.FailNow()
 	}
-	defer store.Close()
+	defer closeStore(t, store)
 
 	if err := store.Migrate(ctx); err != nil {
 		assert.NoError(t, err, "Migrate() error")
@@ -404,7 +419,7 @@ func TestUpdateRequestLabelsRefreshesTimestamp(t *testing.T) {
 	ctx := context.Background()
 	store, err := New(ctx, ":memory:")
 	require.NoError(t, err, "New() error")
-	defer store.Close()
+	defer closeStore(t, store)
 
 	require.NoError(t, store.Migrate(ctx), "Migrate() error")
 
@@ -436,7 +451,7 @@ func TestUpdateRegisterLabelsRefreshesTimestamp(t *testing.T) {
 	ctx := context.Background()
 	store, err := New(ctx, ":memory:")
 	require.NoError(t, err, "New() error")
-	defer store.Close()
+	defer closeStore(t, store)
 
 	require.NoError(t, store.Migrate(ctx), "Migrate() error")
 
@@ -471,7 +486,7 @@ func TestCountRegisters(t *testing.T) {
 		assert.NoError(t, err, "New() error")
 		t.FailNow()
 	}
-	defer store.Close()
+	defer closeStore(t, store)
 
 	if err := store.Migrate(ctx); err != nil {
 		assert.NoError(t, err, "Migrate() error")
@@ -512,7 +527,7 @@ func TestGrantCRUD(t *testing.T) {
 		assert.NoError(t, err, "New() error")
 		t.FailNow()
 	}
-	defer store.Close()
+	defer closeStore(t, store)
 
 	if err := store.Migrate(ctx); err != nil {
 		assert.NoError(t, err, "Migrate() error")
@@ -577,7 +592,7 @@ func TestCountRequestsByGrantPresence(t *testing.T) {
 		assert.NoError(t, err, "New() error")
 		t.FailNow()
 	}
-	defer store.Close()
+	defer closeStore(t, store)
 
 	if err := store.Migrate(ctx); err != nil {
 		assert.NoError(t, err, "Migrate() error")
@@ -624,7 +639,7 @@ func TestCountGrants(t *testing.T) {
 		assert.NoError(t, err, "New() error")
 		t.FailNow()
 	}
-	defer store.Close()
+	defer closeStore(t, store)
 
 	if err := store.Migrate(ctx); err != nil {
 		assert.NoError(t, err, "Migrate() error")
@@ -689,7 +704,7 @@ func TestCreateHostLabelKeyTooLong(t *testing.T) {
 	ctx := context.Background()
 	store, err := New(ctx, ":memory:")
 	require.NoError(t, err)
-	defer store.Close()
+	defer closeStore(t, store)
 	require.NoError(t, store.Migrate(ctx))
 
 	key := strings.Repeat("k", maxLabelLength+1)
@@ -703,7 +718,7 @@ func TestCreateRequestRequiresHostID(t *testing.T) {
 	ctx := context.Background()
 	store, err := New(ctx, ":memory:")
 	require.NoError(t, err)
-	defer store.Close()
+	defer closeStore(t, store)
 	require.NoError(t, store.Migrate(ctx))
 
 	_, err = store.CreateRequest(ctx, Request{})
@@ -716,7 +731,7 @@ func TestCreateRequestLabelKeyTooLong(t *testing.T) {
 	ctx := context.Background()
 	store, err := New(ctx, ":memory:")
 	require.NoError(t, err)
-	defer store.Close()
+	defer closeStore(t, store)
 	require.NoError(t, store.Migrate(ctx))
 
 	host, err := store.CreateHost(ctx, Host{})
@@ -733,7 +748,7 @@ func TestCreateRegisterRequiresHostID(t *testing.T) {
 	ctx := context.Background()
 	store, err := New(ctx, ":memory:")
 	require.NoError(t, err)
-	defer store.Close()
+	defer closeStore(t, store)
 	require.NoError(t, store.Migrate(ctx))
 
 	_, err = store.CreateRegister(ctx, Register{})
@@ -746,7 +761,7 @@ func TestCreateRegisterLabelKeyTooLong(t *testing.T) {
 	ctx := context.Background()
 	store, err := New(ctx, ":memory:")
 	require.NoError(t, err)
-	defer store.Close()
+	defer closeStore(t, store)
 	require.NoError(t, store.Migrate(ctx))
 
 	host, err := store.CreateHost(ctx, Host{})
@@ -795,7 +810,7 @@ func TestCreateRequestPayloadEncodeError(t *testing.T) {
 	ctx := context.Background()
 	store, err := New(ctx, ":memory:")
 	require.NoError(t, err)
-	defer store.Close()
+	defer closeStore(t, store)
 	require.NoError(t, store.Migrate(ctx))
 
 	host, err := store.CreateHost(ctx, Host{})
@@ -818,7 +833,7 @@ func TestCreateRegisterPayloadEncodeError(t *testing.T) {
 	ctx := context.Background()
 	store, err := New(ctx, ":memory:")
 	require.NoError(t, err)
-	defer store.Close()
+	defer closeStore(t, store)
 	require.NoError(t, store.Migrate(ctx))
 
 	host, err := store.CreateHost(ctx, Host{})
@@ -840,7 +855,7 @@ func TestCreateGrantMissingBits(t *testing.T) {
 	ctx := context.Background()
 	store, err := New(ctx, ":memory:")
 	require.NoError(t, err)
-	defer store.Close()
+	defer closeStore(t, store)
 	require.NoError(t, store.Migrate(ctx))
 
 	_, err = store.CreateGrant(ctx, Grant{})
@@ -864,7 +879,7 @@ func TestOperationsAfterCloseAlwaysError(t *testing.T) {
 	ctx := context.Background()
 	store, err := New(ctx, ":memory:")
 	require.NoError(t, err)
-	defer store.Close()
+	defer closeStore(t, store)
 	require.NoError(t, store.Migrate(ctx))
 
 	host, err := store.CreateHost(ctx, Host{})
@@ -934,7 +949,7 @@ func TestEnsureTablesReturnErrorWhenContextCanceled(t *testing.T) {
 	ctx := context.Background()
 	store, err := New(ctx, ":memory:")
 	require.NoError(t, err)
-	defer store.Close()
+	defer closeStore(t, store)
 	require.NoError(t, store.Migrate(ctx))
 
 	tests := []struct {
@@ -956,7 +971,7 @@ func TestEnsureTablesReturnErrorWhenContextCanceled(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tx, err := store.DB().BeginTx(ctx, nil)
 			require.NoError(t, err)
-			defer tx.Rollback()
+			defer rollbackTxTest(t, tx)
 			cancelCtx, cancel := context.WithCancel(ctx)
 			cancel()
 			assert.Error(t, tc.fn(cancelCtx, tx), "expected failure for %s", tc.name)
@@ -1005,12 +1020,12 @@ func TestReplaceLabelsBehavesWhenContextCanceled(t *testing.T) {
 	ctx := context.Background()
 	store, err := New(ctx, ":memory:")
 	require.NoError(t, err)
-	defer store.Close()
+	defer closeStore(t, store)
 	require.NoError(t, store.Migrate(ctx))
 
 	tx, err := store.DB().BeginTx(ctx, nil)
 	require.NoError(t, err)
-	defer tx.Rollback()
+	defer rollbackTxTest(t, tx)
 
 	cancelCtx, cancel := context.WithCancel(ctx)
 	cancel()
@@ -1024,7 +1039,7 @@ func TestEnsureRequestExists(t *testing.T) {
 	ctx := context.Background()
 	store, err := New(ctx, ":memory:")
 	assert.NoError(t, err)
-	defer store.Close()
+	defer closeStore(t, store)
 	assert.NoError(t, store.Migrate(ctx))
 
 	host, err := store.CreateHost(ctx, Host{})
@@ -1043,7 +1058,7 @@ func TestUpdateRequestLabelsAppliesChanges(t *testing.T) {
 	ctx := context.Background()
 	store, err := New(ctx, ":memory:")
 	assert.NoError(t, err)
-	defer store.Close()
+	defer closeStore(t, store)
 	assert.NoError(t, store.Migrate(ctx))
 
 	host, err := store.CreateHost(ctx, Host{})
@@ -1069,7 +1084,7 @@ func TestGetLatestGrantForRequest(t *testing.T) {
 	ctx := context.Background()
 	store, err := New(ctx, ":memory:")
 	assert.NoError(t, err)
-	defer store.Close()
+	defer closeStore(t, store)
 	assert.NoError(t, store.Migrate(ctx))
 
 	host, err := store.CreateHost(ctx, Host{})
@@ -1168,7 +1183,7 @@ func TestCreateGrantIsUniquePerRequest(t *testing.T) {
 		assert.NoError(t, err, "New() error")
 		t.FailNow()
 	}
-	defer store.Close()
+	defer closeStore(t, store)
 
 	if err := store.Migrate(ctx); err != nil {
 		assert.NoError(t, err, "Migrate() error")
@@ -1207,7 +1222,7 @@ func TestCreateHostIgnoresSuppliedID(t *testing.T) {
 		assert.NoError(t, err, "New() error")
 		t.FailNow()
 	}
-	defer store.Close()
+	defer closeStore(t, store)
 
 	if err := store.Migrate(ctx); err != nil {
 		assert.NoError(t, err, "Migrate() error")
@@ -1235,7 +1250,7 @@ func TestCreateRequestIgnoresSuppliedID(t *testing.T) {
 		assert.NoError(t, err, "New() error")
 		t.FailNow()
 	}
-	defer store.Close()
+	defer closeStore(t, store)
 
 	if err := store.Migrate(ctx); err != nil {
 		assert.NoError(t, err, "Migrate() error")
@@ -1272,7 +1287,7 @@ func TestCreateRegisterIgnoresSuppliedID(t *testing.T) {
 		assert.NoError(t, err, "New() error")
 		t.FailNow()
 	}
-	defer store.Close()
+	defer closeStore(t, store)
 
 	if err := store.Migrate(ctx); err != nil {
 		assert.NoError(t, err, "Migrate() error")
@@ -1309,7 +1324,7 @@ func TestCreateGrantIgnoresSuppliedID(t *testing.T) {
 		assert.NoError(t, err, "New() error")
 		t.FailNow()
 	}
-	defer store.Close()
+	defer closeStore(t, store)
 
 	if err := store.Migrate(ctx); err != nil {
 		assert.NoError(t, err, "Migrate() error")

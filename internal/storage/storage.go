@@ -54,12 +54,28 @@ func (s *Store) logDBOperation(table, operation string, params logrus.Fields) {
 		"table":     table,
 		"operation": operation,
 	}
-	if params != nil {
-		for key, value := range params {
-			fields[key] = value
-		}
+	for key, value := range params {
+		fields[key] = value
 	}
 	logrus.WithFields(fields).Info("database operation")
+}
+
+func rollbackTx(tx *sql.Tx, operation string) {
+	if tx == nil {
+		return
+	}
+	if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+		logrus.WithError(err).Warn(operation)
+	}
+}
+
+func closeRows(rows *sql.Rows, operation string) {
+	if rows == nil {
+		return
+	}
+	if err := rows.Close(); err != nil {
+		logrus.WithError(err).Warn(operation)
+	}
 }
 
 func (s *Store) ensureHostExists(ctx context.Context, hostID string) error {
@@ -215,7 +231,9 @@ func New(ctx context.Context, path string) (*Store, error) {
 	db.SetMaxOpenConns(1)
 
 	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
-		db.Close()
+		if cerr := db.Close(); cerr != nil {
+			logrus.WithError(cerr).Warn("close sqlite database after foreign key setup failure")
+		}
 		return nil, fmt.Errorf("enable foreign keys: %w", err)
 	}
 
@@ -265,7 +283,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 
 	for _, task := range tasks {
 		if err := task.fn(ctx, tx); err != nil {
-			tx.Rollback()
+			rollbackTx(tx, "rollback migration transaction")
 			return fmt.Errorf("ensure %s schema: %w", task.name, err)
 		}
 	}
@@ -344,7 +362,7 @@ func (s *Store) CreateHost(ctx context.Context, host Host) (Host, error) {
 	if err != nil {
 		return Host{}, fmt.Errorf("begin host transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer rollbackTx(tx, "rollback create host transaction")
 
 	s.logDBOperation("hosts", "create", logrus.Fields{
 		"host_id": host.ID,
@@ -414,7 +432,7 @@ ORDER BY created_at ASC
 	if err != nil {
 		return nil, fmt.Errorf("query hosts: %w", err)
 	}
-	defer rows.Close()
+	defer closeRows(rows, "close hosts rows")
 
 	hosts := make([]Host, 0)
 	for rows.Next() {
@@ -482,7 +500,7 @@ func (s *Store) UpdateHostLabels(ctx context.Context, id string, labels map[stri
 	if err != nil {
 		return fmt.Errorf("begin host labels transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer rollbackTx(tx, "rollback host labels transaction")
 
 	if err := replaceLabels(ctx, tx, hostLabelsTable, "host_id", id, labels); err != nil {
 		return fmt.Errorf("replace host labels: %w", err)
@@ -546,7 +564,7 @@ func (s *Store) CreateRequest(ctx context.Context, req Request) (Request, error)
 	if err != nil {
 		return Request{}, fmt.Errorf("begin request transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer rollbackTx(tx, "rollback create request transaction")
 
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO requests (id, host_id, data)
@@ -616,7 +634,7 @@ ORDER BY created_at ASC
 	if err != nil {
 		return nil, fmt.Errorf("query requests: %w", err)
 	}
-	defer rows.Close()
+	defer closeRows(rows, "close requests rows")
 
 	requests := make([]Request, 0)
 	for rows.Next() {
@@ -688,7 +706,7 @@ func (s *Store) UpdateRequestLabels(ctx context.Context, id string, labels map[s
 	if err != nil {
 		return fmt.Errorf("begin request labels transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer rollbackTx(tx, "rollback request labels transaction")
 
 	if err := replaceLabels(ctx, tx, requestLabelsTable, "request_id", id, labels); err != nil {
 		return fmt.Errorf("replace request labels: %w", err)
@@ -761,7 +779,7 @@ func (s *Store) CreateRegister(ctx context.Context, reg Register) (Register, err
 	if err != nil {
 		return Register{}, fmt.Errorf("begin register transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer rollbackTx(tx, "rollback create register transaction")
 
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO registers (id, host_id, data)
@@ -827,7 +845,7 @@ ORDER BY created_at ASC
 	if err != nil {
 		return nil, fmt.Errorf("query registers: %w", err)
 	}
-	defer rows.Close()
+	defer closeRows(rows, "close registers rows")
 
 	registers := make([]Register, 0)
 	for rows.Next() {
@@ -868,7 +886,7 @@ func (s *Store) UpdateRegisterLabels(ctx context.Context, id string, labels map[
 	if err != nil {
 		return fmt.Errorf("begin register labels transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer rollbackTx(tx, "rollback register labels transaction")
 
 	if err := replaceLabels(ctx, tx, registerLabelsTable, "register_id", id, labels); err != nil {
 		return fmt.Errorf("replace register labels: %w", err)
@@ -1000,7 +1018,7 @@ ORDER BY created_at ASC
 	if err != nil {
 		return nil, fmt.Errorf("query grants: %w", err)
 	}
-	defer rows.Close()
+	defer closeRows(rows, "close grants rows")
 
 	grants := make([]Grant, 0)
 	for rows.Next() {
@@ -1293,7 +1311,7 @@ func (s *Store) loadLabels(ctx context.Context, table, idColumn, id string) (map
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer closeRows(rows, "close labels rows")
 
 	labels := make(map[string]string)
 	for rows.Next() {

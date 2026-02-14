@@ -83,7 +83,11 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	defer srv.Close()
+	defer func() {
+		if err := srv.Close(); err != nil {
+			logrus.WithError(err).Warn("close server")
+		}
+	}()
 
 	err = srv.Serve(ctx)
 	logrus.Info("stopping Grantory server")
@@ -111,8 +115,9 @@ func newVersionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
 		Short: "Print version information",
-		Run: func(cmd *cobra.Command, _ []string) {
-			fmt.Fprintln(cmd.OutOrStdout(), versionString())
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			_, err := fmt.Fprintln(cmd.OutOrStdout(), versionString())
+			return err
 		},
 	}
 }

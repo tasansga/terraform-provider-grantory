@@ -33,7 +33,9 @@ func newTestApp(t *testing.T) (*fiber.App, func()) {
 
 	dataDir := filepath.Join(t.TempDir(), "api")
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		srv.Close()
+		if cerr := srv.Close(); cerr != nil {
+			t.Errorf("close server: %v", cerr)
+		}
 		assert.NoError(t, err, "mkdir data dir")
 		t.FailNow()
 	}
@@ -41,15 +43,21 @@ func newTestApp(t *testing.T) (*fiber.App, func()) {
 	storePath := filepath.Join(dataDir, "cli-test.db")
 	store, err := storage.New(context.Background(), storePath)
 	if err != nil {
-		srv.Close()
+		if cerr := srv.Close(); cerr != nil {
+			t.Errorf("close server: %v", cerr)
+		}
 		assert.NoError(t, err, "storage.New() error")
 		t.FailNow()
 	}
 	store.SetNamespace(DefaultNamespace)
 
 	if err := store.Migrate(context.Background()); err != nil {
-		store.Close()
-		srv.Close()
+		if cerr := store.Close(); cerr != nil {
+			t.Errorf("close store: %v", cerr)
+		}
+		if cerr := srv.Close(); cerr != nil {
+			t.Errorf("close server: %v", cerr)
+		}
 		assert.NoError(t, err, "store.Migrate() error")
 		t.FailNow()
 	}
@@ -75,8 +83,12 @@ func newTestApp(t *testing.T) (*fiber.App, func()) {
 	api.Get("/metrics", srv.handleMetrics)
 
 	cleanup := func() {
-		store.Close()
-		srv.Close()
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+		if err := srv.Close(); err != nil {
+			t.Errorf("close server: %v", err)
+		}
 	}
 
 	return app, cleanup
@@ -137,7 +149,11 @@ func sendRawTestRequest(t *testing.T, app *fiber.App, method, path string, heade
 
 func decodeJSON[T any](t *testing.T, res *http.Response) T {
 	t.Helper()
-	defer res.Body.Close()
+	defer func() {
+		if err := res.Body.Close(); err != nil {
+			t.Errorf("close response body: %v", err)
+		}
+	}()
 
 	var result T
 	if err := json.NewDecoder(res.Body).Decode(&result); err != nil {
@@ -546,7 +562,11 @@ func TestHandlersReturnInternalServerErrorWhenStoreClosed(t *testing.T) {
 	cfg := config.Config{DataDir: t.TempDir()}
 	srv, err := New(context.Background(), cfg)
 	require.NoError(t, err)
-	defer srv.Close()
+	defer func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("close server: %v", err)
+		}
+	}()
 
 	store, err := srv.nsStore.StoreFor(context.Background(), DefaultNamespace)
 	require.NoError(t, err)
@@ -614,7 +634,11 @@ func TestIndexHandler(t *testing.T) {
 	cfg := config.Config{DataDir: t.TempDir()}
 	srv, err := New(context.Background(), cfg)
 	require.NoError(t, err, "New() should succeed")
-	defer srv.Close()
+	defer func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("close server: %v", err)
+		}
+	}()
 
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
 	app.Use(requestLoggingMiddleware())
@@ -632,7 +656,11 @@ func TestRootRedirectsToIndex(t *testing.T) {
 	cfg := config.Config{DataDir: t.TempDir()}
 	srv, err := New(context.Background(), cfg)
 	require.NoError(t, err, "New() should succeed")
-	defer srv.Close()
+	defer func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("close server: %v", err)
+		}
+	}()
 
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
 	app.Get("/", srv.handleRoot)
@@ -650,7 +678,11 @@ func TestWaterCSSServedFromStaticRoute(t *testing.T) {
 	cfg := config.Config{DataDir: t.TempDir()}
 	srv, err := New(context.Background(), cfg)
 	require.NoError(t, err, "New() should succeed")
-	defer srv.Close()
+	defer func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("close server: %v", err)
+		}
+	}()
 
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
 	app.Get("/static/water.min.css", srv.handleWaterCSS)
@@ -693,7 +725,11 @@ func TestNamespaceValidationMiddleware(t *testing.T) {
 	cfg := config.Config{DataDir: t.TempDir()}
 	srv, err := New(context.Background(), cfg)
 	assert.NoError(t, err, "initialize server")
-	defer srv.nsStore.Close()
+	defer func() {
+		if err := srv.nsStore.Close(); err != nil {
+			t.Errorf("close namespace store: %v", err)
+		}
+	}()
 
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
 	app.Use(srv.namespaceMiddleware())

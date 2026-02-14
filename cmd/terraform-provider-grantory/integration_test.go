@@ -181,7 +181,9 @@ func TestIntegrationTerraformApplyUpdatesServer(t *testing.T) {
 	store, err := storage.New(context.Background(), storePath)
 	require.NoError(t, err, "open Grantory store for verification")
 	t.Cleanup(func() {
-		store.Close()
+		if err := store.Close(); err != nil {
+			t.Errorf("close Grantory store: %v", err)
+		}
 	})
 	store.SetNamespace(server.DefaultNamespace)
 
@@ -412,7 +414,11 @@ func freePort(t *testing.T) int {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err, "listen for free port")
-	defer listener.Close()
+	defer func() {
+		if err := listener.Close(); err != nil {
+			t.Errorf("close free port listener: %v", err)
+		}
+	}()
 	addr := listener.Addr().(*net.TCPAddr)
 	return addr.Port
 }
@@ -424,7 +430,9 @@ func waitForServerReady(t *testing.T, port int) {
 	for time.Now().Before(deadline) {
 		resp, err := http.Get(url)
 		if err == nil {
-			resp.Body.Close()
+			if err := resp.Body.Close(); err != nil {
+				t.Errorf("close healthz response body: %v", err)
+			}
 			if resp.StatusCode == http.StatusOK {
 				return
 			}

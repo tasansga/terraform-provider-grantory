@@ -362,11 +362,16 @@ func (a *apiBackend) doJSON(ctx context.Context, method, endpoint string, body a
 	if err != nil {
 		return fmt.Errorf("perform request: %w", err)
 	}
-	defer res.Body.Close()
 
 	data, err := io.ReadAll(res.Body)
 	if err != nil {
+		if cerr := res.Body.Close(); cerr != nil {
+			return fmt.Errorf("read response: %w (close error: %v)", err, cerr)
+		}
 		return fmt.Errorf("read response: %w", err)
+	}
+	if err := res.Body.Close(); err != nil {
+		return fmt.Errorf("close response body: %w", err)
 	}
 
 	if res.StatusCode < 200 || res.StatusCode >= 300 {

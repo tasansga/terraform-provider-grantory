@@ -218,11 +218,16 @@ func (c *grantoryClient) doJSON(ctx context.Context, method, endpoint string, re
 	if err != nil {
 		return fmt.Errorf("perform request: %w", err)
 	}
-	defer resp.Body.Close()
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
+		if cerr := resp.Body.Close(); cerr != nil {
+			return fmt.Errorf("read response: %w (close error: %v)", err, cerr)
+		}
 		return fmt.Errorf("read response: %w", err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		return fmt.Errorf("close response body: %w", err)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

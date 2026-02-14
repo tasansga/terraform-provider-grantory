@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"sync"
 
+	"github.com/sirupsen/logrus"
+
 	"github.com/tasansga/terraform-provider-grantory/internal/config"
 	"github.com/tasansga/terraform-provider-grantory/internal/storage"
 )
@@ -81,7 +83,9 @@ func (n *NamespaceStore) StoreFor(ctx context.Context, namespace string) (*stora
 	store.SetNamespace(namespace)
 
 	if err := store.Migrate(n.ctx); err != nil {
-		store.Close()
+		if cerr := store.Close(); cerr != nil {
+			return nil, fmt.Errorf("migrate namespace store: %w (close error: %v)", err, cerr)
+		}
 		return nil, fmt.Errorf("migrate namespace store: %w", err)
 	}
 
@@ -98,7 +102,9 @@ func (n *NamespaceStore) store(namespace string, store *storage.Store) *storage.
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if existing := n.stores[namespace]; existing != nil {
-		store.Close()
+		if err := store.Close(); err != nil {
+			logrus.WithError(err).WithField("namespace", namespace).Warn("close duplicate namespace store")
+		}
 		return existing
 	}
 	n.stores[namespace] = store

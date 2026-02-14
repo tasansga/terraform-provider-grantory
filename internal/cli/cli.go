@@ -57,7 +57,13 @@ func runWithBackend(cmd *cobra.Command, action func(context.Context, cliBackend)
 			return err
 		}
 		store.SetNamespace(namespace)
-		defer store.Close()
+		defer func() {
+			if err := store.Close(); err != nil {
+				if _, ferr := fmt.Fprintf(cmd.ErrOrStderr(), "close store: %v\n", err); ferr != nil {
+					_ = ferr
+				}
+			}
+		}()
 
 		if err := store.Migrate(ctx); err != nil {
 			return err
@@ -296,21 +302,27 @@ func resolveLabels(cmd *cobra.Command, labelsFlag, labelsFile string) (map[strin
 }
 
 func loadLabelsFromSource(cmd *cobra.Command, source string) (map[string]string, error) {
-	var reader io.Reader
+	var data []byte
 	if source == "-" {
-		reader = cmd.InOrStdin()
+		var err error
+		data, err = io.ReadAll(cmd.InOrStdin())
+		if err != nil {
+			return nil, fmt.Errorf("read labels: %w", err)
+		}
 	} else {
 		file, err := os.Open(source)
 		if err != nil {
 			return nil, fmt.Errorf("open labels file: %w", err)
 		}
-		defer file.Close()
-		reader = file
-	}
-
-	data, err := io.ReadAll(reader)
-	if err != nil {
-		return nil, fmt.Errorf("read labels: %w", err)
+		data, err = io.ReadAll(file)
+		if cerr := file.Close(); cerr != nil {
+			if err == nil {
+				return nil, fmt.Errorf("close labels file: %w", cerr)
+			}
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read labels: %w", err)
+		}
 	}
 	if len(data) == 0 {
 		return nil, errors.New("labels payload is empty")
@@ -359,7 +371,13 @@ func newNamespaceCreateCmd() *cobra.Command {
 				return err
 			}
 			store.SetNamespace(namespace)
-			defer store.Close()
+			defer func() {
+				if err := store.Close(); err != nil {
+					if _, ferr := fmt.Fprintf(cmd.ErrOrStderr(), "close store: %v\n", err); ferr != nil {
+						_ = ferr
+					}
+				}
+			}()
 
 			if err := store.Migrate(cmd.Context()); err != nil {
 				return err
