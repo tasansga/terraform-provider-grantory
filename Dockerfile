@@ -38,4 +38,4 @@ EXPOSE 8080 8443
 VOLUME ["/data"]
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-CMD ["grantory", "serve"]
+CMD ["serve"]
