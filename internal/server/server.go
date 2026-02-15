@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/sirupsen/logrus"
@@ -60,18 +61,27 @@ func (s *Server) Serve(ctx context.Context) error {
 		_ = app.Shutdown()
 	}()
 
+	httpDisabled := isBindDisabled(s.cfg.BindAddr)
+	httpsDisabled := isBindDisabled(s.cfg.TLSBind)
+
 	if IsTLSEnabled(s.cfg) {
-		if s.cfg.TLSBind == "" {
+		if s.cfg.TLSBind == "" || httpsDisabled {
 			return fmt.Errorf("https bind address must be configured when TLS is enabled")
 		}
-		if s.cfg.TLSBind == s.cfg.BindAddr {
+		if !httpDisabled && s.cfg.TLSBind == s.cfg.BindAddr {
 			return fmt.Errorf("https bind address must differ from http bind address")
 		}
 
-		errCh := make(chan error, 2)
-		go func() {
-			errCh <- app.Listen(s.cfg.BindAddr)
-		}()
+		errCount := 1
+		if !httpDisabled {
+			errCount = 2
+		}
+		errCh := make(chan error, errCount)
+		if !httpDisabled {
+			go func() {
+				errCh <- app.Listen(s.cfg.BindAddr)
+			}()
+		}
 		go func() {
 			errCh <- app.ListenTLS(s.cfg.TLSBind, s.cfg.TLSCert, s.cfg.TLSKey)
 		}()
@@ -83,7 +93,14 @@ func (s *Server) Serve(ctx context.Context) error {
 		return err
 	}
 
+	if httpDisabled {
+		return fmt.Errorf("need at least one listener - http bind address must be enabled when TLS is disabled")
+	}
 	return app.Listen(s.cfg.BindAddr)
+}
+
+func isBindDisabled(addr string) bool {
+	return strings.EqualFold(strings.TrimSpace(addr), "off")
 }
 
 func requestLoggingMiddleware() fiber.Handler {

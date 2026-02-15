@@ -38,8 +38,8 @@ type Config struct {
 // RegisterFlags adds command-line flags to the provided FlagSet.
 func RegisterFlags(fs *pflag.FlagSet) {
 	fs.String("data-dir", "", "path to the directory that contains namespace databases (env: "+EnvDataDir+")")
-	fs.String("http-bind", "", "interface:port for the HTTP listener (env: "+EnvBindAddr+")")
-	fs.String("https-bind", "", "interface:port for the HTTPS listener when TLS is enabled (env: "+EnvTLSBind+")")
+	fs.String("http-bind", "", "interface:port for the HTTP listener (env: "+EnvBindAddr+"); set to 'off' to disable")
+	fs.String("https-bind", "", "interface:port for the HTTPS listener when TLS is enabled (env: "+EnvTLSBind+"); set to 'off' to disable")
 	fs.String("tls-cert", "", "path to the TLS certificate file (env: "+EnvTLSCert+")")
 	fs.String("tls-key", "", "path to the TLS private key file (env: "+EnvTLSKey+")")
 	fs.String("log-level", "", "log level for the server (env: "+EnvLogLevel+")")

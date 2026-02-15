@@ -57,7 +57,7 @@ provider "grantory" {
 
 ## Running the server
 
-Grantory runs as an HTTP server. Configure the data directory, HTTP/HTTPS bind addresses, TLS certificates, and log level via flags or the matching environment variables (`DATA_DIR`, `HTTP_BIND`, `HTTPS_BIND`, `TLS_CERT`, `TLS_KEY`, `LOG_LEVEL`). TLS is only activated if `TLS_CERT` and `TLS_KEY` are set.
+Grantory runs as an HTTP server. Configure the data directory, HTTP/HTTPS bind addresses, TLS certificates, and log level via flags or the matching environment variables (`DATA_DIR`, `HTTP_BIND`, `HTTPS_BIND`, `TLS_CERT`, `TLS_KEY`, `LOG_LEVEL`). TLS is only activated if `TLS_CERT` and `TLS_KEY` are set. Set `HTTP_BIND=off` to disable the HTTP listener.
 
 ```bash
 grantory --data-dir ./data --http-bind 127.0.0.1:8080
@@ -111,7 +111,7 @@ This pattern lets any workload register a heartbeat endpoint without needing dir
 
 It has three stages:
 
-1. Producer requests an endpoind: A workload requests a Gatus endpoint (name + optional group).  
+1. Producer requests an endpoind: A workload requests a Gatus endpoint (name + optional group).
 
 2. Central Gatus grants tokens: A central "grantor" reads all requests, issues tokens, and writes the final "external‑endpoints" list used by Gatus.
 
