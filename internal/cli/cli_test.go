@@ -137,26 +137,6 @@ func TestMutateHostLabelsFromStdin(t *testing.T) {
 	assert.Equal(t, "stdin", host.Labels["env"], "host labels from stdin")
 }
 
-func TestNamespaceCreateAndDeleteCommands(t *testing.T) {
-	t.Parallel()
-
-	dataDir := filepath.Join(t.TempDir(), "data")
-
-	cmd := NewRootCommand()
-	cmd.SetArgs([]string{"--data-dir", dataDir, "namespace", "create", "demo-ns"})
-	assert.NoError(t, cmd.Execute(), "namespace create command failed")
-
-	path := server.NamespaceDBPath(dataDir, "demo-ns")
-	_, err := os.Stat(path)
-	assert.NoError(t, err, "namespace database was not created")
-
-	cmd = NewRootCommand()
-	cmd.SetArgs([]string{"--data-dir", dataDir, "namespace", "delete", "demo-ns"})
-	assert.NoError(t, cmd.Execute(), "namespace delete command failed")
-	_, err = os.Stat(path)
-	assert.ErrorIs(t, err, os.ErrNotExist, "namespace database was not removed")
-}
-
 func TestNamespaceFlagTargetsNamespace(t *testing.T) {
 	t.Parallel()
 

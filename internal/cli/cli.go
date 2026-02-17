@@ -341,55 +341,8 @@ func newNamespaceCmd() *cobra.Command {
 		Use:   "namespace",
 		Short: "Manage namespace databases",
 	}
-	cmd.AddCommand(newNamespaceCreateCmd(), newNamespaceDeleteCmd())
+	cmd.AddCommand(newNamespaceDeleteCmd())
 	return cmd
-}
-
-func newNamespaceCreateCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "create <namespace>",
-		Short: "Create or migrate a namespace database",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			namespace := args[0]
-			if err := server.ValidateNamespaceName(namespace); err != nil {
-				return err
-			}
-
-			cfg, err := loadConfig(cmd)
-			if err != nil {
-				return err
-			}
-
-			if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
-				return fmt.Errorf("create data directory: %w", err)
-			}
-
-			path := server.NamespaceDBPath(cfg.DataDir, namespace)
-			store, err := storage.New(cmd.Context(), path)
-			if err != nil {
-				return err
-			}
-			store.SetNamespace(namespace)
-			defer func() {
-				if err := store.Close(); err != nil {
-					if _, ferr := fmt.Fprintf(cmd.ErrOrStderr(), "close store: %v\n", err); ferr != nil {
-						_ = ferr
-					}
-				}
-			}()
-
-			if err := store.Migrate(cmd.Context()); err != nil {
-				return err
-			}
-
-			return outputJSON(map[string]any{
-				"namespace": namespace,
-				"path":      path,
-				"status":    "ready",
-			})
-		},
-	}
 }
 
 func newNamespaceDeleteCmd() *cobra.Command {
