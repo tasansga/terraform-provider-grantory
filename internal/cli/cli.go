@@ -209,9 +209,6 @@ func newMutateCmd() *cobra.Command {
 				return err
 			}
 
-			if resType != resourceTypeHosts {
-				return fmt.Errorf("mutate only supports hosts")
-			}
 			if labelsFlag == "" && labelsFile == "" {
 				return errors.New("either --labels or --labels-file is required when mutating labels")
 			}

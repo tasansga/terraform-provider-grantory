@@ -416,16 +416,83 @@ func TestRequestHandlerListWithFilters(t *testing.T) {
 	reqPayload := map[string]any{
 		"host_id": host.ID,
 		"payload": map[string]string{"name": "filtered"},
-		"labels":  map[string]string{"env": "filter"},
+		"labels":  map[string]string{"env": "filter", "team": "ops"},
 	}
 	res = sendTestRequest(t, app, http.MethodPost, "/requests", headers, reqPayload)
 	assert.Equal(t, http.StatusCreated, res.StatusCode, "create request status")
+
+	otherPayload := map[string]any{
+		"host_id": host.ID,
+		"payload": map[string]string{"name": "other"},
+		"labels":  map[string]string{"env": "other", "team": "ops"},
+	}
+	res = sendTestRequest(t, app, http.MethodPost, "/requests", headers, otherPayload)
+	assert.Equal(t, http.StatusCreated, res.StatusCode, "create request status for non-matching label")
 
 	res = sendTestRequest(t, app, http.MethodGet, "/requests?has_grant=false&label=env=filter", headers, nil)
 	assert.Equal(t, http.StatusOK, res.StatusCode, "filtered list should succeed")
 	var reqList []storage.Request
 	assert.NoError(t, json.NewDecoder(res.Body).Decode(&reqList), "decode requests list")
 	assert.Len(t, reqList, 1, "should return filtered request")
+
+	res = sendTestRequest(t, app, http.MethodGet, "/requests?has_grant=false&label=env=filter&label=team=ops", headers, nil)
+	assert.Equal(t, http.StatusOK, res.StatusCode, "multi-label filtered list should succeed")
+	reqList = nil
+	assert.NoError(t, json.NewDecoder(res.Body).Decode(&reqList), "decode requests list with multi-label filter")
+	assert.Len(t, reqList, 1, "should return request matching all labels")
+
+	res = sendTestRequest(t, app, http.MethodGet, "/requests?has_grant=false&label=env=filter&label=team=dev", headers, nil)
+	assert.Equal(t, http.StatusOK, res.StatusCode, "multi-label filtered list should succeed")
+	reqList = nil
+	assert.NoError(t, json.NewDecoder(res.Body).Decode(&reqList), "decode requests list with mismatched label filter")
+	assert.Len(t, reqList, 0, "should exclude requests missing any label")
+}
+
+func TestRegisterHandlerListWithFilters(t *testing.T) {
+	t.Parallel()
+
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+
+	headers := map[string]string{"REMOTE_USER": "register-filter"}
+	hostPayload := map[string]any{"labels": map[string]string{"env": "filter"}}
+	res := sendTestRequest(t, app, http.MethodPost, "/hosts", headers, hostPayload)
+	assert.Equal(t, http.StatusCreated, res.StatusCode, "create host status")
+	host := decodeJSON[storage.Host](t, res)
+
+	regPayload := map[string]any{
+		"host_id": host.ID,
+		"payload": map[string]string{"name": "filtered"},
+		"labels":  map[string]string{"env": "filter", "team": "ops"},
+	}
+	res = sendTestRequest(t, app, http.MethodPost, "/registers", headers, regPayload)
+	assert.Equal(t, http.StatusCreated, res.StatusCode, "create register status")
+
+	otherPayload := map[string]any{
+		"host_id": host.ID,
+		"payload": map[string]string{"name": "other"},
+		"labels":  map[string]string{"env": "other", "team": "ops"},
+	}
+	res = sendTestRequest(t, app, http.MethodPost, "/registers", headers, otherPayload)
+	assert.Equal(t, http.StatusCreated, res.StatusCode, "create register status for non-matching label")
+
+	res = sendTestRequest(t, app, http.MethodGet, "/registers?label=env=filter", headers, nil)
+	assert.Equal(t, http.StatusOK, res.StatusCode, "filtered list should succeed")
+	var regList []storage.Register
+	assert.NoError(t, json.NewDecoder(res.Body).Decode(&regList), "decode registers list")
+	assert.Len(t, regList, 1, "should return filtered register")
+
+	res = sendTestRequest(t, app, http.MethodGet, "/registers?label=env=filter&label=team=ops", headers, nil)
+	assert.Equal(t, http.StatusOK, res.StatusCode, "multi-label filtered list should succeed")
+	regList = nil
+	assert.NoError(t, json.NewDecoder(res.Body).Decode(&regList), "decode registers list with multi-label filter")
+	assert.Len(t, regList, 1, "should return register matching all labels")
+
+	res = sendTestRequest(t, app, http.MethodGet, "/registers?label=env=filter&label=team=dev", headers, nil)
+	assert.Equal(t, http.StatusOK, res.StatusCode, "multi-label filtered list should succeed")
+	regList = nil
+	assert.NoError(t, json.NewDecoder(res.Body).Decode(&regList), "decode registers list with mismatched label filter")
+	assert.Len(t, regList, 0, "should exclude registers missing any label")
 }
 
 func TestRequestHandlerListInvalidLabelFilter(t *testing.T) {
