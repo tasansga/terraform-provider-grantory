@@ -24,6 +24,8 @@ data "grantory_requests" "operations" {
 
 ### Optional
 
+- `has_grant` (Boolean) Whether returned requests must already have a grant.
+- `host_labels` (Map of String) Labels that each returned request's host must include.
 - `labels` (Map of String) Labels that each returned request must include.
 
 ### Read-Only

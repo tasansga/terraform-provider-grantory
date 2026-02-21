@@ -526,8 +526,9 @@ type Request struct {
 
 // RequestListFilters describes optional filters for listing requests.
 type RequestListFilters struct {
-	HasGrant *bool
-	Labels   map[string]string
+	HasGrant   *bool
+	Labels     map[string]string
+	HostLabels map[string]string
 }
 
 // Register describes the persisted state for register entries.
@@ -542,7 +543,8 @@ type Register struct {
 
 // RegisterListFilters describes optional filters for listing registers.
 type RegisterListFilters struct {
-	Labels map[string]string
+	Labels     map[string]string
+	HostLabels map[string]string
 }
 
 // CreateRequest inserts a new request record into storage.
@@ -644,6 +646,12 @@ func (s *Store) ListRequests(ctx context.Context, filters *RequestListFilters) (
 			}
 			logFields["labels"] = filters.Labels
 		}
+		if len(filters.HostLabels) > 0 {
+			if logFields == nil {
+				logFields = logrus.Fields{}
+			}
+			logFields["host_labels"] = filters.HostLabels
+		}
 	}
 	s.logDBOperation("requests", "list", logFields)
 
@@ -666,6 +674,10 @@ FROM requests`)
 		}
 		for key, value := range filters.Labels {
 			where = append(where, "EXISTS (SELECT 1 FROM request_labels WHERE request_id = requests.id AND key = ? AND value = ?)")
+			args = append(args, key, value)
+		}
+		for key, value := range filters.HostLabels {
+			where = append(where, "EXISTS (SELECT 1 FROM host_labels WHERE host_id = requests.host_id AND key = ? AND value = ?)")
 			args = append(args, key, value)
 		}
 	}
@@ -881,8 +893,16 @@ func (s *Store) ListRegisters(ctx context.Context, filters *RegisterListFilters)
 	}
 
 	var logFields logrus.Fields
-	if filters != nil && len(filters.Labels) > 0 {
-		logFields = logrus.Fields{"labels": filters.Labels}
+	if filters != nil {
+		if len(filters.Labels) > 0 {
+			logFields = logrus.Fields{"labels": filters.Labels}
+		}
+		if len(filters.HostLabels) > 0 {
+			if logFields == nil {
+				logFields = logrus.Fields{}
+			}
+			logFields["host_labels"] = filters.HostLabels
+		}
 	}
 	s.logDBOperation("registers", "list", logFields)
 
@@ -896,6 +916,10 @@ FROM registers`)
 	if filters != nil {
 		for key, value := range filters.Labels {
 			where = append(where, "EXISTS (SELECT 1 FROM register_labels WHERE register_id = registers.id AND key = ? AND value = ?)")
+			args = append(args, key, value)
+		}
+		for key, value := range filters.HostLabels {
+			where = append(where, "EXISTS (SELECT 1 FROM host_labels WHERE host_id = registers.host_id AND key = ? AND value = ?)")
 			args = append(args, key, value)
 		}
 	}

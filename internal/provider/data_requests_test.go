@@ -27,8 +27,12 @@ func TestDataRequestsSource(t *testing.T) {
 
 	resource := dataRequests()
 	data := schema.TestResourceDataRaw(t, resource.Schema, map[string]any{
+		"has_grant": true,
 		"labels": map[string]any{
 			"env": "prod",
+		},
+		"host_labels": map[string]any{
+			"role": "db",
 		},
 	})
 
@@ -46,6 +50,9 @@ func TestDataRequestsSource(t *testing.T) {
 	query := handler.lastQuery()
 	labelValues := query["label"]
 	assert.Equal(t, []string{"env=prod"}, labelValues, "expected label query")
+	hostLabelValues := query["host_label"]
+	assert.Equal(t, []string{"role=db"}, hostLabelValues, "expected host_label query")
+	assert.Equal(t, "true", query.Get("has_grant"), "expected has_grant query")
 }
 
 func TestDataRequestsSourceNoFilters(t *testing.T) {

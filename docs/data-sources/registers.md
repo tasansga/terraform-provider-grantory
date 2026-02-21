@@ -15,6 +15,7 @@ Use this data source to filter Grantory records inside a Terraform/OpenTofu plan
 
 ### Optional
 
+- `host_labels` (Map of String) Labels that each returned register's host must include.
 - `labels` (Map of String) Labels that each returned register entry must include.
 
 ### Read-Only

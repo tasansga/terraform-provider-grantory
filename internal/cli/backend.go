@@ -360,6 +360,9 @@ func appendRequestListFilters(endpoint string, filters *storage.RequestListFilte
 	for key, value := range filters.Labels {
 		params.Add("label", fmt.Sprintf("%s=%s", key, value))
 	}
+	for key, value := range filters.HostLabels {
+		params.Add("host_label", fmt.Sprintf("%s=%s", key, value))
+	}
 	if encoded := params.Encode(); encoded != "" {
 		endpoint = endpoint + "?" + encoded
 	}
@@ -373,6 +376,9 @@ func appendRegisterListFilters(endpoint string, filters *storage.RegisterListFil
 	params := url.Values{}
 	for key, value := range filters.Labels {
 		params.Add("label", fmt.Sprintf("%s=%s", key, value))
+	}
+	for key, value := range filters.HostLabels {
+		params.Add("host_label", fmt.Sprintf("%s=%s", key, value))
 	}
 	if encoded := params.Encode(); encoded != "" {
 		endpoint = endpoint + "?" + encoded

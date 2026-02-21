@@ -423,7 +423,7 @@ func TestListRequestsWithFilters(t *testing.T) {
 
 	require.NoError(t, store.Migrate(ctx), "Migrate() error")
 
-	host, err := store.CreateHost(ctx, Host{})
+	host, err := store.CreateHost(ctx, Host{Labels: map[string]string{"env": "prod"}})
 	require.NoError(t, err, "CreateHost() error")
 
 	reqA, err := store.CreateRequest(ctx, Request{
@@ -438,6 +438,15 @@ func TestListRequestsWithFilters(t *testing.T) {
 	})
 	require.NoError(t, err, "CreateRequest() error")
 
+	otherHost, err := store.CreateHost(ctx, Host{Labels: map[string]string{"env": "staging"}})
+	require.NoError(t, err, "CreateHost() error")
+
+	otherReq, err := store.CreateRequest(ctx, Request{
+		HostID: otherHost.ID,
+		Labels: map[string]string{"env": "prod", "team": "ops"},
+	})
+	require.NoError(t, err, "CreateRequest() error")
+
 	_, err = store.CreateGrant(ctx, Grant{RequestID: reqA.ID})
 	require.NoError(t, err, "CreateGrant() error")
 
@@ -448,25 +457,36 @@ func TestListRequestsWithFilters(t *testing.T) {
 
 	withoutGrant, err := store.ListRequests(ctx, &RequestListFilters{HasGrant: ptrBool(false)})
 	require.NoError(t, err, "ListRequests() error")
-	assert.Len(t, withoutGrant, 1, "has_grant=false filter should return one request")
-	assert.Equal(t, reqB.ID, withoutGrant[0].ID, "has_grant=false filter should return ungranted request")
+	assert.Len(t, withoutGrant, 2, "has_grant=false filter should return ungranted requests")
+	for _, req := range withoutGrant {
+		assert.NotEqual(t, reqA.ID, req.ID, "has_grant=false filter should exclude granted request")
+	}
 
 	envFilter, err := store.ListRequests(ctx, &RequestListFilters{Labels: map[string]string{"env": "prod"}})
 	require.NoError(t, err, "ListRequests() error")
-	assert.Len(t, envFilter, 2, "env filter should return both requests")
+	assert.Len(t, envFilter, 3, "env filter should return all requests with env=prod")
 
 	multiLabel, err := store.ListRequests(ctx, &RequestListFilters{Labels: map[string]string{"env": "prod", "team": "ops"}})
 	require.NoError(t, err, "ListRequests() error")
-	assert.Len(t, multiLabel, 1, "multi-label filter should return only matching request")
-	assert.Equal(t, reqA.ID, multiLabel[0].ID, "multi-label filter should return ops request")
+	assert.Len(t, multiLabel, 2, "multi-label filter should return matching requests")
+	for _, req := range multiLabel {
+		assert.NotEqual(t, reqB.ID, req.ID, "multi-label filter should exclude mismatched team")
+	}
 
 	mismatch, err := store.ListRequests(ctx, &RequestListFilters{Labels: map[string]string{"env": "prod", "team": "missing"}})
 	require.NoError(t, err, "ListRequests() error")
 	assert.Len(t, mismatch, 0, "multi-label filter should exclude non-matching requests")
 
+	hostFilter, err := store.ListRequests(ctx, &RequestListFilters{HostLabels: map[string]string{"env": "prod"}})
+	require.NoError(t, err, "ListRequests() error")
+	assert.Len(t, hostFilter, 2, "host label filter should return requests from matching hosts")
+	for _, req := range hostFilter {
+		assert.NotEqual(t, otherReq.ID, req.ID, "host label filter should exclude non-matching hosts")
+	}
+
 	unfiltered, err := store.ListRequests(ctx, &RequestListFilters{})
 	require.NoError(t, err, "ListRequests() error")
-	assert.Len(t, unfiltered, 2, "empty filters should return all requests")
+	assert.Len(t, unfiltered, 3, "empty filters should return all requests")
 }
 
 func TestListRegistersWithFilters(t *testing.T) {
@@ -479,7 +499,7 @@ func TestListRegistersWithFilters(t *testing.T) {
 
 	require.NoError(t, store.Migrate(ctx), "Migrate() error")
 
-	host, err := store.CreateHost(ctx, Host{})
+	host, err := store.CreateHost(ctx, Host{Labels: map[string]string{"env": "prod"}})
 	require.NoError(t, err, "CreateHost() error")
 
 	regA, err := store.CreateRegister(ctx, Register{
@@ -494,23 +514,41 @@ func TestListRegistersWithFilters(t *testing.T) {
 	})
 	require.NoError(t, err, "CreateRegister() error")
 
+	otherHost, err := store.CreateHost(ctx, Host{Labels: map[string]string{"env": "staging"}})
+	require.NoError(t, err, "CreateHost() error")
+
+	otherReg, err := store.CreateRegister(ctx, Register{
+		HostID: otherHost.ID,
+		Labels: map[string]string{"env": "prod", "role": "db"},
+	})
+	require.NoError(t, err, "CreateRegister() error")
+
 	envFilter, err := store.ListRegisters(ctx, &RegisterListFilters{Labels: map[string]string{"env": "prod"}})
 	require.NoError(t, err, "ListRegisters() error")
-	assert.Len(t, envFilter, 2, "env filter should return both registers")
+	assert.Len(t, envFilter, 3, "env filter should return all registers with env=prod")
 
 	multiLabel, err := store.ListRegisters(ctx, &RegisterListFilters{Labels: map[string]string{"env": "prod", "role": "db"}})
 	require.NoError(t, err, "ListRegisters() error")
-	assert.Len(t, multiLabel, 1, "multi-label filter should return only matching register")
-	assert.Equal(t, regA.ID, multiLabel[0].ID, "multi-label filter should return db register")
+	assert.Len(t, multiLabel, 2, "multi-label filter should return matching registers")
+	for _, reg := range multiLabel {
+		assert.NotEqual(t, regB.ID, reg.ID, "multi-label filter should exclude mismatched role")
+	}
 
 	mismatch, err := store.ListRegisters(ctx, &RegisterListFilters{Labels: map[string]string{"env": "prod", "role": "missing"}})
 	require.NoError(t, err, "ListRegisters() error")
 	assert.Len(t, mismatch, 0, "multi-label filter should exclude non-matching registers")
 	assert.NotEqual(t, regB.ID, regA.ID, "sanity check register ids differ")
 
+	hostFilter, err := store.ListRegisters(ctx, &RegisterListFilters{HostLabels: map[string]string{"env": "prod"}})
+	require.NoError(t, err, "ListRegisters() error")
+	assert.Len(t, hostFilter, 2, "host label filter should return registers from matching hosts")
+	for _, reg := range hostFilter {
+		assert.NotEqual(t, otherReg.ID, reg.ID, "host label filter should exclude non-matching hosts")
+	}
+
 	unfiltered, err := store.ListRegisters(ctx, &RegisterListFilters{})
 	require.NoError(t, err, "ListRegisters() error")
-	assert.Len(t, unfiltered, 2, "empty filters should return all registers")
+	assert.Len(t, unfiltered, 3, "empty filters should return all registers")
 }
 
 func TestUpdateRequestLabelsRefreshesTimestamp(t *testing.T) {

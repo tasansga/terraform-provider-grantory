@@ -358,6 +358,9 @@ func loggableRequestFilters(filters storage.RequestListFilters) map[string]any {
 	if len(filters.Labels) > 0 {
 		entry["labels"] = filters.Labels
 	}
+	if len(filters.HostLabels) > 0 {
+		entry["host_labels"] = filters.HostLabels
+	}
 	if len(entry) == 0 {
 		return nil
 	}
@@ -382,18 +385,29 @@ func parseRequestListFilters(c *fiber.Ctx) (storage.RequestListFilters, error) {
 	if filters.Labels, err = parseLabelFilters(query); err != nil {
 		return storage.RequestListFilters{}, err
 	}
+	if filters.HostLabels, err = parseHostLabelFilters(query); err != nil {
+		return storage.RequestListFilters{}, err
+	}
 
 	return filters, nil
 }
 
 func parseLabelFilters(query url.Values) (map[string]string, error) {
-	if labelValues, ok := query["label"]; ok {
+	return parseLabelFiltersWithKey(query, "label")
+}
+
+func parseHostLabelFilters(query url.Values) (map[string]string, error) {
+	return parseLabelFiltersWithKey(query, "host_label")
+}
+
+func parseLabelFiltersWithKey(query url.Values, keyName string) (map[string]string, error) {
+	if labelValues, ok := query[keyName]; ok {
 		if len(labelValues) > 0 {
 			labels := make(map[string]string, len(labelValues))
 			for _, raw := range labelValues {
 				key, value, found := strings.Cut(raw, "=")
 				if !found || key == "" {
-					return nil, fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("invalid label filter %q", raw))
+					return nil, fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("invalid %s filter %q", keyName, raw))
 				}
 				labels[key] = value
 			}
@@ -402,7 +416,6 @@ func parseLabelFilters(query url.Values) (map[string]string, error) {
 	}
 	return nil, nil
 }
-
 func applyRequestFilters(requests []storage.Request, filters storage.RequestListFilters) []storage.Request {
 	var filtered []storage.Request
 	for _, req := range requests {
@@ -686,6 +699,9 @@ func parseRegisterListFilters(c *fiber.Ctx) (storage.RegisterListFilters, error)
 	}
 	filters := storage.RegisterListFilters{}
 	if filters.Labels, err = parseLabelFilters(query); err != nil {
+		return storage.RegisterListFilters{}, err
+	}
+	if filters.HostLabels, err = parseHostLabelFilters(query); err != nil {
 		return storage.RegisterListFilters{}, err
 	}
 	return filters, nil

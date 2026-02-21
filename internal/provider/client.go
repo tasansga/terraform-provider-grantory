@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -64,11 +65,14 @@ type apiGrantCreatePayload struct {
 }
 
 type requestListOptions struct {
-	Labels map[string]string
+	Labels     map[string]string
+	HostLabels map[string]string
+	HasGrant   *bool
 }
 
 type registerListOptions struct {
-	Labels map[string]string
+	Labels     map[string]string
+	HostLabels map[string]string
 }
 
 type apiRequestUpdatePayload struct {
@@ -148,6 +152,12 @@ func (c *grantoryClient) listRequests(ctx context.Context, opts requestListOptio
 	for key, value := range opts.Labels {
 		params.Add("label", fmt.Sprintf("%s=%s", key, value))
 	}
+	for key, value := range opts.HostLabels {
+		params.Add("host_label", fmt.Sprintf("%s=%s", key, value))
+	}
+	if opts.HasGrant != nil {
+		params.Set("has_grant", strconv.FormatBool(*opts.HasGrant))
+	}
 
 	endpoint := "/requests"
 	if encoded := params.Encode(); encoded != "" {
@@ -181,6 +191,9 @@ func (c *grantoryClient) listRegisters(ctx context.Context, opts registerListOpt
 	params := url.Values{}
 	for key, value := range opts.Labels {
 		params.Add("label", fmt.Sprintf("%s=%s", key, value))
+	}
+	for key, value := range opts.HostLabels {
+		params.Add("host_label", fmt.Sprintf("%s=%s", key, value))
 	}
 
 	endpoint := "/registers"

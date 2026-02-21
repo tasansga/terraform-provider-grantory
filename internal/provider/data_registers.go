@@ -18,6 +18,14 @@ func dataRegisters() *schema.Resource {
 					Type: schema.TypeString,
 				},
 			},
+			"host_labels": {
+				Type:        schema.TypeMap,
+				Optional:    true,
+				Description: "Labels that each returned register's host must include.",
+				Elem: &schema.Schema{
+					Type: schema.TypeString,
+				},
+			},
 			"registers": {
 				Type:        schema.TypeList,
 				Computed:    true,
@@ -43,7 +51,8 @@ func dataRegisters() *schema.Resource {
 func dataRegistersRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	client := meta.(*grantoryClient)
 	opts := registerListOptions{
-		Labels: expandStringMap(extractMap(d.Get("labels"))),
+		Labels:     expandStringMap(extractMap(d.Get("labels"))),
+		HostLabels: expandStringMap(extractMap(d.Get("host_labels"))),
 	}
 
 	registers, err := client.listRegisters(ctx, opts)
@@ -64,8 +73,9 @@ func dataRegistersRead(ctx context.Context, d *schema.ResourceData, meta any) di
 		return diag.FromErr(err)
 	}
 	id, err := hashAsJSON(map[string]any{
-		"labels":    opts.Labels,
-		"registers": values,
+		"labels":      opts.Labels,
+		"host_labels": opts.HostLabels,
+		"registers":   values,
 	})
 	if err != nil {
 		return diag.FromErr(err)

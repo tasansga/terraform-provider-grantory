@@ -30,6 +30,9 @@ func TestDataRegistersSource(t *testing.T) {
 		"labels": map[string]any{
 			"env": "prod",
 		},
+		"host_labels": map[string]any{
+			"role": "db",
+		},
 	})
 
 	assert.False(t, resource.ReadContext(context.Background(), data, client).HasError(), "unexpected diagnostics from registers data read")
@@ -46,6 +49,8 @@ func TestDataRegistersSource(t *testing.T) {
 	query := handler.lastQuery()
 	labelValues := query["label"]
 	assert.Equal(t, []string{"env=prod"}, labelValues, "expected label query")
+	hostLabelValues := query["host_label"]
+	assert.Equal(t, []string{"role=db"}, hostLabelValues, "expected host_label query")
 }
 
 func newRegistersDataSourceTestHandler() *registersDataSourceTestHandler {

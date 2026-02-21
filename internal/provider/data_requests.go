@@ -10,10 +10,23 @@ import (
 func dataRequests() *schema.Resource {
 	return &schema.Resource{
 		Schema: map[string]*schema.Schema{
+			"has_grant": {
+				Type:        schema.TypeBool,
+				Optional:    true,
+				Description: "Whether returned requests must already have a grant.",
+			},
 			"labels": {
 				Type:        schema.TypeMap,
 				Optional:    true,
 				Description: "Labels that each returned request must include.",
+				Elem: &schema.Schema{
+					Type: schema.TypeString,
+				},
+			},
+			"host_labels": {
+				Type:        schema.TypeMap,
+				Optional:    true,
+				Description: "Labels that each returned request's host must include.",
 				Elem: &schema.Schema{
 					Type: schema.TypeString,
 				},
@@ -47,7 +60,12 @@ func dataRequests() *schema.Resource {
 func dataRequestsRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	client := meta.(*grantoryClient)
 	opts := requestListOptions{
-		Labels: expandStringMap(extractMap(d.Get("labels"))),
+		Labels:     expandStringMap(extractMap(d.Get("labels"))),
+		HostLabels: expandStringMap(extractMap(d.Get("host_labels"))),
+	}
+	if raw, ok := d.GetOk("has_grant"); ok {
+		value := raw.(bool)
+		opts.HasGrant = &value
 	}
 
 	requests, err := client.listRequests(ctx, opts)
@@ -75,8 +93,9 @@ func dataRequestsRead(ctx context.Context, d *schema.ResourceData, meta any) dia
 		return diag.FromErr(err)
 	}
 	id, err := hashAsJSON(map[string]any{
-		"labels":   opts.Labels,
-		"requests": hashEntries,
+		"labels":      opts.Labels,
+		"host_labels": opts.HostLabels,
+		"requests":    hashEntries,
 	})
 	if err != nil {
 		return diag.FromErr(err)
