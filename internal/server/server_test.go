@@ -153,7 +153,7 @@ func TestValidateTLSFilesSuccess(t *testing.T) {
 func TestNamespaceMiddlewareStoresStore(t *testing.T) {
 	t.Parallel()
 
-	cfg := config.Config{DataDir: t.TempDir()}
+	cfg := config.Config{Database: t.TempDir()}
 	srv, err := New(context.Background(), cfg)
 	assert.NoError(t, err, "New() should succeed")
 	defer func() {
@@ -184,7 +184,7 @@ func TestHandleReadinessTLSFailure(t *testing.T) {
 	assert.NoError(t, os.WriteFile(keyPath, []byte("key"), 0o600))
 
 	cfg := config.Config{
-		DataDir:  t.TempDir(),
+		Database:  t.TempDir(),
 		TLSCert:  filepath.Join(dir, "missing.crt"),
 		TLSKey:   keyPath,
 		BindAddr: "127.0.0.1:0",
@@ -214,7 +214,7 @@ func TestHandleReadinessTLSSuccess(t *testing.T) {
 	assert.NoError(t, os.WriteFile(keyPath, []byte("key"), 0o600))
 
 	cfg := config.Config{
-		DataDir:  t.TempDir(),
+		Database:  t.TempDir(),
 		TLSCert:  certPath,
 		TLSKey:   keyPath,
 		BindAddr: "127.0.0.1:0",
@@ -237,7 +237,7 @@ func TestHandleReadinessTLSSuccess(t *testing.T) {
 func TestHandleMetricsCountError(t *testing.T) {
 	t.Parallel()
 
-	cfg := config.Config{DataDir: t.TempDir()}
+	cfg := config.Config{Database: t.TempDir()}
 	srv, err := New(context.Background(), cfg)
 	assert.NoError(t, err, "New() should succeed")
 	defer func() {

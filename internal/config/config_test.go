@@ -15,7 +15,7 @@ func TestFromFlagSetDefaults(t *testing.T) {
 	cfg, err := FromFlagSet(fs)
 	assert.NoError(t, err, "unexpected error from FromFlagSet")
 
-	assert.Equal(t, DefaultDataDir, cfg.DataDir, "default data dir")
+	assert.Equal(t, DefaultDataDir, cfg.Database, "default database")
 	assert.Equal(t, DefaultBindAddr, cfg.BindAddr, "default bind addr")
 	assert.Equal(t, DefaultTLSBind, cfg.TLSBind, "default tls bind addr")
 	assert.Equal(t, "", cfg.TLSCert, "default tls cert")
@@ -24,7 +24,7 @@ func TestFromFlagSetDefaults(t *testing.T) {
 }
 
 func TestFromFlagSetEnvOverrides(t *testing.T) {
-	t.Setenv(EnvDataDir, "env-data")
+	t.Setenv(EnvDatabase, "postgres://env")
 	t.Setenv(EnvBindAddr, "127.0.0.1:9000")
 	t.Setenv(EnvTLSBind, "127.0.0.1:9443")
 	t.Setenv(EnvTLSCert, "/tmp/cert.pem")
@@ -37,7 +37,7 @@ func TestFromFlagSetEnvOverrides(t *testing.T) {
 	cfg, err := FromFlagSet(fs)
 	assert.NoError(t, err, "unexpected error from FromFlagSet")
 
-	assert.Equal(t, "env-data", cfg.DataDir, "data dir from env")
+	assert.Equal(t, "postgres://env", cfg.Database, "database from env")
 	assert.Equal(t, "127.0.0.1:9000", cfg.BindAddr, "bind addr from env")
 	assert.Equal(t, "127.0.0.1:9443", cfg.TLSBind, "tls bind addr from env")
 	assert.Equal(t, "/tmp/cert.pem", cfg.TLSCert, "tls cert from env")
@@ -46,13 +46,13 @@ func TestFromFlagSetEnvOverrides(t *testing.T) {
 }
 
 func TestFromFlagSetFlagOverridesEnv(t *testing.T) {
-	t.Setenv(EnvDataDir, "env-data")
+	t.Setenv(EnvDatabase, "postgres://env")
 	t.Setenv(EnvBindAddr, "127.0.0.1:9000")
 	t.Setenv(EnvLogLevel, "debug")
 
 	fs := newTestFlagSet(t)
 	args := []string{
-		"--data-dir=flag-data",
+		"--database=postgres://flag",
 		"--http-bind=0.0.0.0:8081",
 		"--https-bind=0.0.0.0:8443",
 		"--tls-cert=/etc/server.crt",
@@ -64,7 +64,7 @@ func TestFromFlagSetFlagOverridesEnv(t *testing.T) {
 	cfg, err := FromFlagSet(fs)
 	assert.NoError(t, err, "unexpected error from FromFlagSet")
 
-	assert.Equal(t, "flag-data", cfg.DataDir, "data dir from flag")
+	assert.Equal(t, "postgres://flag", cfg.Database, "database from flag")
 	assert.Equal(t, "0.0.0.0:8081", cfg.BindAddr, "bind addr from flag")
 	assert.Equal(t, "0.0.0.0:8443", cfg.TLSBind, "tls bind addr from flag")
 	assert.Equal(t, "/etc/server.crt", cfg.TLSCert, "tls cert from flag")

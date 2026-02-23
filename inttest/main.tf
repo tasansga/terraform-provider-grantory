@@ -4,6 +4,10 @@ terraform {
       source  = "tasansga/grantory"
       version = "0.1.0-test"
     }
+    http = {
+      source  = "hashicorp/http"
+      version = "3.4.2"
+    }
   }
 }
 
@@ -14,6 +18,22 @@ variable "server_url" {
 
 provider "grantory" {
   server = var.server_url
+}
+
+data "http" "readyz" {
+  url = "${var.server_url}/readyz"
+}
+
+locals {
+  readyz = jsondecode(data.http.readyz.response_body)
+}
+
+output "readyz_backend" {
+  value = local.readyz.backend
+}
+
+output "readyz_status" {
+  value = local.readyz.status
 }
 
 resource "grantory_host" "with_labels" {
@@ -95,22 +115,36 @@ output "grantory_grant_without_payload" {
   value = grantory_grant.without_payload
 }
 
-data "grantory_grants" "grants" {}
+data "grantory_grants" "grants" {
+  depends_on = [
+    grantory_grant.with_payload,
+    grantory_grant.without_payload,
+  ]
+}
 
 output "data_grantory_grants" {
   value = data.grantory_grants.grants
 }
 
 data "grantory_grant" "details" {
-  for_each = { for g in data.grantory_grants.grants.grants : g.grant_id => g }
-  grant_id = each.key
+  count    = 2
+  grant_id = [grantory_grant.with_payload.id, grantory_grant.without_payload.id][count.index]
+  depends_on = [
+    grantory_grant.with_payload,
+    grantory_grant.without_payload,
+  ]
 }
 
 output "data_grantory_grant_details" {
   value = data.grantory_grant.details
 }
 
-data "grantory_hosts" "hosts" {}
+data "grantory_hosts" "hosts" {
+  depends_on = [
+    grantory_host.with_labels,
+    grantory_host.without_labels,
+  ]
+}
 
 output "data_grantory_hosts" {
   value = data.grantory_hosts.hosts
@@ -120,21 +154,34 @@ data "grantory_registers" "with_labels" {
   labels = {
     pipeline = "inttest"
   }
+  depends_on = [
+    grantory_register.with_labels_payload,
+    grantory_register.without_labels_payload,
+  ]
 }
 
 output "data_grantory_registers_with_labels" {
   value = data.grantory_registers.with_labels.registers
 }
 
-data "grantory_registers" "all" {}
+data "grantory_registers" "all" {
+  depends_on = [
+    grantory_register.with_labels_payload,
+    grantory_register.without_labels_payload,
+  ]
+}
 
 output "data_grantory_registers_all" {
   value = data.grantory_registers.all.registers
 }
 
 data "grantory_register" "details" {
-  for_each    = { for reg in data.grantory_registers.all.registers : reg.register_id => reg }
-  register_id = each.key
+  count       = 2
+  register_id = [grantory_register.with_labels_payload.id, grantory_register.without_labels_payload.id][count.index]
+  depends_on = [
+    grantory_register.with_labels_payload,
+    grantory_register.without_labels_payload,
+  ]
 }
 
 output "data_grantory_register_details" {
@@ -145,21 +192,40 @@ data "grantory_requests" "with_labels" {
   labels = {
     pipeline = "inttest"
   }
+  depends_on = [
+    grantory_request.with_labels_payload,
+    grantory_request.without_labels_payload,
+    grantory_grant.with_payload,
+    grantory_grant.without_payload,
+  ]
 }
 
 output "data_grantory_requests_with_labels" {
   value = data.grantory_requests.with_labels.requests
 }
 
-data "grantory_requests" "all" {}
+data "grantory_requests" "all" {
+  depends_on = [
+    grantory_request.with_labels_payload,
+    grantory_request.without_labels_payload,
+    grantory_grant.with_payload,
+    grantory_grant.without_payload,
+  ]
+}
 
 output "data_grantory_requests_all" {
   value = data.grantory_requests.all.requests
 }
 
 data "grantory_request" "details" {
-  for_each   = { for req in data.grantory_requests.all.requests : req.request_id => req }
-  request_id = each.key
+  count      = 2
+  request_id = [grantory_request.with_labels_payload.id, grantory_request.without_labels_payload.id][count.index]
+  depends_on = [
+    grantory_request.with_labels_payload,
+    grantory_request.without_labels_payload,
+    grantory_grant.with_payload,
+    grantory_grant.without_payload,
+  ]
 }
 
 output "data_grantory_request_details" {

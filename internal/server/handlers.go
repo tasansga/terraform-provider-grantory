@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -445,7 +444,7 @@ func matchesLabelFilters(labels map[string]string, filters map[string]string) bo
 	return true
 }
 
-func buildRequestResponse(ctx context.Context, store *storage.Store, req storage.Request) (requestResponse, error) {
+func buildRequestResponse(ctx context.Context, store storage.Store, req storage.Request) (requestResponse, error) {
 	resp := requestResponse{Request: req}
 	grant, found, err := store.GetLatestGrantForRequest(ctx, req.ID)
 	if err != nil {
@@ -454,34 +453,15 @@ func buildRequestResponse(ctx context.Context, store *storage.Store, req storage
 	if !found {
 		return resp, nil
 	}
-	payload, err := decodeGrantPayload(grant.Payload)
-	if err != nil {
-		return resp, fmt.Errorf("decode grant payload for request %s: %w", req.ID, err)
-	}
 	grantPayload := map[string]any{
 		"grant_id":   grant.ID,
 		"created_at": grant.CreatedAt.Format(time.RFC3339Nano),
 		"updated_at": grant.UpdatedAt.Format(time.RFC3339Nano),
 	}
-	if payload != nil {
-		grantPayload["payload"] = payload
-	} else {
-		grantPayload["payload"] = nil
-	}
+	grantPayload["payload"] = grant.Payload
 	resp.Grant = grantPayload
 	resp.GrantID = grant.ID
 	return resp, nil
-}
-
-func decodeGrantPayload(payload []byte) (map[string]any, error) {
-	if len(payload) == 0 {
-		return nil, nil
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(payload, &decoded); err != nil {
-		return nil, err
-	}
-	return decoded, nil
 }
 
 func (h requestHandler) update(c *fiber.Ctx) error {
@@ -730,8 +710,8 @@ func registerGrantRoutes(app fiber.Router) {
 type grantHandler struct{}
 
 type grantCreatePayload struct {
-	RequestID string          `json:"request_id"`
-	Payload   json.RawMessage `json:"payload"`
+	RequestID string         `json:"request_id"`
+	Payload   map[string]any `json:"payload"`
 }
 
 func (h grantHandler) create(c *fiber.Ctx) error {
@@ -831,7 +811,7 @@ func (h grantHandler) delete(c *fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func resolveNamespaceStore(c *fiber.Ctx) (*storage.Store, string, error) {
+func resolveNamespaceStore(c *fiber.Ctx) (storage.Store, string, error) {
 	namespace := namespaceFromCtx(c)
 	store := storeFromLocals(c.Locals(storeCtxKey))
 	if store == nil {
@@ -841,9 +821,9 @@ func resolveNamespaceStore(c *fiber.Ctx) (*storage.Store, string, error) {
 	return store, namespace, nil
 }
 
-func storeFromLocals(value interface{}) *storage.Store {
+func storeFromLocals(value interface{}) storage.Store {
 	switch v := value.(type) {
-	case *storage.Store:
+	case storage.Store:
 		return v
 	case localStore:
 		return v.store

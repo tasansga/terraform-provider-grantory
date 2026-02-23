@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	EnvDataDir  = "DATA_DIR"
+	EnvDatabase = "DATABASE"
 	EnvBindAddr = "HTTP_BIND"
 	EnvTLSBind  = "HTTPS_BIND"
 	EnvTLSCert  = "TLS_CERT"
@@ -27,7 +27,7 @@ const DefaultLogLevel = logrus.InfoLevel
 
 // Config holds the runtime configuration for the Grantory server.
 type Config struct {
-	DataDir  string
+	Database string
 	BindAddr string
 	TLSBind  string
 	TLSCert  string
@@ -37,7 +37,7 @@ type Config struct {
 
 // RegisterFlags adds command-line flags to the provided FlagSet.
 func RegisterFlags(fs *pflag.FlagSet) {
-	fs.String("data-dir", "", "path to the directory that contains namespace databases (env: "+EnvDataDir+")")
+	fs.String("database", "", "database connection string or sqlite data directory (env: "+EnvDatabase+")")
 	fs.String("http-bind", "", "interface:port for the HTTP listener (env: "+EnvBindAddr+"); set to 'off' to disable")
 	fs.String("https-bind", "", "interface:port for the HTTPS listener when TLS is enabled (env: "+EnvTLSBind+"); set to 'off' to disable")
 	fs.String("tls-cert", "", "path to the TLS certificate file (env: "+EnvTLSCert+")")
@@ -47,7 +47,7 @@ func RegisterFlags(fs *pflag.FlagSet) {
 
 // FromFlagSet builds a Config from the flag set and environment variables.
 func FromFlagSet(fs *pflag.FlagSet) (Config, error) {
-	dataDir := stringValue(fs, "data-dir", EnvDataDir, DefaultDataDir)
+	database := stringValue(fs, "database", EnvDatabase, DefaultDataDir)
 	bind := stringValue(fs, "http-bind", EnvBindAddr, DefaultBindAddr)
 	tlsBind := stringValue(fs, "https-bind", EnvTLSBind, DefaultTLSBind)
 	tlsCert := stringValue(fs, "tls-cert", EnvTLSCert, "")
@@ -60,7 +60,7 @@ func FromFlagSet(fs *pflag.FlagSet) (Config, error) {
 	}
 
 	return Config{
-		DataDir:  dataDir,
+		Database: database,
 		BindAddr: bind,
 		TLSBind:  tlsBind,
 		TLSCert:  tlsCert,

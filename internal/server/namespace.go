@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 
 	"github.com/sirupsen/logrus"
@@ -44,29 +45,31 @@ func ValidateNamespaceName(value string) error {
 
 // NamespaceStore manages sqlite stores split by namespace.
 type NamespaceStore struct {
-	ctx     context.Context
-	dataDir string
-	mu      sync.Mutex
-	stores  map[string]*storage.Store
+	ctx      context.Context
+	database string
+	mu       sync.Mutex
+	stores   map[string]storage.Store
 }
 
-// NewNamespaceStore creates a manager for the provided data directory.
-func NewNamespaceStore(ctx context.Context, dataDir string) (*NamespaceStore, error) {
-	if dataDir == "" {
-		dataDir = config.DefaultDataDir
+// NewNamespaceStore creates a manager for the provided database configuration.
+func NewNamespaceStore(ctx context.Context, database string) (*NamespaceStore, error) {
+	if strings.TrimSpace(database) == "" {
+		database = config.DefaultDataDir
 	}
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		return nil, fmt.Errorf("create data dir: %w", err)
+	if !storage.IsPostgresDSN(database) {
+		if err := os.MkdirAll(database, 0o755); err != nil {
+			return nil, fmt.Errorf("create sqlite directory: %w", err)
+		}
 	}
 	return &NamespaceStore{
-		ctx:     ctx,
-		dataDir: dataDir,
-		stores:  make(map[string]*storage.Store),
+		ctx:      ctx,
+		database: database,
+		stores:   make(map[string]storage.Store),
 	}, nil
 }
 
 // StoreFor returns the sqlite store for namespace, creating it if needed.
-func (n *NamespaceStore) StoreFor(ctx context.Context, namespace string) (*storage.Store, error) {
+func (n *NamespaceStore) StoreFor(ctx context.Context, namespace string) (storage.Store, error) {
 	if err := ValidateNamespaceName(namespace); err != nil {
 		return nil, err
 	}
@@ -75,8 +78,14 @@ func (n *NamespaceStore) StoreFor(ctx context.Context, namespace string) (*stora
 		return saved, nil
 	}
 
-	path := NamespaceDBPath(n.dataDir, namespace)
-	store, err := storage.New(ctx, path)
+	var store storage.Store
+	var err error
+	if storage.IsPostgresDSN(n.database) {
+		store, err = storage.NewPostgres(ctx, n.database)
+	} else {
+		path := NamespaceDBPath(n.database, namespace)
+		store, err = storage.New(ctx, path)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("open namespace store: %w", err)
 	}
@@ -92,13 +101,13 @@ func (n *NamespaceStore) StoreFor(ctx context.Context, namespace string) (*stora
 	return n.store(namespace, store), nil
 }
 
-func (n *NamespaceStore) get(namespace string) *storage.Store {
+func (n *NamespaceStore) get(namespace string) storage.Store {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	return n.stores[namespace]
 }
 
-func (n *NamespaceStore) store(namespace string, store *storage.Store) *storage.Store {
+func (n *NamespaceStore) store(namespace string, store storage.Store) storage.Store {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if existing := n.stores[namespace]; existing != nil {
@@ -114,7 +123,7 @@ func (n *NamespaceStore) store(namespace string, store *storage.Store) *storage.
 // Close closes all tracked sqlite stores.
 func (n *NamespaceStore) Close() error {
 	n.mu.Lock()
-	stores := make([]*storage.Store, 0, len(n.stores))
+	stores := make([]storage.Store, 0, len(n.stores))
 	for _, s := range n.stores {
 		stores = append(stores, s)
 	}

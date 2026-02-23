@@ -1,10 +1,7 @@
 package provider
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
@@ -102,31 +99,8 @@ func resourceGrantRefresh(ctx context.Context, d *schema.ResourceData, grant api
 	if err := d.Set("request_id", grant.RequestID); err != nil {
 		diags = append(diags, diag.FromErr(err)...)
 	}
-	payloadBytes := sanitizeGrantPayload(grant.Payload)
-	if len(payloadBytes) != 0 {
-		if err := d.Set("payload", string(payloadBytes)); err != nil {
-			diags = append(diags, diag.FromErr(err)...)
-		}
+	if additional := setJSONStringAttribute(d, "payload", grant.Payload); additional != nil {
+		diags = append(diags, additional...)
 	}
 	return diags
-}
-
-func sanitizeGrantPayload(payload []byte) []byte {
-	payload = bytes.TrimSpace(payload)
-	if len(payload) == 0 || bytes.Equal(payload, []byte("null")) {
-		return nil
-	}
-
-	if payload[0] == '"' {
-		var raw string
-		if err := json.Unmarshal(payload, &raw); err != nil {
-			return nil
-		}
-		if decoded, err := base64.StdEncoding.DecodeString(raw); err == nil {
-			return decoded
-		}
-		return []byte(raw)
-	}
-
-	return payload
 }

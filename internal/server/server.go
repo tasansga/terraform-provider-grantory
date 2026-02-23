@@ -21,7 +21,7 @@ const (
 )
 
 type localStore struct {
-	store *storage.Store
+	store storage.Store
 }
 
 type Server struct {
@@ -30,7 +30,7 @@ type Server struct {
 }
 
 func New(ctx context.Context, cfg config.Config) (*Server, error) {
-	nsStore, err := NewNamespaceStore(ctx, cfg.DataDir)
+	nsStore, err := NewNamespaceStore(ctx, cfg.Database)
 	if err != nil {
 		return nil, err
 	}
@@ -175,7 +175,18 @@ func (s *Server) handleReadiness(c *fiber.Ctx) error {
 		return fiber.NewError(http.StatusServiceUnavailable, "database not ready")
 	}
 
-	return c.Status(http.StatusOK).JSON(map[string]string{"status": "ok"})
+	backend := "sqlite"
+	dbInfo := s.cfg.Database
+	if storage.IsPostgresDSN(s.cfg.Database) {
+		backend = "postgres"
+		dbInfo = "redacted"
+	}
+
+	return c.Status(http.StatusOK).JSON(map[string]string{
+		"status":   "ok",
+		"backend":  backend,
+		"database": dbInfo,
+	})
 }
 
 func validateTLSFiles(cfg config.Config) error {

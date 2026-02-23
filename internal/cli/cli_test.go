@@ -17,7 +17,7 @@ import (
 	"github.com/tasansga/terraform-provider-grantory/internal/storage"
 )
 
-func closeStore(t *testing.T, store *storage.Store) {
+func closeStore(t *testing.T, store storage.Store) {
 	t.Helper()
 	if err := store.Close(); err != nil {
 		t.Errorf("close store: %v", err)
@@ -27,7 +27,7 @@ func closeStore(t *testing.T, store *storage.Store) {
 func TestListHostsCommand(t *testing.T) {
 	t.Parallel()
 
-	dataDir := prepareTestDataDir(t, func(ctx context.Context, store *storage.Store) {
+	dataDir := prepareTestDataDir(t, func(ctx context.Context, store storage.Store) {
 		_, err := store.CreateHost(ctx, storage.Host{
 			ID: "cli-host",
 		})
@@ -35,7 +35,7 @@ func TestListHostsCommand(t *testing.T) {
 	})
 
 	cmd := NewRootCommand()
-	cmd.SetArgs([]string{"--data-dir", dataDir, "list", "hosts"})
+	cmd.SetArgs([]string{"--database", dataDir, "list", "hosts"})
 	err := cmd.Execute()
 	assert.NoError(t, err, "list hosts command failed")
 }
@@ -44,7 +44,7 @@ func TestMutateHostLabelsCommand(t *testing.T) {
 	t.Parallel()
 
 	var hostID string
-	dataDir := prepareTestDataDir(t, func(ctx context.Context, store *storage.Store) {
+	dataDir := prepareTestDataDir(t, func(ctx context.Context, store storage.Store) {
 		created, err := store.CreateHost(ctx, storage.Host{
 			Labels: map[string]string{
 				"env": "test",
@@ -56,7 +56,7 @@ func TestMutateHostLabelsCommand(t *testing.T) {
 
 	cmd := NewRootCommand()
 	cmd.SetArgs([]string{
-		"--data-dir", dataDir,
+		"--database", dataDir,
 		"mutate", "hosts", hostID,
 		"--labels", `{"env":"prod"}`,
 	})
@@ -75,7 +75,7 @@ func TestMutateHostLabelsFromFile(t *testing.T) {
 	t.Parallel()
 
 	var hostID string
-	dataDir := prepareTestDataDir(t, func(ctx context.Context, store *storage.Store) {
+	dataDir := prepareTestDataDir(t, func(ctx context.Context, store storage.Store) {
 		created, err := store.CreateHost(ctx, storage.Host{
 			Labels: map[string]string{
 				"env": "initial",
@@ -90,7 +90,7 @@ func TestMutateHostLabelsFromFile(t *testing.T) {
 
 	cmd := NewRootCommand()
 	cmd.SetArgs([]string{
-		"--data-dir", dataDir,
+		"--database", dataDir,
 		"mutate", "hosts", hostID,
 		"--labels-file", labelsPath,
 	})
@@ -109,7 +109,7 @@ func TestMutateHostLabelsFromStdin(t *testing.T) {
 	t.Parallel()
 
 	var hostID string
-	dataDir := prepareTestDataDir(t, func(ctx context.Context, store *storage.Store) {
+	dataDir := prepareTestDataDir(t, func(ctx context.Context, store storage.Store) {
 		created, err := store.CreateHost(ctx, storage.Host{
 			Labels: map[string]string{
 				"env": "start",
@@ -122,7 +122,7 @@ func TestMutateHostLabelsFromStdin(t *testing.T) {
 	cmd := NewRootCommand()
 	cmd.SetIn(strings.NewReader(`{"env":"stdin"}`))
 	cmd.SetArgs([]string{
-		"--data-dir", dataDir,
+		"--database", dataDir,
 		"mutate", "hosts", hostID,
 		"--labels-file", "-",
 	})
@@ -141,7 +141,7 @@ func TestMutateRequestLabelsCommand(t *testing.T) {
 	t.Parallel()
 
 	var requestID string
-	dataDir := prepareTestDataDir(t, func(ctx context.Context, store *storage.Store) {
+	dataDir := prepareTestDataDir(t, func(ctx context.Context, store storage.Store) {
 		host, err := store.CreateHost(ctx, storage.Host{})
 		assert.NoError(t, err, "failed to create host for request CLI test")
 
@@ -157,7 +157,7 @@ func TestMutateRequestLabelsCommand(t *testing.T) {
 
 	cmd := NewRootCommand()
 	cmd.SetArgs([]string{
-		"--data-dir", dataDir,
+		"--database", dataDir,
 		"mutate", "requests", requestID,
 		"--labels", `{"env":"prod"}`,
 	})
@@ -176,7 +176,7 @@ func TestMutateRegisterLabelsCommand(t *testing.T) {
 	t.Parallel()
 
 	var registerID string
-	dataDir := prepareTestDataDir(t, func(ctx context.Context, store *storage.Store) {
+	dataDir := prepareTestDataDir(t, func(ctx context.Context, store storage.Store) {
 		host, err := store.CreateHost(ctx, storage.Host{})
 		assert.NoError(t, err, "failed to create host for register CLI test")
 
@@ -192,7 +192,7 @@ func TestMutateRegisterLabelsCommand(t *testing.T) {
 
 	cmd := NewRootCommand()
 	cmd.SetArgs([]string{
-		"--data-dir", dataDir,
+		"--database", dataDir,
 		"mutate", "registers", registerID,
 		"--labels", `{"env":"prod"}`,
 	})
@@ -238,7 +238,7 @@ func TestNamespaceFlagTargetsNamespace(t *testing.T) {
 	}
 
 	cmd := NewRootCommand()
-	cmd.SetArgs([]string{"--data-dir", dataDir, "--namespace", "custom-ns", "delete", "hosts", host.ID})
+	cmd.SetArgs([]string{"--database", dataDir, "--namespace", "custom-ns", "delete", "hosts", host.ID})
 	assert.NoError(t, cmd.Execute(), "delete host command failed")
 
 	verifyStore, err := storage.New(ctx, server.NamespaceDBPath(dataDir, "custom-ns"))
@@ -482,7 +482,7 @@ func TestInspectHostsCommand(t *testing.T) {
 	t.Parallel()
 
 	var hostID string
-	dataDir := prepareTestDataDir(t, func(ctx context.Context, store *storage.Store) {
+	dataDir := prepareTestDataDir(t, func(ctx context.Context, store storage.Store) {
 		host, err := store.CreateHost(ctx, storage.Host{})
 		assert.NoError(t, err, "create host failed")
 		hostID = host.ID
@@ -490,7 +490,7 @@ func TestInspectHostsCommand(t *testing.T) {
 
 	cmd := NewRootCommand()
 	cmd.SetOut(io.Discard)
-	cmd.SetArgs([]string{"--data-dir", dataDir, "inspect", "hosts", hostID})
+	cmd.SetArgs([]string{"--database", dataDir, "inspect", "hosts", hostID})
 	assert.NoError(t, cmd.Execute(), "inspect hosts command should succeed")
 }
 
@@ -498,7 +498,7 @@ func TestDeleteHostsCommand(t *testing.T) {
 	t.Parallel()
 
 	var hostID string
-	dataDir := prepareTestDataDir(t, func(ctx context.Context, store *storage.Store) {
+	dataDir := prepareTestDataDir(t, func(ctx context.Context, store storage.Store) {
 		host, err := store.CreateHost(ctx, storage.Host{})
 		assert.NoError(t, err, "create host failed")
 		hostID = host.ID
@@ -506,7 +506,7 @@ func TestDeleteHostsCommand(t *testing.T) {
 
 	cmd := NewRootCommand()
 	cmd.SetOut(io.Discard)
-	cmd.SetArgs([]string{"--data-dir", dataDir, "delete", "hosts", hostID})
+	cmd.SetArgs([]string{"--database", dataDir, "delete", "hosts", hostID})
 	assert.NoError(t, cmd.Execute(), "delete hosts command should succeed")
 
 	store := openStoreForTesting(t, dataDir)
@@ -519,7 +519,7 @@ func TestMutateHostsCommand(t *testing.T) {
 	t.Parallel()
 
 	var hostID string
-	dataDir := prepareTestDataDir(t, func(ctx context.Context, store *storage.Store) {
+	dataDir := prepareTestDataDir(t, func(ctx context.Context, store storage.Store) {
 		host, err := store.CreateHost(ctx, storage.Host{})
 		assert.NoError(t, err, "create host failed")
 		hostID = host.ID
@@ -528,7 +528,7 @@ func TestMutateHostsCommand(t *testing.T) {
 	cmd := NewRootCommand()
 	cmd.SetOut(io.Discard)
 	cmd.SetArgs([]string{
-		"--data-dir", dataDir,
+		"--database", dataDir,
 		"mutate", "hosts", hostID,
 		"--labels", `{"env":"updated"}`,
 	})
@@ -572,7 +572,7 @@ func TestDirectBackendMethods(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create register: %v", err)
 	}
-	grant, err := store.CreateGrant(ctx, storage.Grant{RequestID: request.ID, Payload: []byte("ok")})
+	grant, err := store.CreateGrant(ctx, storage.Grant{RequestID: request.ID, Payload: map[string]any{"value": "ok"}})
 	if err != nil {
 		t.Fatalf("create grant: %v", err)
 	}
@@ -803,7 +803,7 @@ func TestDeleteCommandsForAllResources(t *testing.T) {
 	}
 }
 
-func prepareTestDataDir(t *testing.T, setup func(context.Context, *storage.Store)) string {
+func prepareTestDataDir(t *testing.T, setup func(context.Context, storage.Store)) string {
 	t.Helper()
 
 	dataDir := filepath.Join(t.TempDir(), "data")
@@ -833,7 +833,7 @@ func prepareTestDataDir(t *testing.T, setup func(context.Context, *storage.Store
 	return dataDir
 }
 
-func openStoreForTesting(t *testing.T, dataDir string) *storage.Store {
+func openStoreForTesting(t *testing.T, dataDir string) storage.Store {
 	t.Helper()
 
 	path := server.NamespaceDBPath(dataDir, server.DefaultNamespace)

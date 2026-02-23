@@ -53,11 +53,8 @@ func dataGrantRead(ctx context.Context, d *schema.ResourceData, meta any) diag.D
 		diags = append(diags, diag.FromErr(err)...)
 	}
 
-	payloadBytes := sanitizeGrantPayload(grant.Payload)
-	if len(payloadBytes) > 0 {
-		if err := d.Set("payload", string(payloadBytes)); err != nil {
-			diags = append(diags, diag.FromErr(err)...)
-		}
+	if additional := setJSONStringAttribute(d, "payload", grant.Payload); additional != nil {
+		diags = append(diags, additional...)
 	}
 
 	d.SetId(grant.ID)

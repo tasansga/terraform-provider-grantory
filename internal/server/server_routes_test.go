@@ -24,7 +24,7 @@ import (
 func newTestApp(t *testing.T) (*fiber.App, func()) {
 	t.Helper()
 
-	cfg := config.Config{DataDir: t.TempDir()}
+	cfg := config.Config{Database: t.TempDir()}
 	srv, err := New(context.Background(), cfg)
 	if err != nil {
 		assert.NoError(t, err, "New() error")
@@ -681,7 +681,7 @@ func TestMissingResourcesReturnNotFound(t *testing.T) {
 func TestHandlersReturnInternalServerErrorWhenStoreClosed(t *testing.T) {
 	t.Parallel()
 
-	cfg := config.Config{DataDir: t.TempDir()}
+	cfg := config.Config{Database: t.TempDir()}
 	srv, err := New(context.Background(), cfg)
 	require.NoError(t, err)
 	defer func() {
@@ -764,7 +764,7 @@ func TestRegisterHandlerListInvalidHostLabelFilter(t *testing.T) {
 func TestIndexHandler(t *testing.T) {
 	t.Parallel()
 
-	cfg := config.Config{DataDir: t.TempDir()}
+	cfg := config.Config{Database: t.TempDir()}
 	srv, err := New(context.Background(), cfg)
 	require.NoError(t, err, "New() should succeed")
 	defer func() {
@@ -786,7 +786,7 @@ func TestIndexHandler(t *testing.T) {
 func TestRootRedirectsToIndex(t *testing.T) {
 	t.Parallel()
 
-	cfg := config.Config{DataDir: t.TempDir()}
+	cfg := config.Config{Database: t.TempDir()}
 	srv, err := New(context.Background(), cfg)
 	require.NoError(t, err, "New() should succeed")
 	defer func() {
@@ -808,7 +808,7 @@ func TestRootRedirectsToIndex(t *testing.T) {
 func TestWaterCSSServedFromStaticRoute(t *testing.T) {
 	t.Parallel()
 
-	cfg := config.Config{DataDir: t.TempDir()}
+	cfg := config.Config{Database: t.TempDir()}
 	srv, err := New(context.Background(), cfg)
 	require.NoError(t, err, "New() should succeed")
 	defer func() {
@@ -855,7 +855,7 @@ func TestCreateRegisterMissingHostReturnsBadRequest(t *testing.T) {
 func TestNamespaceValidationMiddleware(t *testing.T) {
 	t.Parallel()
 
-	cfg := config.Config{DataDir: t.TempDir()}
+	cfg := config.Config{Database: t.TempDir()}
 	srv, err := New(context.Background(), cfg)
 	assert.NoError(t, err, "initialize server")
 	defer func() {

@@ -33,7 +33,7 @@ COPY --from=build /out/grantory /usr/local/bin/grantory
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-ENV DATA_DIR=/data
+ENV DATABASE=/data
 EXPOSE 8080 8443
 VOLUME ["/data"]
 

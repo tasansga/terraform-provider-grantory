@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func closeStore(t *testing.T, store *Store) {
+func closeStore(t *testing.T, store Store) {
 	t.Helper()
 	if err := store.Close(); err != nil {
 		t.Errorf("close store: %v", err)
@@ -309,7 +309,7 @@ func TestRequestCRUD(t *testing.T) {
 
 	grant := Grant{
 		RequestID: createdRequest.ID,
-		Payload:   []byte("payload"),
+		Payload:   map[string]any{"value": "payload"},
 	}
 	if _, err := store.CreateGrant(ctx, grant); err != nil {
 		assert.NoError(t, err, "CreateGrant() error")
@@ -695,7 +695,7 @@ func TestGrantCRUD(t *testing.T) {
 
 	grant := Grant{
 		RequestID: createdRequest.ID,
-		Payload:   []byte("secret"),
+		Payload:   map[string]any{"value": "secret"},
 	}
 	createdGrant, err := store.CreateGrant(ctx, grant)
 	if err != nil {
@@ -758,7 +758,7 @@ func TestCountRequestsByGrantPresence(t *testing.T) {
 		assert.NoError(t, err, "CreateRequest() error")
 		t.FailNow()
 	}
-	if _, err := store.CreateGrant(ctx, Grant{RequestID: reqWithGrant.ID, Payload: []byte("secret")}); err != nil {
+	if _, err := store.CreateGrant(ctx, Grant{RequestID: reqWithGrant.ID, Payload: map[string]any{"value": "secret"}}); err != nil {
 		assert.NoError(t, err, "CreateGrant() error")
 		t.FailNow()
 	}
@@ -805,11 +805,11 @@ func TestCountGrants(t *testing.T) {
 		t.FailNow()
 	}
 
-	if _, err := store.CreateGrant(ctx, Grant{RequestID: req1.ID, Payload: []byte("secret")}); err != nil {
+	if _, err := store.CreateGrant(ctx, Grant{RequestID: req1.ID, Payload: map[string]any{"value": "secret"}}); err != nil {
 		assert.NoError(t, err, "CreateGrant() error")
 		t.FailNow()
 	}
-	if _, err := store.CreateGrant(ctx, Grant{RequestID: req2.ID, Payload: []byte("secret")}); err != nil {
+	if _, err := store.CreateGrant(ctx, Grant{RequestID: req2.ID, Payload: map[string]any{"value": "secret"}}); err != nil {
 		assert.NoError(t, err, "CreateGrant() error")
 		t.FailNow()
 	}
@@ -825,7 +825,7 @@ func TestCountGrants(t *testing.T) {
 func TestSetNamespaceNormalization(t *testing.T) {
 	t.Parallel()
 
-	store := &Store{}
+	store := &sqliteStore{}
 	store.SetNamespace("  custom  ")
 	assert.Equal(t, "custom", store.namespace, "namespace should be trimmed")
 	store.SetNamespace("  ")
@@ -835,7 +835,7 @@ func TestSetNamespaceNormalization(t *testing.T) {
 func TestMigrateRequiresStore(t *testing.T) {
 	t.Parallel()
 
-	var store *Store
+	var store *sqliteStore
 	err := store.Migrate(context.Background())
 	assert.Error(t, err, "migrate should fail when store uninitialized")
 }
@@ -917,7 +917,7 @@ func TestCreateRegisterLabelKeyTooLong(t *testing.T) {
 func TestCreateHostFailsWhenStoreNil(t *testing.T) {
 	t.Parallel()
 
-	var store *Store
+	var store *sqliteStore
 	_, err := store.CreateHost(context.Background(), Host{})
 	assert.Error(t, err, "create host should fail on nil store")
 }
@@ -925,7 +925,7 @@ func TestCreateHostFailsWhenStoreNil(t *testing.T) {
 func TestCreateRequestFailsWhenStoreNil(t *testing.T) {
 	t.Parallel()
 
-	var store *Store
+	var store *sqliteStore
 	_, err := store.CreateRequest(context.Background(), Request{HostID: "any"})
 	assert.Error(t, err, "create request should fail on nil store")
 }
@@ -933,7 +933,7 @@ func TestCreateRequestFailsWhenStoreNil(t *testing.T) {
 func TestCreateRegisterFailsWhenStoreNil(t *testing.T) {
 	t.Parallel()
 
-	var store *Store
+	var store *sqliteStore
 	_, err := store.CreateRegister(context.Background(), Register{HostID: "any"})
 	assert.Error(t, err, "create register should fail on nil store")
 }
@@ -941,8 +941,8 @@ func TestCreateRegisterFailsWhenStoreNil(t *testing.T) {
 func TestCreateGrantFailsWhenStoreNil(t *testing.T) {
 	t.Parallel()
 
-	var store *Store
-	_, err := store.CreateGrant(context.Background(), Grant{RequestID: "any", Payload: []byte("p")})
+	var store *sqliteStore
+	_, err := store.CreateGrant(context.Background(), Grant{RequestID: "any", Payload: map[string]any{"value": "p"}})
 	assert.Error(t, err, "create grant should fail on nil store")
 }
 
@@ -1030,7 +1030,7 @@ func TestOperationsAfterCloseAlwaysError(t *testing.T) {
 	require.NoError(t, err)
 	reg, err := store.CreateRegister(ctx, Register{HostID: host.ID})
 	require.NoError(t, err)
-	grant, err := store.CreateGrant(ctx, Grant{RequestID: req.ID, Payload: []byte("p")})
+	grant, err := store.CreateGrant(ctx, Grant{RequestID: req.ID, Payload: map[string]any{"value": "p"}})
 	require.NoError(t, err)
 
 	require.NoError(t, store.Close())
@@ -1041,7 +1041,7 @@ func TestOperationsAfterCloseAlwaysError(t *testing.T) {
 	assert.Error(t, err)
 	_, err = store.CreateRegister(ctx, Register{HostID: host.ID})
 	assert.Error(t, err)
-	_, err = store.CreateGrant(ctx, Grant{RequestID: req.ID, Payload: []byte("p")})
+	_, err = store.CreateGrant(ctx, Grant{RequestID: req.ID, Payload: map[string]any{"value": "p"}})
 	assert.Error(t, err)
 
 	_, err = store.ListHosts(ctx)
@@ -1094,18 +1094,21 @@ func TestEnsureTablesReturnErrorWhenContextCanceled(t *testing.T) {
 	defer closeStore(t, store)
 	require.NoError(t, store.Migrate(ctx))
 
+	sqliteStore, ok := store.(*sqliteStore)
+	require.True(t, ok, "expected sqlite store implementation")
+
 	tests := []struct {
 		name string
 		fn   func(context.Context, *sql.Tx) error
 	}{
-		{"hosts", store.ensureHostsTable},
-		{"requests", store.ensureRequestsTable},
-		{"registers", store.ensureRegistersTable},
-		{"grants", store.ensureGrantsTable},
-		{"host_labels", store.ensureHostLabelsTable},
-		{"request_labels", store.ensureRequestLabelsTable},
-		{"register_labels", store.ensureRegisterLabelsTable},
-		{"grant_labels", store.ensureGrantLabelsTable},
+		{"hosts", sqliteStore.ensureHostsTable},
+		{"requests", sqliteStore.ensureRequestsTable},
+		{"registers", sqliteStore.ensureRegistersTable},
+		{"grants", sqliteStore.ensureGrantsTable},
+		{"host_labels", sqliteStore.ensureHostLabelsTable},
+		{"request_labels", sqliteStore.ensureRequestLabelsTable},
+		{"register_labels", sqliteStore.ensureRegisterLabelsTable},
+		{"grant_labels", sqliteStore.ensureGrantLabelsTable},
 	}
 
 	for _, tc := range tests {
@@ -1124,10 +1127,10 @@ func TestEnsureTablesReturnErrorWhenContextCanceled(t *testing.T) {
 func TestNamespaceForLogHandlesNilAndTrim(t *testing.T) {
 	t.Parallel()
 
-	var store *Store
+	var store *sqliteStore
 	assert.Equal(t, unknownNamespace, store.namespaceForLog(), "nil store should return unknown namespace")
 
-	store = &Store{}
+	store = &sqliteStore{}
 	store.SetNamespace("  custom  ")
 	assert.Equal(t, "custom", store.namespaceForLog(), "should trim namespace")
 }
@@ -1144,7 +1147,7 @@ func TestNewFailsWhenForeignKeyEnableContextCanceled(t *testing.T) {
 func TestCloseAndDBHandleNilStore(t *testing.T) {
 	t.Parallel()
 
-	var store *Store
+	var store *sqliteStore
 	assert.NoError(t, store.Close(), "closing nil store should be a no-op")
 	assert.Nil(t, store.DB(), "nil store should expose no DB")
 }
@@ -1190,8 +1193,11 @@ func TestEnsureRequestExists(t *testing.T) {
 	req, err := store.CreateRequest(ctx, Request{HostID: host.ID})
 	assert.NoError(t, err)
 
-	assert.NoError(t, store.ensureRequestExists(ctx, req.ID))
-	assert.ErrorIs(t, store.ensureRequestExists(ctx, "missing"), ErrReferencedRequestNotFound)
+	sqliteStore, ok := store.(*sqliteStore)
+	require.True(t, ok, "expected sqlite store implementation")
+
+	assert.NoError(t, sqliteStore.ensureRequestExists(ctx, req.ID))
+	assert.ErrorIs(t, sqliteStore.ensureRequestExists(ctx, "missing"), ErrReferencedRequestNotFound)
 }
 
 func TestUpdateRequestLabelsAppliesChanges(t *testing.T) {
@@ -1240,7 +1246,7 @@ func TestGetLatestGrantForRequest(t *testing.T) {
 	assert.False(t, found)
 	assert.Equal(t, Grant{}, grant)
 
-	payload := []byte("secret")
+	payload := map[string]any{"value": "secret"}
 	createdGrant, err := store.CreateGrant(ctx, Grant{RequestID: req.ID, Payload: payload})
 	assert.NoError(t, err)
 
@@ -1267,7 +1273,7 @@ func TestStorageOperationsErrorWhenDBClosed(t *testing.T) {
 	reg, err := store.CreateRegister(ctx, Register{HostID: host.ID})
 	require.NoError(t, err)
 
-	grant, err := store.CreateGrant(ctx, Grant{RequestID: req.ID, Payload: []byte("payload")})
+	grant, err := store.CreateGrant(ctx, Grant{RequestID: req.ID, Payload: map[string]any{"value": "payload"}})
 	require.NoError(t, err)
 
 	require.NoError(t, store.Close())
@@ -1278,7 +1284,7 @@ func TestStorageOperationsErrorWhenDBClosed(t *testing.T) {
 	assert.Error(t, err)
 	_, err = store.CreateRegister(ctx, Register{HostID: host.ID})
 	assert.Error(t, err)
-	_, err = store.CreateGrant(ctx, Grant{RequestID: req.ID, Payload: []byte("payload")})
+	_, err = store.CreateGrant(ctx, Grant{RequestID: req.ID, Payload: map[string]any{"value": "payload"}})
 	assert.Error(t, err)
 
 	_, err = store.ListHosts(ctx)
@@ -1345,12 +1351,12 @@ func TestCreateGrantIsUniquePerRequest(t *testing.T) {
 		t.FailNow()
 	}
 
-	first := Grant{RequestID: req.ID, Payload: []byte("secret")}
+	first := Grant{RequestID: req.ID, Payload: map[string]any{"value": "secret"}}
 	if _, err := store.CreateGrant(ctx, first); err != nil {
 		assert.NoError(t, err, "CreateGrant() error")
 		t.FailNow()
 	}
-	second := Grant{RequestID: req.ID, Payload: []byte("secret")}
+	second := Grant{RequestID: req.ID, Payload: map[string]any{"value": "secret"}}
 	_, err = store.CreateGrant(ctx, second)
 	assert.ErrorIs(t, err, ErrGrantAlreadyExists, "expected duplicate request grant to fail")
 }
@@ -1489,7 +1495,7 @@ func TestCreateGrantIgnoresSuppliedID(t *testing.T) {
 	grant, err := store.CreateGrant(ctx, Grant{
 		ID:        malicious,
 		RequestID: request.ID,
-		Payload:   []byte("payload"),
+		Payload:   map[string]any{"value": "payload"},
 	})
 	if err != nil {
 		assert.NoError(t, err, "CreateGrant() error")

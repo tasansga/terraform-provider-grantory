@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/tasansga/terraform-provider-grantory/internal/config"
 	"github.com/tasansga/terraform-provider-grantory/internal/server"
+	"github.com/tasansga/terraform-provider-grantory/internal/storage"
 )
 
 func NewRootCommand() *cobra.Command {
@@ -58,26 +60,30 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	absDataDir, err := filepath.Abs(cfg.DataDir)
-	if err != nil {
-		logrus.WithError(err).Warn("unable to resolve absolute data directory")
-		absDataDir = cfg.DataDir
-	}
-
 	configureLogging(cfg)
 	tlsStatus := "disabled"
 	if server.IsTLSEnabled(cfg) {
 		tlsStatus = "enabled"
 	}
-	logrus.WithFields(logrus.Fields{
-		"data_dir": absDataDir,
+	fields := logrus.Fields{
 		"http_bind":  cfg.BindAddr,
 		"https_bind": cfg.TLSBind,
-		"tls_cert": cfg.TLSCert,
-		"tls_key":  cfg.TLSKey,
-		"tls":      tlsStatus,
-		"version":  versionString(),
-	}).Info("starting Grantory server")
+		"tls_cert":   cfg.TLSCert,
+		"tls_key":    cfg.TLSKey,
+		"tls":        tlsStatus,
+		"version":    versionString(),
+	}
+	if storage.IsPostgresDSN(cfg.Database) {
+		fields["database"] = redactPostgresDSN(cfg.Database)
+	} else {
+		absDataDir, err := filepath.Abs(cfg.Database)
+		if err != nil {
+			logrus.WithError(err).Warn("unable to resolve absolute sqlite directory")
+			absDataDir = cfg.Database
+		}
+		fields["data_dir"] = absDataDir
+	}
+	logrus.WithFields(fields).Info("starting Grantory server")
 
 	srv, err := server.New(ctx, cfg)
 	if err != nil {
@@ -92,6 +98,14 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	err = srv.Serve(ctx)
 	logrus.Info("stopping Grantory server")
 	return err
+}
+
+func redactPostgresDSN(dsn string) string {
+	parsed, err := url.Parse(dsn)
+	if err != nil || parsed.Host == "" || parsed.Scheme == "" {
+		return "postgres://redacted"
+	}
+	return fmt.Sprintf("%s://%s%s", parsed.Scheme, parsed.Host, parsed.Path)
 }
 
 func configureLogging(cfg config.Config) {

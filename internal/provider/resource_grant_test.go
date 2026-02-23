@@ -153,16 +153,10 @@ func (h *grantTestHandler) handleCreate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	payloadBytes, err := json.Marshal(payload.Payload)
-	if err != nil {
-		http.Error(w, "unable to encode payload", http.StatusInternalServerError)
-		return
-	}
-
 	grant := apiGrant{
 		ID:        testGrantID,
 		RequestID: payload.RequestID,
-		Payload:   json.RawMessage(payloadBytes),
+		Payload:   payload.Payload,
 		CreatedAt: testGrantCreatedAt,
 		UpdatedAt: testGrantUpdatedAt,
 	}

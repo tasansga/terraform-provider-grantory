@@ -48,13 +48,23 @@ func runWithBackend(cmd *cobra.Command, action func(context.Context, cliBackend)
 	ctx := cmd.Context()
 	switch backendCfg.mode {
 	case backendModeDirect:
-		if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
-			return fmt.Errorf("create data directory: %w", err)
-		}
-		path := server.NamespaceDBPath(cfg.DataDir, namespace)
-		store, err := storage.New(ctx, path)
-		if err != nil {
-			return err
+		var store storage.Store
+		if storage.IsPostgresDSN(cfg.Database) {
+			pgStore, err := storage.NewPostgres(ctx, cfg.Database)
+			if err != nil {
+				return err
+			}
+			store = pgStore
+		} else {
+			if err := os.MkdirAll(cfg.Database, 0o755); err != nil {
+				return fmt.Errorf("create sqlite directory: %w", err)
+			}
+			path := server.NamespaceDBPath(cfg.Database, namespace)
+			sqliteStore, err := storage.New(ctx, path)
+			if err != nil {
+				return err
+			}
+			store = sqliteStore
 		}
 		store.SetNamespace(namespace)
 		defer func() {
@@ -366,7 +376,18 @@ func newNamespaceDeleteCmd() *cobra.Command {
 				return err
 			}
 
-			path := server.NamespaceDBPath(cfg.DataDir, namespace)
+			if storage.IsPostgresDSN(cfg.Database) {
+				if err := dropPostgresNamespace(cmd.Context(), cfg.Database, namespace); err != nil {
+					return err
+				}
+				return outputJSON(map[string]any{
+					"namespace": namespace,
+					"database":  cfg.Database,
+					"status":    "deleted",
+				})
+			}
+
+			path := server.NamespaceDBPath(cfg.Database, namespace)
 			if err := removeNamespaceFiles(path); err != nil {
 				return err
 			}
@@ -378,6 +399,27 @@ func newNamespaceDeleteCmd() *cobra.Command {
 			})
 		},
 	}
+}
+
+func dropPostgresNamespace(ctx context.Context, dsn, namespace string) error {
+	store, err := storage.NewPostgres(ctx, dsn)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = store.Close()
+	}()
+
+	stmt := fmt.Sprintf(`DROP SCHEMA IF EXISTS %s CASCADE`, quoteIdent(namespace))
+	if _, err := store.DB().ExecContext(ctx, stmt); err != nil {
+		return fmt.Errorf("drop namespace schema: %w", err)
+	}
+	return nil
+}
+
+func quoteIdent(value string) string {
+	escaped := strings.ReplaceAll(value, `"`, `""`)
+	return `"` + escaped + `"`
 }
 
 func resolveNamespace(cmd *cobra.Command) (string, error) {

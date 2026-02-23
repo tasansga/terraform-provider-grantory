@@ -52,11 +52,11 @@ type apiRegister struct {
 }
 
 type apiGrant struct {
-	ID        string          `json:"id"`
-	RequestID string          `json:"request_id"`
-	Payload   json.RawMessage `json:"payload"`
-	CreatedAt string          `json:"created_at"`
-	UpdatedAt string          `json:"updated_at"`
+	ID        string         `json:"id"`
+	RequestID string         `json:"request_id"`
+	Payload   map[string]any `json:"payload,omitempty"`
+	CreatedAt string         `json:"created_at"`
+	UpdatedAt string         `json:"updated_at"`
 }
 
 type apiGrantCreatePayload struct {

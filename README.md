@@ -57,10 +57,10 @@ provider "grantory" {
 
 ## Running the server
 
-Grantory runs as an HTTP server. Configure the data directory, HTTP/HTTPS bind addresses, TLS certificates, and log level via flags or the matching environment variables (`DATA_DIR`, `HTTP_BIND`, `HTTPS_BIND`, `TLS_CERT`, `TLS_KEY`, `LOG_LEVEL`). TLS is only activated if `TLS_CERT` and `TLS_KEY` are set. Set `HTTP_BIND=off` to disable the HTTP listener.
+Grantory runs as an HTTP server. Configure the database (sqlite directory path or Postgres DSN), HTTP/HTTPS bind addresses, TLS certificates, and log level via flags or the matching environment variables (`DATABASE`, `HTTP_BIND`, `HTTPS_BIND`, `TLS_CERT`, `TLS_KEY`, `LOG_LEVEL`). TLS is only activated if `TLS_CERT` and `TLS_KEY` are set. Set `HTTP_BIND=off` to disable the HTTP listener.
 
 ```bash
-grantory --data-dir ./data --http-bind 127.0.0.1:8080
+grantory --database ./data --http-bind 127.0.0.1:8080
 ```
 
 Defaults: `HTTP_BIND=0.0.0.0:8080`, `HTTPS_BIND=0.0.0.0:8443`.
@@ -79,7 +79,7 @@ The Grantory server image is published to Docker Hub as [tasansga/grantory](http
 docker run --rm -p 8080:8080 -v "$PWD/data:/data" tasansga/grantory:latest
 ```
 
-Set `DATA_DIR`, `HTTP_BIND`, `HTTPS_BIND`, `TLS_CERT`, `TLS_KEY`, and `LOG_LEVEL` as needed to customize server behavior. The image starts as root, fixes ownership of `DATA_DIR`, then drops privileges to the `grantory` user. If you run the container rootless, ensure the mounted data directory is writable by that user.
+Set `DATABASE`, `HTTP_BIND`, `HTTPS_BIND`, `TLS_CERT`, `TLS_KEY`, and `LOG_LEVEL` as needed to customize server behavior. The image starts as root, fixes ownership of the sqlite directory when `DATABASE` is a path, then drops privileges to the `grantory` user. If you run the container rootless, ensure the mounted sqlite directory is writable by that user.
 
 ## CLI
 
@@ -96,7 +96,7 @@ to inject it for every authenticated request if you manage namespaces beyond the
 
 ## Storage
 
-Each namespace is stored as a dedicated sqlite database file in `<data-dir>/<namespace>.db`.
+Each namespace is stored as a dedicated sqlite database file in `<database-dir>/<namespace>.db` when `DATABASE` is a directory path.
 
 ## What Grantory is not
 

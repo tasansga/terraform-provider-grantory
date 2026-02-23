@@ -121,12 +121,12 @@ func resolveBackendConfig(cmd *cobra.Command) (backendConfig, error) {
 	}, nil
 }
 
-func newDirectBackend(store *storage.Store) cliBackend {
+func newDirectBackend(store storage.Store) cliBackend {
 	return &directBackend{store: store}
 }
 
 type directBackend struct {
-	store *storage.Store
+	store storage.Store
 }
 
 func (d *directBackend) ListHosts(ctx context.Context) ([]storage.Host, error) {
