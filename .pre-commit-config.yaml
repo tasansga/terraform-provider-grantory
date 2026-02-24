@@ -20,3 +20,9 @@ repos:
         entry: bash -c 'test -d docs && test -f docs/index.md'
         language: system
         pass_filenames: false
+      - id: make
+        name: Run make
+        entry: make
+        language: system
+        pass_filenames: false
+        always_run: true

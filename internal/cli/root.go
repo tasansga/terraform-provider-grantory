@@ -59,6 +59,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	cfg.ServerVersion = versionString()
 
 	configureLogging(cfg)
 	tlsStatus := "disabled"

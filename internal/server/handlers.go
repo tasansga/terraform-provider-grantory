@@ -687,17 +687,6 @@ func parseRegisterListFilters(c *fiber.Ctx) (storage.RegisterListFilters, error)
 	return filters, nil
 }
 
-func applyRegisterFilters(registers []storage.Register, filters storage.RegisterListFilters) []storage.Register {
-	var filtered []storage.Register
-	for _, reg := range registers {
-		if !matchesLabelFilters(reg.Labels, filters.Labels) {
-			continue
-		}
-		filtered = append(filtered, reg)
-	}
-	return filtered
-}
-
 func registerGrantRoutes(app fiber.Router) {
 	handler := grantHandler{}
 	group := app.Group("/grants")

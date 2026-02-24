@@ -27,12 +27,13 @@ const DefaultLogLevel = logrus.InfoLevel
 
 // Config holds the runtime configuration for the Grantory server.
 type Config struct {
-	Database string
-	BindAddr string
-	TLSBind  string
-	TLSCert  string
-	TLSKey   string
-	LogLevel logrus.Level
+	Database      string
+	BindAddr      string
+	TLSBind       string
+	TLSCert       string
+	TLSKey        string
+	LogLevel      logrus.Level
+	ServerVersion string
 }
 
 // RegisterFlags adds command-line flags to the provided FlagSet.

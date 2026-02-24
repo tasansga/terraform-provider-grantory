@@ -2,14 +2,18 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+
+	"github.com/tasansga/terraform-provider-grantory/internal/api"
 )
 
 const (
@@ -128,7 +132,79 @@ func configureProvider(ctx context.Context, d *schema.ResourceData) (any, diag.D
 		user:       user,
 		password:   password,
 	}
+	diags = append(diags, warnOnAPIMismatch(ctx, client)...)
 	return client, diags
+}
+
+func warnOnAPIMismatch(ctx context.Context, client *grantoryClient) diag.Diagnostics {
+	var diags diag.Diagnostics
+	if client == nil || client.baseURL == nil {
+		return diags
+	}
+
+	serverMajor, err := fetchServerAPIMajor(ctx, client)
+	if err != nil || serverMajor == "" || serverMajor == "unknown" {
+		return diags
+	}
+
+	providerMajor := api.Major(api.APIVersion)
+	if providerMajor == "" || providerMajor == "unknown" {
+		return diags
+	}
+
+	if providerMajor != serverMajor {
+		diags = append(diags, diag.Diagnostic{
+			Severity: diag.Warning,
+			Summary:  "grantory API version mismatch",
+			Detail: fmt.Sprintf(
+				"provider expects API major %s but server reports %s",
+				providerMajor,
+				serverMajor,
+			),
+		})
+	}
+
+	return diags
+}
+
+func fetchServerAPIMajor(ctx context.Context, client *grantoryClient) (string, error) {
+	metaURL := *client.baseURL
+	if strings.HasSuffix(metaURL.Path, "/") {
+		metaURL.Path += "meta"
+	} else {
+		metaURL.Path += "/meta"
+	}
+	metaURL.RawQuery = ""
+	metaURL.Fragment = ""
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(timeoutCtx, http.MethodGet, metaURL.String(), nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := client.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		if cerr := resp.Body.Close(); cerr != nil {
+			_ = cerr
+		}
+	}()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", nil
+	}
+
+	var payload struct {
+		APIVersion string `json:"api_version"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "", err
+	}
+	return api.Major(payload.APIVersion), nil
 }
 
 func parseServerURL(raw string) (*url.URL, diag.Diagnostics) {

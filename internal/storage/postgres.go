@@ -578,11 +578,11 @@ func (s *postgresStore) ListRequests(ctx context.Context, filters *RequestListFi
 	s.logDBOperation("requests", "list", logFields)
 
 	query := strings.Builder{}
-	query.WriteString(fmt.Sprintf(`
+	_, _ = fmt.Fprintf(&query, `
 SELECT id, host_id, data,
        CASE WHEN EXISTS (SELECT 1 FROM %s WHERE request_id = %s.id) THEN 1 ELSE 0 END AS has_grant,
        created_at, updated_at
-FROM %s`, s.table("grants"), s.table("requests"), s.table("requests")))
+FROM %s`, s.table("grants"), s.table("requests"), s.table("requests"))
 
 	var args []any
 	var where []string
@@ -821,7 +821,7 @@ func (s *postgresStore) ListRegisters(ctx context.Context, filters *RegisterList
 	s.logDBOperation("registers", "list", logFields)
 
 	query := strings.Builder{}
-	query.WriteString(fmt.Sprintf(`SELECT id, host_id, data, created_at, updated_at FROM %s`, s.table("registers")))
+	_, _ = fmt.Fprintf(&query, `SELECT id, host_id, data, created_at, updated_at FROM %s`, s.table("registers"))
 
 	var args []any
 	var where []string

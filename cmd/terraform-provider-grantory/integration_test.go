@@ -378,7 +378,7 @@ func startIntegrationServer(t *testing.T, dataDir string) (string, func()) {
 	t.Helper()
 	port := freePort(t)
 	cfg := config.Config{
-		DataDir:  dataDir,
+		Database: dataDir,
 		BindAddr: fmt.Sprintf("127.0.0.1:%d", port),
 		LogLevel: config.DefaultLogLevel,
 	}

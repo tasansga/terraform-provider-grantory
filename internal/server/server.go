@@ -45,6 +45,7 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	app.Get("/healthz", s.handleHealth)
 	app.Get("/readyz", s.handleReadiness)
+	app.Get("/meta", s.handleMeta)
 	app.Use(requestLoggingMiddleware())
 
 	api := app.Group("/", s.namespaceMiddleware())

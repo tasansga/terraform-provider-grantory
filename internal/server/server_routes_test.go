@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/tasansga/terraform-provider-grantory/internal/api"
 	"github.com/tasansga/terraform-provider-grantory/internal/config"
 	"github.com/tasansga/terraform-provider-grantory/internal/storage"
 )
@@ -65,6 +66,7 @@ func newTestApp(t *testing.T) (*fiber.App, func()) {
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
 	app.Get("/healthz", srv.handleHealth)
 	app.Get("/readyz", srv.handleReadiness)
+	app.Get("/meta", srv.handleMeta)
 	app.Use(requestLoggingMiddleware())
 
 	api := app.Group("/", func(c *fiber.Ctx) error {
@@ -163,6 +165,14 @@ func decodeJSON[T any](t *testing.T, res *http.Response) T {
 	return result
 }
 
+func featureNames(features []api.FeatureInfo) []string {
+	names := make([]string, 0, len(features))
+	for _, feature := range features {
+		names = append(names, feature.Name)
+	}
+	return names
+}
+
 func TestAPIEndpoints(t *testing.T) {
 	t.Parallel()
 
@@ -177,6 +187,14 @@ func TestAPIEndpoints(t *testing.T) {
 
 	res = sendTestRequest(t, app, http.MethodGet, "/readyz", headers, nil)
 	assert.Equal(t, http.StatusOK, res.StatusCode, "readyz status")
+
+	res = sendTestRequest(t, app, http.MethodGet, "/meta", headers, nil)
+	assert.Equal(t, http.StatusOK, res.StatusCode, "meta status")
+	meta := decodeJSON[MetaResponse](t, res)
+	assert.Equal(t, api.APIVersion, meta.APIVersion, "meta api version")
+	assert.NotEmpty(t, meta.ServerVersion, "meta server version")
+	assert.NotEmpty(t, meta.Features, "meta features")
+	assert.Contains(t, featureNames(meta.Features), "requests.list.filter.has_grant", "meta features")
 
 	res = sendTestRequest(t, app, http.MethodGet, "/hosts", headers, nil)
 	assert.Equal(t, http.StatusOK, res.StatusCode, "list hosts status")

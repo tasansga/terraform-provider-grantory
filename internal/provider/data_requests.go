@@ -63,8 +63,7 @@ func dataRequestsRead(ctx context.Context, d *schema.ResourceData, meta any) dia
 		Labels:     expandStringMap(extractMap(d.Get("labels"))),
 		HostLabels: expandStringMap(extractMap(d.Get("host_labels"))),
 	}
-	if raw, ok := d.GetOkExists("has_grant"); ok {
-		value := raw.(bool)
+	if value, ok := getOptionalBool(d, "has_grant"); ok {
 		opts.HasGrant = &value
 	}
 
@@ -108,4 +107,22 @@ type requestListEntry struct {
 	RequestID string `json:"request_id"`
 	HostID    string `json:"host_id"`
 	HasGrant  bool   `json:"has_grant"`
+}
+
+func getOptionalBool(d *schema.ResourceData, key string) (bool, bool) {
+	raw := d.GetRawConfig()
+	if !raw.IsNull() && raw.IsKnown() {
+		value := raw.GetAttr(key)
+		if value.IsNull() || !value.IsKnown() {
+			return false, false
+		}
+		return value.True(), true
+	}
+
+	// TestResourceDataRaw does not always populate RawConfig; fallback for tests.
+	//nolint:staticcheck // GetOkExists is required here to distinguish false vs unset in tests.
+	if rawValue, ok := d.GetOkExists(key); ok {
+		return rawValue.(bool), true
+	}
+	return false, false
 }
