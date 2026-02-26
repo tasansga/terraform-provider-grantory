@@ -283,7 +283,8 @@ func TestRequestCRUD(t *testing.T) {
 	host = createdHost
 
 	request := Request{
-		HostID: host.ID,
+		HostID:    host.ID,
+		UniqueKey: "unique:example",
 		Payload: map[string]any{
 			"name": "example",
 		},
@@ -303,6 +304,7 @@ func TestRequestCRUD(t *testing.T) {
 		t.FailNow()
 	}
 	assert.Equal(t, request.HostID, loaded.HostID, "loaded request host ID")
+	assert.Equal(t, request.UniqueKey, loaded.UniqueKey, "loaded request unique key")
 	assert.Equal(t, "example", loaded.Payload["name"], "loaded request data")
 	assert.Equal(t, "test", loaded.Labels["env"], "loaded request labels")
 	assert.False(t, loaded.HasGrant, "new requests should not yet have grants")
@@ -337,6 +339,183 @@ func TestRequestCRUD(t *testing.T) {
 	}
 	_, err = store.GetRequest(ctx, createdRequest.ID)
 	assert.ErrorIs(t, err, ErrRequestNotFound, "expected request to be deleted")
+}
+
+func TestRequestUniqueKeyConflict(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := New(ctx, ":memory:")
+	if err != nil {
+		assert.NoError(t, err, "New() error")
+		t.FailNow()
+	}
+	defer closeStore(t, store)
+
+	if err := store.Migrate(ctx); err != nil {
+		assert.NoError(t, err, "Migrate() error")
+		t.FailNow()
+	}
+
+	host := Host{}
+	createdHost, err := store.CreateHost(ctx, host)
+	if err != nil {
+		assert.NoError(t, err, "CreateHost() error")
+		t.FailNow()
+	}
+
+	request := Request{
+		HostID:    createdHost.ID,
+		UniqueKey: "unique:shared",
+	}
+	createdRequest, err := store.CreateRequest(ctx, request)
+	if err != nil {
+		assert.NoError(t, err, "CreateRequest() error")
+		t.FailNow()
+	}
+
+	_, err = store.CreateRequest(ctx, Request{
+		HostID:    createdHost.ID,
+		UniqueKey: "unique:shared",
+	})
+	assert.ErrorIs(t, err, ErrRequestUniqueKeyConflict, "expected unique key conflict")
+
+	if err := store.DeleteRequest(ctx, createdRequest.ID); err != nil {
+		assert.NoError(t, err, "DeleteRequest() error")
+		t.FailNow()
+	}
+
+	_, err = store.CreateRequest(ctx, Request{
+		HostID:    createdHost.ID,
+		UniqueKey: "unique:shared",
+	})
+	assert.NoError(t, err, "expected unique key to be reusable after deletion")
+}
+
+func TestRequestUniqueKeyEmptyAllowsDuplicates(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := New(ctx, ":memory:")
+	if err != nil {
+		assert.NoError(t, err, "New() error")
+		t.FailNow()
+	}
+	defer closeStore(t, store)
+
+	if err := store.Migrate(ctx); err != nil {
+		assert.NoError(t, err, "Migrate() error")
+		t.FailNow()
+	}
+
+	host := Host{}
+	createdHost, err := store.CreateHost(ctx, host)
+	if err != nil {
+		assert.NoError(t, err, "CreateHost() error")
+		t.FailNow()
+	}
+
+	for i := 0; i < 3; i++ {
+		_, err := store.CreateRequest(ctx, Request{
+			HostID: createdHost.ID,
+		})
+		assert.NoError(t, err, "expected request without unique_key to succeed")
+	}
+}
+
+func TestRequestUniqueKeyConflictsAcrossHosts(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := New(ctx, ":memory:")
+	if err != nil {
+		assert.NoError(t, err, "New() error")
+		t.FailNow()
+	}
+	defer closeStore(t, store)
+
+	if err := store.Migrate(ctx); err != nil {
+		assert.NoError(t, err, "Migrate() error")
+		t.FailNow()
+	}
+
+	hostA, err := store.CreateHost(ctx, Host{})
+	if err != nil {
+		assert.NoError(t, err, "CreateHost() error")
+		t.FailNow()
+	}
+	hostB, err := store.CreateHost(ctx, Host{})
+	if err != nil {
+		assert.NoError(t, err, "CreateHost() error")
+		t.FailNow()
+	}
+
+	_, err = store.CreateRequest(ctx, Request{
+		HostID:    hostA.ID,
+		UniqueKey: "unique:shared",
+	})
+	if err != nil {
+		assert.NoError(t, err, "CreateRequest() error")
+		t.FailNow()
+	}
+
+	_, err = store.CreateRequest(ctx, Request{
+		HostID:    hostB.ID,
+		UniqueKey: "unique:shared",
+	})
+	assert.ErrorIs(t, err, ErrRequestUniqueKeyConflict, "expected unique key conflict across hosts")
+}
+
+func TestRequestUniqueKeyReuseAfterDeleteWithGrant(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := New(ctx, ":memory:")
+	if err != nil {
+		assert.NoError(t, err, "New() error")
+		t.FailNow()
+	}
+	defer closeStore(t, store)
+
+	if err := store.Migrate(ctx); err != nil {
+		assert.NoError(t, err, "Migrate() error")
+		t.FailNow()
+	}
+
+	host, err := store.CreateHost(ctx, Host{})
+	if err != nil {
+		assert.NoError(t, err, "CreateHost() error")
+		t.FailNow()
+	}
+
+	request, err := store.CreateRequest(ctx, Request{
+		HostID:    host.ID,
+		UniqueKey: "unique:shared",
+	})
+	if err != nil {
+		assert.NoError(t, err, "CreateRequest() error")
+		t.FailNow()
+	}
+
+	_, err = store.CreateGrant(ctx, Grant{
+		RequestID: request.ID,
+		Payload:   map[string]any{"value": "payload"},
+	})
+	if err != nil {
+		assert.NoError(t, err, "CreateGrant() error")
+		t.FailNow()
+	}
+
+	if err := store.DeleteRequest(ctx, request.ID); err != nil {
+		assert.NoError(t, err, "DeleteRequest() error")
+		t.FailNow()
+	}
+
+	_, err = store.CreateRequest(ctx, Request{
+		HostID:    host.ID,
+		UniqueKey: "unique:shared",
+	})
+	assert.NoError(t, err, "expected unique key to be reusable after delete with grant")
 }
 
 func TestRegisterCRUD(t *testing.T) {

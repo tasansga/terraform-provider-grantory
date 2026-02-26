@@ -28,6 +28,7 @@ type hostLabelsPayload struct {
 type apiRequest struct {
 	ID        string            `json:"id"`
 	HostID    string            `json:"host_id"`
+	UniqueKey string            `json:"unique_key,omitempty"`
 	Payload   map[string]any    `json:"payload,omitempty"`
 	Labels    map[string]string `json:"labels,omitempty"`
 	HasGrant  bool              `json:"has_grant"`

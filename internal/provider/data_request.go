@@ -21,6 +21,11 @@ func dataRequest() *schema.Resource {
 				Computed:    true,
 				Description: "Host identifier that owns the returned request.",
 			},
+			"unique_key": {
+				Type:        schema.TypeString,
+				Computed:    true,
+				Description: "Unique key used to enforce request uniqueness within a namespace.",
+			},
 			"payload": {
 				Type:        schema.TypeString,
 				Computed:    true,

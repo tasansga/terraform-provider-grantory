@@ -36,6 +36,7 @@ resource "grantory_request" "database" {
 
 - `labels` (Map of String) Optional labels that tag the request.
 - `payload` (String) JSON-encoded payload that describes the requested resource.
+- `unique_key` (String) Optional unique key used to enforce request uniqueness within a namespace.
 
 ### Read-Only
 

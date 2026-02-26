@@ -118,6 +118,7 @@ CREATE TABLE IF NOT EXISTS hosts (
 CREATE TABLE IF NOT EXISTS requests (
 	id TEXT PRIMARY KEY,
 	host_id TEXT NOT NULL,
+	unique_key TEXT,
 	data TEXT,
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -277,6 +278,12 @@ func (s *sqliteStore) ensureRequestsTable(ctx context.Context, tx *sql.Tx) error
 	if _, err := tx.ExecContext(ctx, requestsTableStatement); err != nil {
 		return fmt.Errorf("create requests table: %w", err)
 	}
+	if err := ensureSQLiteColumn(ctx, tx, "requests", "unique_key", "TEXT"); err != nil {
+		return fmt.Errorf("add requests unique_key column: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS requests_unique_key_idx ON requests(unique_key) WHERE unique_key IS NOT NULL`); err != nil {
+		return fmt.Errorf("create requests unique_key index: %w", err)
+	}
 	return nil
 }
 
@@ -320,6 +327,47 @@ func (s *sqliteStore) ensureGrantLabelsTable(ctx context.Context, tx *sql.Tx) er
 		return fmt.Errorf("create grant labels table: %w", err)
 	}
 	return nil
+}
+
+func ensureSQLiteColumn(ctx context.Context, tx *sql.Tx, table, column, columnType string) error {
+	exists, err := sqliteColumnExists(ctx, tx, table, column)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	_, err = tx.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, column, columnType))
+	return err
+}
+
+func sqliteColumnExists(ctx context.Context, tx *sql.Tx, table, column string) (bool, error) {
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`PRAGMA table_info(%s)`, table))
+	if err != nil {
+		return false, err
+	}
+	defer closeRows(rows, "close table_info rows")
+
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			colType    string
+			notNull    int
+			defaultV   any
+			primaryKey int
+		)
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultV, &primaryKey); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 // CreateHost registers a new host with the given labels.
@@ -501,6 +549,7 @@ func (s *sqliteStore) CreateRequest(ctx context.Context, req Request) (Request, 
 	s.logDBOperation("requests", "create", logrus.Fields{
 		"request_id": req.ID,
 		"host_id":    req.HostID,
+		"unique_key": req.UniqueKey,
 		"payload":    req.Payload,
 		"labels":     req.Labels,
 	})
@@ -516,11 +565,18 @@ func (s *sqliteStore) CreateRequest(ctx context.Context, req Request) (Request, 
 	}
 	defer rollbackTx(tx, "rollback create request transaction")
 
+	var uniqueKey any
+	if req.UniqueKey != "" {
+		uniqueKey = req.UniqueKey
+	}
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO requests (id, host_id, data)
-VALUES (?, ?, ?)
-`, req.ID, req.HostID, payloadValue); err != nil {
+INSERT INTO requests (id, host_id, unique_key, data)
+VALUES (?, ?, ?, ?)
+`, req.ID, req.HostID, uniqueKey, payloadValue); err != nil {
 		if isUniqueConstraintError(err) {
+			if isUniqueKeyConstraintError(err) {
+				return Request{}, fmt.Errorf("%w: %w", ErrRequestUniqueKeyConflict, err)
+			}
 			return Request{}, fmt.Errorf("%w: %w", ErrRequestAlreadyExists, err)
 		}
 		return Request{}, fmt.Errorf("insert request: %w", err)
@@ -548,7 +604,7 @@ func (s *sqliteStore) GetRequest(ctx context.Context, id string) (Request, error
 	})
 
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, host_id, data,
+SELECT id, host_id, unique_key, data,
        CASE WHEN EXISTS (SELECT 1 FROM grants WHERE request_id = requests.id) THEN 1 ELSE 0 END AS has_grant,
        created_at, updated_at
 FROM requests
@@ -594,7 +650,7 @@ func (s *sqliteStore) ListRequests(ctx context.Context, filters *RequestListFilt
 
 	query := strings.Builder{}
 	query.WriteString(`
-SELECT id, host_id, data,
+SELECT id, host_id, unique_key, data,
        CASE WHEN EXISTS (SELECT 1 FROM grants WHERE request_id = requests.id) THEN 1 ELSE 0 END AS has_grant,
        created_at, updated_at
 FROM requests`)
@@ -1155,17 +1211,22 @@ func scanHost(scanner rowScanner) (Host, error) {
 func scanRequest(scanner rowScanner) (Request, error) {
 	var (
 		req          Request
+		uniqueKey    sql.NullString
 		payloadValue sql.NullString
 		hasGrant     sql.NullInt64
 		createdAt    any
 		updatedAt    any
 	)
 
-	if err := scanner.Scan(&req.ID, &req.HostID, &payloadValue, &hasGrant, &createdAt, &updatedAt); err != nil {
+	if err := scanner.Scan(&req.ID, &req.HostID, &uniqueKey, &payloadValue, &hasGrant, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Request{}, ErrRequestNotFound
 		}
 		return Request{}, err
+	}
+
+	if uniqueKey.Valid {
+		req.UniqueKey = uniqueKey.String
 	}
 
 	var err error

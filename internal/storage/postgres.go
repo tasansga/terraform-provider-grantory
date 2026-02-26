@@ -174,6 +174,7 @@ func (s *postgresStore) ensureRequestsTable(ctx context.Context, tx *sql.Tx) err
 CREATE TABLE IF NOT EXISTS %s (
 	id TEXT PRIMARY KEY,
 	host_id TEXT NOT NULL,
+	unique_key TEXT,
 	data JSONB,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -181,6 +182,12 @@ CREATE TABLE IF NOT EXISTS %s (
 )`, s.table("requests"), s.table("hosts"))
 	if _, err := tx.ExecContext(ctx, stmt); err != nil {
 		return fmt.Errorf("create requests table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS unique_key TEXT`, s.table("requests"))); err != nil {
+		return fmt.Errorf("add requests unique_key column: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`CREATE UNIQUE INDEX IF NOT EXISTS requests_unique_key_idx ON %s (unique_key) WHERE unique_key IS NOT NULL`, s.table("requests"))); err != nil {
+		return fmt.Errorf("create requests unique_key index: %w", err)
 	}
 	return nil
 }
@@ -486,6 +493,7 @@ func (s *postgresStore) CreateRequest(ctx context.Context, req Request) (Request
 	s.logDBOperation("requests", "create", logrus.Fields{
 		"request_id": req.ID,
 		"host_id":    req.HostID,
+		"unique_key": req.UniqueKey,
 		"payload":    req.Payload,
 		"labels":     req.Labels,
 	})
@@ -501,9 +509,16 @@ func (s *postgresStore) CreateRequest(ctx context.Context, req Request) (Request
 	}
 	defer rollbackTx(tx, "rollback create request transaction")
 
-	stmt := fmt.Sprintf(`INSERT INTO %s (id, host_id, data) VALUES ($1, $2, $3)`, s.table("requests"))
-	if _, err := tx.ExecContext(ctx, stmt, req.ID, req.HostID, payloadValue); err != nil {
+	stmt := fmt.Sprintf(`INSERT INTO %s (id, host_id, unique_key, data) VALUES ($1, $2, $3, $4)`, s.table("requests"))
+	var uniqueKey any
+	if req.UniqueKey != "" {
+		uniqueKey = req.UniqueKey
+	}
+	if _, err := tx.ExecContext(ctx, stmt, req.ID, req.HostID, uniqueKey, payloadValue); err != nil {
 		if isUniqueConstraintError(err) {
+			if isUniqueKeyConstraintError(err) {
+				return Request{}, fmt.Errorf("%w: %w", ErrRequestUniqueKeyConflict, err)
+			}
 			return Request{}, fmt.Errorf("%w: %w", ErrRequestAlreadyExists, err)
 		}
 		return Request{}, fmt.Errorf("insert request: %w", err)
@@ -531,7 +546,7 @@ func (s *postgresStore) GetRequest(ctx context.Context, id string) (Request, err
 	})
 
 	query := fmt.Sprintf(`
-SELECT id, host_id, data,
+SELECT id, host_id, unique_key, data,
        CASE WHEN EXISTS (SELECT 1 FROM %s WHERE request_id = %s.id) THEN 1 ELSE 0 END AS has_grant,
        created_at, updated_at
 FROM %s
@@ -579,7 +594,7 @@ func (s *postgresStore) ListRequests(ctx context.Context, filters *RequestListFi
 
 	query := strings.Builder{}
 	_, _ = fmt.Fprintf(&query, `
-SELECT id, host_id, data,
+SELECT id, host_id, unique_key, data,
        CASE WHEN EXISTS (SELECT 1 FROM %s WHERE request_id = %s.id) THEN 1 ELSE 0 END AS has_grant,
        created_at, updated_at
 FROM %s`, s.table("grants"), s.table("requests"), s.table("requests"))
@@ -1177,4 +1192,15 @@ func isUniqueConstraintError(err error) bool {
 		return pgErr.Code == "23505"
 	}
 	return strings.Contains(err.Error(), "UNIQUE constraint failed")
+}
+
+func isUniqueKeyConstraintError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.ConstraintName == "requests_unique_key_idx"
+	}
+	return strings.Contains(err.Error(), "requests.unique_key")
 }

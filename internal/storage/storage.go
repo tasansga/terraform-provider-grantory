@@ -53,6 +53,7 @@ type Host struct {
 type Request struct {
 	ID        string            `json:"id"`
 	HostID    string            `json:"host_id"`
+	UniqueKey string            `json:"unique_key,omitempty"`
 	Payload   map[string]any    `json:"payload,omitempty"`
 	Labels    map[string]string `json:"labels,omitempty"`
 	HasGrant  bool              `json:"has_grant"`
@@ -105,6 +106,8 @@ var (
 	ErrRegisterAlreadyExists = errors.New("register already exists")
 	// ErrRequestNotFound is returned when a request cannot be located.
 	ErrRequestNotFound = errors.New("request not found")
+	// ErrRequestUniqueKeyConflict is returned when a request with the same unique key exists.
+	ErrRequestUniqueKeyConflict = errors.New("request unique key already exists")
 	// ErrGrantNotFound is returned when a grant cannot be located.
 	ErrGrantNotFound = errors.New("grant not found")
 	// ErrRegisterNotFound is returned when a register entry cannot be located.

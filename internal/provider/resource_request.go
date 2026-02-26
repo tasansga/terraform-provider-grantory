@@ -17,6 +17,12 @@ func resourceRequest() *schema.Resource {
 				Description: "Host identifier that owns the request.",
 				ForceNew:    true,
 			},
+			"unique_key": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				ForceNew:    true,
+				Description: "Optional unique key used to enforce request uniqueness within a namespace.",
+			},
 			"payload": {
 				Type:        schema.TypeString,
 				Optional:    true,
@@ -72,9 +78,10 @@ func resourceRequestCreate(ctx context.Context, d *schema.ResourceData, meta any
 	}
 
 	payload := apiRequest{
-		HostID:  d.Get("host_id").(string),
-		Payload: requestPayload,
-		Labels:  expandStringMap(extractMap(d.Get("labels"))),
+		HostID:    d.Get("host_id").(string),
+		UniqueKey: d.Get("unique_key").(string),
+		Payload:   requestPayload,
+		Labels:    expandStringMap(extractMap(d.Get("labels"))),
 	}
 
 	created, err := client.createRequest(ctx, payload)
@@ -149,6 +156,9 @@ func setRequestAttributes(d *schema.ResourceData, req apiRequest) diag.Diagnosti
 	var diags diag.Diagnostics
 
 	if err := d.Set("host_id", req.HostID); err != nil {
+		diags = append(diags, diag.FromErr(err)...)
+	}
+	if err := d.Set("unique_key", req.UniqueKey); err != nil {
 		diags = append(diags, diag.FromErr(err)...)
 	}
 	if req.Payload != nil {
