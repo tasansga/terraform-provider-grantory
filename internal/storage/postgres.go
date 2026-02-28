@@ -197,6 +197,7 @@ func (s *postgresStore) ensureRegistersTable(ctx context.Context, tx *sql.Tx) er
 CREATE TABLE IF NOT EXISTS %s (
 	id TEXT PRIMARY KEY,
 	host_id TEXT NOT NULL,
+	unique_key TEXT,
 	data JSONB,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -204,6 +205,12 @@ CREATE TABLE IF NOT EXISTS %s (
 )`, s.table("registers"), s.table("hosts"))
 	if _, err := tx.ExecContext(ctx, stmt); err != nil {
 		return fmt.Errorf("create registers table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS unique_key TEXT`, s.table("registers"))); err != nil {
+		return fmt.Errorf("add registers unique_key column: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`CREATE UNIQUE INDEX IF NOT EXISTS registers_unique_key_idx ON %s (unique_key) WHERE unique_key IS NOT NULL`, s.table("registers"))); err != nil {
+		return fmt.Errorf("create registers unique_key index: %w", err)
 	}
 	return nil
 }
@@ -757,6 +764,7 @@ func (s *postgresStore) CreateRegister(ctx context.Context, reg Register) (Regis
 	s.logDBOperation("registers", "create", logrus.Fields{
 		"register_id": reg.ID,
 		"host_id":     reg.HostID,
+		"unique_key":  reg.UniqueKey,
 		"payload":     reg.Payload,
 		"labels":      reg.Labels,
 	})
@@ -772,9 +780,16 @@ func (s *postgresStore) CreateRegister(ctx context.Context, reg Register) (Regis
 	}
 	defer rollbackTx(tx, "rollback create register transaction")
 
-	stmt := fmt.Sprintf(`INSERT INTO %s (id, host_id, data) VALUES ($1, $2, $3)`, s.table("registers"))
-	if _, err := tx.ExecContext(ctx, stmt, reg.ID, reg.HostID, payloadValue); err != nil {
+	stmt := fmt.Sprintf(`INSERT INTO %s (id, host_id, unique_key, data) VALUES ($1, $2, $3, $4)`, s.table("registers"))
+	var uniqueKey any
+	if reg.UniqueKey != "" {
+		uniqueKey = reg.UniqueKey
+	}
+	if _, err := tx.ExecContext(ctx, stmt, reg.ID, reg.HostID, uniqueKey, payloadValue); err != nil {
 		if isUniqueConstraintError(err) {
+			if isUniqueRegisterKeyConstraintError(err) {
+				return Register{}, fmt.Errorf("%w: %w", ErrRegisterUniqueKeyConflict, err)
+			}
 			return Register{}, fmt.Errorf("%w: %w", ErrRegisterAlreadyExists, err)
 		}
 		return Register{}, fmt.Errorf("insert register: %w", err)
@@ -801,7 +816,7 @@ func (s *postgresStore) GetRegister(ctx context.Context, id string) (Register, e
 		"register_id": id,
 	})
 
-	query := fmt.Sprintf(`SELECT id, host_id, data, created_at, updated_at FROM %s WHERE id = $1`, s.table("registers"))
+	query := fmt.Sprintf(`SELECT id, host_id, unique_key, data, created_at, updated_at FROM %s WHERE id = $1`, s.table("registers"))
 	row := s.db.QueryRowContext(ctx, query, id)
 
 	reg, err := scanRegister(row)
@@ -836,7 +851,7 @@ func (s *postgresStore) ListRegisters(ctx context.Context, filters *RegisterList
 	s.logDBOperation("registers", "list", logFields)
 
 	query := strings.Builder{}
-	_, _ = fmt.Fprintf(&query, `SELECT id, host_id, data, created_at, updated_at FROM %s`, s.table("registers"))
+	_, _ = fmt.Fprintf(&query, `SELECT id, host_id, unique_key, data, created_at, updated_at FROM %s`, s.table("registers"))
 
 	var args []any
 	var where []string
@@ -1203,4 +1218,15 @@ func isUniqueKeyConstraintError(err error) bool {
 		return pgErr.ConstraintName == "requests_unique_key_idx"
 	}
 	return strings.Contains(err.Error(), "requests.unique_key")
+}
+
+func isUniqueRegisterKeyConstraintError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.ConstraintName == "registers_unique_key_idx"
+	}
+	return strings.Contains(err.Error(), "registers.unique_key")
 }

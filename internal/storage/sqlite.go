@@ -128,6 +128,7 @@ CREATE TABLE IF NOT EXISTS requests (
 CREATE TABLE IF NOT EXISTS registers (
 	id TEXT PRIMARY KEY,
 	host_id TEXT NOT NULL,
+	unique_key TEXT,
 	data TEXT,
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -290,6 +291,12 @@ func (s *sqliteStore) ensureRequestsTable(ctx context.Context, tx *sql.Tx) error
 func (s *sqliteStore) ensureRegistersTable(ctx context.Context, tx *sql.Tx) error {
 	if _, err := tx.ExecContext(ctx, registersTableStatement); err != nil {
 		return fmt.Errorf("create registers table: %w", err)
+	}
+	if err := ensureSQLiteColumn(ctx, tx, "registers", "unique_key", "TEXT"); err != nil {
+		return fmt.Errorf("add registers unique_key column: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS registers_unique_key_idx ON registers(unique_key) WHERE unique_key IS NOT NULL`); err != nil {
+		return fmt.Errorf("create registers unique_key index: %w", err)
 	}
 	return nil
 }
@@ -816,6 +823,7 @@ func (s *sqliteStore) CreateRegister(ctx context.Context, reg Register) (Registe
 	s.logDBOperation("registers", "create", logrus.Fields{
 		"register_id": reg.ID,
 		"host_id":     reg.HostID,
+		"unique_key":  reg.UniqueKey,
 		"payload":     reg.Payload,
 		"labels":      reg.Labels,
 	})
@@ -831,11 +839,18 @@ func (s *sqliteStore) CreateRegister(ctx context.Context, reg Register) (Registe
 	}
 	defer rollbackTx(tx, "rollback create register transaction")
 
+	var uniqueKey any
+	if reg.UniqueKey != "" {
+		uniqueKey = reg.UniqueKey
+	}
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO registers (id, host_id, data)
-VALUES (?, ?, ?)
-`, reg.ID, reg.HostID, payloadValue); err != nil {
+INSERT INTO registers (id, host_id, unique_key, data)
+VALUES (?, ?, ?, ?)
+`, reg.ID, reg.HostID, uniqueKey, payloadValue); err != nil {
 		if isUniqueConstraintError(err) {
+			if isUniqueRegisterKeyConstraintError(err) {
+				return Register{}, fmt.Errorf("%w: %w", ErrRegisterUniqueKeyConflict, err)
+			}
 			return Register{}, fmt.Errorf("%w: %w", ErrRegisterAlreadyExists, err)
 		}
 		return Register{}, fmt.Errorf("insert register: %w", err)
@@ -863,7 +878,7 @@ func (s *sqliteStore) GetRegister(ctx context.Context, id string) (Register, err
 	})
 
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, host_id, data, created_at, updated_at
+SELECT id, host_id, unique_key, data, created_at, updated_at
 FROM registers
 WHERE id = ?
 `, id)
@@ -901,7 +916,7 @@ func (s *sqliteStore) ListRegisters(ctx context.Context, filters *RegisterListFi
 
 	query := strings.Builder{}
 	query.WriteString(`
-SELECT id, host_id, data, created_at, updated_at
+SELECT id, host_id, unique_key, data, created_at, updated_at
 FROM registers`)
 
 	var args []any
@@ -1250,16 +1265,21 @@ func scanRequest(scanner rowScanner) (Request, error) {
 func scanRegister(scanner rowScanner) (Register, error) {
 	var (
 		reg          Register
+		uniqueKey    sql.NullString
 		payloadValue sql.NullString
 		createdAt    any
 		updatedAt    any
 	)
 
-	if err := scanner.Scan(&reg.ID, &reg.HostID, &payloadValue, &createdAt, &updatedAt); err != nil {
+	if err := scanner.Scan(&reg.ID, &reg.HostID, &uniqueKey, &payloadValue, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Register{}, ErrRegisterNotFound
 		}
 		return Register{}, err
+	}
+
+	if uniqueKey.Valid {
+		reg.UniqueKey = uniqueKey.String
 	}
 
 	var err error

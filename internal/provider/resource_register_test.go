@@ -36,8 +36,9 @@ func TestResourceRegisterLifecycle(t *testing.T) {
 	}
 	registerDataJSON, _ := json.Marshal(registerData)
 	data := schema.TestResourceDataRaw(t, resource.Schema, map[string]any{
-		"host_id": "host-abc",
-		"payload": string(registerDataJSON),
+		"host_id":    "host-abc",
+		"unique_key": "unique:reg",
+		"payload":    string(registerDataJSON),
 		"labels": map[string]any{
 			"env": "testing",
 		},
@@ -46,6 +47,7 @@ func TestResourceRegisterLifecycle(t *testing.T) {
 	assert.False(t, resource.CreateContext(context.Background(), data, client).HasError(), "unexpected diagnostics from create")
 
 	assert.Equal(t, testRegisterID, data.Id(), "resource id should match server-generated id")
+	assert.Equal(t, "unique:reg", data.Get("unique_key"), "unique_key should be set")
 
 	assert.False(t, resource.ReadContext(context.Background(), data, client).HasError(), "read diagnostics")
 
@@ -133,6 +135,10 @@ func (h *registerTestHandler) handleCreate(w http.ResponseWriter, r *http.Reques
 	}
 	if payload.HostID == "" {
 		http.Error(w, "missing required fields", http.StatusBadRequest)
+		return
+	}
+	if payload.UniqueKey == "" {
+		http.Error(w, "missing unique_key", http.StatusBadRequest)
 		return
 	}
 

@@ -270,11 +270,12 @@ func TestAPIEndpoints(t *testing.T) {
 		}
 	}
 
-	regPayload := map[string]any{"host_id": host.ID, "payload": map[string]string{"ip": "10.1.1.1"}}
+	regPayload := map[string]any{"host_id": host.ID, "unique_key": "reg-unique", "payload": map[string]string{"ip": "10.1.1.1"}}
 	res = sendTestRequest(t, app, http.MethodPost, "/registers", headers, regPayload)
 	assert.Equal(t, http.StatusCreated, res.StatusCode, "create register status")
 	reg := decodeJSON[storage.Register](t, res)
 	assert.NotEmpty(t, reg.ID, "register should expose generated ID")
+	assert.Equal(t, "reg-unique", reg.UniqueKey, "register should expose unique key")
 
 	res = sendTestRequest(t, app, http.MethodGet, "/registers", headers, nil)
 	assert.Equal(t, http.StatusOK, res.StatusCode, "list registers status")
@@ -285,6 +286,7 @@ func TestAPIEndpoints(t *testing.T) {
 	assert.Equal(t, http.StatusOK, res.StatusCode, "get register status")
 	getRegister := decodeJSON[storage.Register](t, res)
 	assert.Equal(t, host.ID, getRegister.HostID, "register should reference host")
+	assert.Equal(t, "reg-unique", getRegister.UniqueKey, "register should return unique key")
 
 	labelUpdate := map[string]any{"labels": map[string]string{"env": "prod"}}
 	res = sendTestRequest(t, app, http.MethodPatch, fmt.Sprintf("/registers/%s", reg.ID), headers, labelUpdate)

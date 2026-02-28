@@ -543,7 +543,8 @@ func TestRegisterCRUD(t *testing.T) {
 	host = createdHost
 
 	register := Register{
-		HostID: host.ID,
+		HostID:    host.ID,
+		UniqueKey: "unique:register",
 		Payload: map[string]any{
 			"ip": "10.0.0.1",
 		},
@@ -563,6 +564,7 @@ func TestRegisterCRUD(t *testing.T) {
 		t.FailNow()
 	}
 	assert.Equal(t, register.HostID, loaded.HostID, "loaded register host ID")
+	assert.Equal(t, register.UniqueKey, loaded.UniqueKey, "loaded register unique key")
 	assert.Equal(t, "10.0.0.1", loaded.Payload["ip"], "loaded register data")
 
 	registers, err := store.ListRegisters(ctx, nil)
@@ -590,6 +592,131 @@ func TestRegisterCRUD(t *testing.T) {
 	}
 	_, err = store.GetRegister(ctx, createdReg.ID)
 	assert.ErrorIs(t, err, ErrRegisterNotFound, "expected register to be deleted")
+}
+
+func TestRegisterUniqueKeyConflict(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := New(ctx, ":memory:")
+	if err != nil {
+		assert.NoError(t, err, "New() error")
+		t.FailNow()
+	}
+	defer closeStore(t, store)
+
+	if err := store.Migrate(ctx); err != nil {
+		assert.NoError(t, err, "Migrate() error")
+		t.FailNow()
+	}
+
+	host := Host{}
+	createdHost, err := store.CreateHost(ctx, host)
+	if err != nil {
+		assert.NoError(t, err, "CreateHost() error")
+		t.FailNow()
+	}
+
+	register := Register{
+		HostID:    createdHost.ID,
+		UniqueKey: "unique:shared",
+	}
+	createdReg, err := store.CreateRegister(ctx, register)
+	if err != nil {
+		assert.NoError(t, err, "CreateRegister() error")
+		t.FailNow()
+	}
+
+	_, err = store.CreateRegister(ctx, Register{
+		HostID:    createdHost.ID,
+		UniqueKey: "unique:shared",
+	})
+	assert.ErrorIs(t, err, ErrRegisterUniqueKeyConflict, "expected unique key conflict")
+
+	if err := store.DeleteRegister(ctx, createdReg.ID); err != nil {
+		assert.NoError(t, err, "DeleteRegister() error")
+		t.FailNow()
+	}
+
+	_, err = store.CreateRegister(ctx, Register{
+		HostID:    createdHost.ID,
+		UniqueKey: "unique:shared",
+	})
+	assert.NoError(t, err, "expected unique key to be reusable after deletion")
+}
+
+func TestRegisterUniqueKeyEmptyAllowsDuplicates(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := New(ctx, ":memory:")
+	if err != nil {
+		assert.NoError(t, err, "New() error")
+		t.FailNow()
+	}
+	defer closeStore(t, store)
+
+	if err := store.Migrate(ctx); err != nil {
+		assert.NoError(t, err, "Migrate() error")
+		t.FailNow()
+	}
+
+	host := Host{}
+	createdHost, err := store.CreateHost(ctx, host)
+	if err != nil {
+		assert.NoError(t, err, "CreateHost() error")
+		t.FailNow()
+	}
+
+	for i := 0; i < 3; i++ {
+		_, err := store.CreateRegister(ctx, Register{
+			HostID: createdHost.ID,
+		})
+		assert.NoError(t, err, "expected register without unique_key to succeed")
+	}
+}
+
+func TestRegisterUniqueKeyConflictsAcrossHosts(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := New(ctx, ":memory:")
+	if err != nil {
+		assert.NoError(t, err, "New() error")
+		t.FailNow()
+	}
+	defer closeStore(t, store)
+
+	if err := store.Migrate(ctx); err != nil {
+		assert.NoError(t, err, "Migrate() error")
+		t.FailNow()
+	}
+
+	hostA, err := store.CreateHost(ctx, Host{})
+	if err != nil {
+		assert.NoError(t, err, "CreateHost() error")
+		t.FailNow()
+	}
+	hostB, err := store.CreateHost(ctx, Host{})
+	if err != nil {
+		assert.NoError(t, err, "CreateHost() error")
+		t.FailNow()
+	}
+
+	_, err = store.CreateRegister(ctx, Register{
+		HostID:    hostA.ID,
+		UniqueKey: "unique:shared",
+	})
+	if err != nil {
+		assert.NoError(t, err, "CreateRegister() error")
+		t.FailNow()
+	}
+
+	_, err = store.CreateRegister(ctx, Register{
+		HostID:    hostB.ID,
+		UniqueKey: "unique:shared",
+	})
+	assert.ErrorIs(t, err, ErrRegisterUniqueKeyConflict, "expected unique key conflict across hosts")
 }
 
 func TestListRequestsWithFilters(t *testing.T) {

@@ -72,6 +72,7 @@ type RequestListFilters struct {
 type Register struct {
 	ID        string            `json:"id"`
 	HostID    string            `json:"host_id"`
+	UniqueKey string            `json:"unique_key,omitempty"`
 	Payload   map[string]any    `json:"payload,omitempty"`
 	Labels    map[string]string `json:"labels,omitempty"`
 	CreatedAt time.Time         `json:"created_at"`
@@ -112,6 +113,8 @@ var (
 	ErrGrantNotFound = errors.New("grant not found")
 	// ErrRegisterNotFound is returned when a register entry cannot be located.
 	ErrRegisterNotFound = errors.New("register not found")
+	// ErrRegisterUniqueKeyConflict is returned when a register with the same unique key exists.
+	ErrRegisterUniqueKeyConflict = errors.New("register unique key already exists")
 	// ErrReferencedHostNotFound is returned when a request/register refers to a host that does not exist.
 	ErrReferencedHostNotFound    = errors.New("referenced host not found")
 	ErrReferencedRequestNotFound = errors.New("referenced request not found")

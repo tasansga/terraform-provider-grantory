@@ -17,6 +17,12 @@ func resourceRegister() *schema.Resource {
 				Description: "Host identifier that owns the register entry.",
 				ForceNew:    true,
 			},
+			"unique_key": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				ForceNew:    true,
+				Description: "Optional unique key used to enforce register uniqueness within a namespace.",
+			},
 			"payload": {
 				Type:        schema.TypeString,
 				Optional:    true,
@@ -58,9 +64,10 @@ func resourceRegisterCreate(ctx context.Context, d *schema.ResourceData, meta an
 	}
 
 	payload := apiRegister{
-		HostID:  d.Get("host_id").(string),
-		Payload: registerPayload,
-		Labels:  expandStringMap(extractMap(d.Get("labels"))),
+		HostID:    d.Get("host_id").(string),
+		UniqueKey: d.Get("unique_key").(string),
+		Payload:   registerPayload,
+		Labels:    expandStringMap(extractMap(d.Get("labels"))),
 	}
 
 	created, err := client.createRegister(ctx, payload)
@@ -135,6 +142,9 @@ func setRegisterAttributes(d *schema.ResourceData, reg apiRegister) diag.Diagnos
 	var diags diag.Diagnostics
 
 	if err := d.Set("host_id", reg.HostID); err != nil {
+		diags = append(diags, diag.FromErr(err)...)
+	}
+	if err := d.Set("unique_key", reg.UniqueKey); err != nil {
 		diags = append(diags, diag.FromErr(err)...)
 	}
 	if reg.Payload != nil {

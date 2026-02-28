@@ -21,6 +21,11 @@ func dataRegister() *schema.Resource {
 				Computed:    true,
 				Description: "Host identifier that owns the register entry.",
 			},
+			"unique_key": {
+				Type:        schema.TypeString,
+				Computed:    true,
+				Description: "Unique key used to enforce register uniqueness within a namespace.",
+			},
 			"payload": {
 				Type:        schema.TypeString,
 				Computed:    true,

@@ -35,6 +35,7 @@ func TestDataRegisterSource(t *testing.T) {
 
 	assert.Equal(t, "host-123", data.Get("host_id"), "host_id should match payload")
 	assert.Equal(t, "reg-123", data.Get("register_id"), "register_id should be preserved")
+	assert.Equal(t, "unique:reg", data.Get("unique_key"), "unique_key should match payload")
 	payloadValue, ok := data.Get("payload").(string)
 	assert.True(t, ok, "payload should be a string")
 	assert.JSONEq(t, `{"ip":"10.1.1.1"}`, payloadValue, "payload should match stored data")
@@ -72,6 +73,7 @@ func (h *registerDataSourceTestHandler) ServeHTTP(w http.ResponseWriter, r *http
 	response := apiRegister{
 		ID:        registerID,
 		HostID:    "host-123",
+		UniqueKey: "unique:reg",
 		Payload:   map[string]any{"ip": "10.1.1.1"},
 		Labels:    map[string]string{"env": "prod"},
 		CreatedAt: "2024-02-02T00:00:00Z",

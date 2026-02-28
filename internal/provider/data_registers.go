@@ -40,6 +40,10 @@ func dataRegisters() *schema.Resource {
 							Type:     schema.TypeString,
 							Computed: true,
 						},
+						"unique_key": {
+							Type:     schema.TypeString,
+							Computed: true,
+						},
 					},
 				},
 			},
@@ -65,6 +69,7 @@ func dataRegistersRead(ctx context.Context, d *schema.ResourceData, meta any) di
 		entry := map[string]any{
 			"register_id": reg.ID,
 			"host_id":     reg.HostID,
+			"unique_key":  reg.UniqueKey,
 		}
 		values = append(values, entry)
 	}

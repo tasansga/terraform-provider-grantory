@@ -519,9 +519,10 @@ func (h requestHandler) update(c *fiber.Ctx) error {
 type registerHandler struct{}
 
 type registerCreatePayload struct {
-	HostID  string            `json:"host_id"`
-	Payload map[string]any    `json:"payload"`
-	Labels  map[string]string `json:"labels"`
+	HostID    string            `json:"host_id"`
+	UniqueKey string            `json:"unique_key"`
+	Payload   map[string]any    `json:"payload"`
+	Labels    map[string]string `json:"labels"`
 }
 
 type registerUpdatePayload struct {
@@ -538,9 +539,10 @@ func (h registerHandler) create(c *fiber.Ctx) error {
 	}
 
 	logRequestEntry(c, "registerHandler.create", map[string]any{
-		"host_id": payload.HostID,
-		"payload": payload.Payload,
-		"labels":  payload.Labels,
+		"host_id":    payload.HostID,
+		"unique_key": payload.UniqueKey,
+		"payload":    payload.Payload,
+		"labels":     payload.Labels,
 	})
 
 	store, namespace, err := resolveNamespaceStore(c)
@@ -549,15 +551,18 @@ func (h registerHandler) create(c *fiber.Ctx) error {
 	}
 
 	reg := storage.Register{
-		HostID:  payload.HostID,
-		Payload: payload.Payload,
-		Labels:  payload.Labels,
+		HostID:    payload.HostID,
+		UniqueKey: payload.UniqueKey,
+		Payload:   payload.Payload,
+		Labels:    payload.Labels,
 	}
 	created, err := store.CreateRegister(c.Context(), reg)
 	if err != nil {
 		switch {
 		case errors.Is(err, storage.ErrRegisterAlreadyExists):
 			return fiber.NewError(fiber.StatusConflict, "register already exists")
+		case errors.Is(err, storage.ErrRegisterUniqueKeyConflict):
+			return fiber.NewError(fiber.StatusConflict, "register unique key already exists")
 		case errors.Is(err, storage.ErrReferencedHostNotFound):
 			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("host %s not found", payload.HostID))
 		default:

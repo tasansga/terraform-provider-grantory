@@ -76,6 +76,7 @@ output "grantory_request_without_labels_payload" {
 
 resource "grantory_register" "with_labels_payload" {
   host_id = grantory_host.with_labels.host_id
+  unique_key = "register-unique"
   payload = jsonencode({
     source = "inttest-script"
   })

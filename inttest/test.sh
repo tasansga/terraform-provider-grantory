@@ -106,12 +106,16 @@ prepare_http_provider() {
   local tf_dir="$1"
   local prep_dir="$WORKDIR/tofu-http"
 
-  if [[ -d "$prep_dir/.terraform/providers" ]]; then
+  if [[ -d "$prep_dir/.terraform/providers" && -f "$prep_dir/.terraform.lock.hcl" ]]; then
     mkdir -p "$tf_dir"
     cp -f "$prep_dir/.terraform.lock.hcl" "$tf_dir/.terraform.lock.hcl"
     mkdir -p "$tf_dir/.terraform"
     cp -R "$prep_dir/.terraform/providers" "$tf_dir/.terraform/"
     return 0
+  fi
+
+  if [[ -d "$prep_dir/.terraform/providers" && ! -f "$prep_dir/.terraform.lock.hcl" ]]; then
+    rm -rf "$prep_dir"
   fi
 
   mkdir -p "$prep_dir"
@@ -232,6 +236,7 @@ assert_outputs() {
 
   echo "$outputs_json" | jq -e '.grantory_register_with_labels_payload.value.id | length > 0' >/dev/null
   echo "$outputs_json" | jq -e '.grantory_register_without_labels_payload.value.id | length > 0' >/dev/null
+  echo "$outputs_json" | jq -e '.grantory_register_with_labels_payload.value.unique_key == "register-unique"' >/dev/null
   echo "$outputs_json" | jq -e '.grantory_register_with_labels_payload.value.labels.pipeline == "inttest"' >/dev/null
   echo "$outputs_json" | jq -e '.grantory_register_with_labels_payload.value.payload | fromjson == {"source":"inttest-script"}' >/dev/null
   echo "$outputs_json" | jq -e '.grantory_register_without_labels_payload.value.payload == null' >/dev/null

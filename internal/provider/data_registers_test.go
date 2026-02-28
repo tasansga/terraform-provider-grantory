@@ -45,6 +45,7 @@ func TestDataRegistersSource(t *testing.T) {
 	assert.True(t, ok, "register entry should be structured")
 	assert.Equal(t, "host-123", entry["host_id"], "host_id should match filter")
 	assert.Equal(t, "reg-123", entry["register_id"], "register id should be exposed")
+	assert.Equal(t, "unique:reg", entry["unique_key"], "unique_key should be exposed")
 
 	query := handler.lastQuery()
 	labelValues := query["label"]
@@ -71,6 +72,7 @@ func (h *registersDataSourceTestHandler) ServeHTTP(w http.ResponseWriter, r *htt
 		{
 			ID:        "reg-123",
 			HostID:    "host-123",
+			UniqueKey: "unique:reg",
 			Payload:   map[string]any{"ip": "10.1.1.1"},
 			Labels:    map[string]string{"env": "prod"},
 			CreatedAt: "2024-02-02T00:00:00Z",
