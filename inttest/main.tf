@@ -147,8 +147,19 @@ data "grantory_hosts" "hosts" {
   ]
 }
 
+data "grantory_host" "host_details" {
+  host_id = grantory_host.with_labels.host_id
+  depends_on = [
+    grantory_host.with_labels,
+  ]
+}
+
 output "data_grantory_hosts" {
   value = data.grantory_hosts.hosts
+}
+
+output "data_grantory_host_details" {
+  value = data.grantory_host.host_details
 }
 
 data "grantory_registers" "with_labels" {

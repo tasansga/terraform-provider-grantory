@@ -25,6 +25,7 @@ resource "grantory_host" "app" {
 ### Optional
 
 - `labels` (Map of String) Optional labels that accompany the host registration.
+- `unique_key` (String) Optional unique key used to enforce host uniqueness within a namespace.
 
 ### Read-Only
 

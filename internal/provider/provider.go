@@ -64,6 +64,7 @@ func New() *schema.Provider {
 			"grantory_grant":    resourceGrant(),
 		},
 		DataSourcesMap: map[string]*schema.Resource{
+			"grantory_host":      dataHost(),
 			"grantory_hosts":     dataHosts(),
 			"grantory_requests":  dataRequests(),
 			"grantory_request":   dataRequest(),

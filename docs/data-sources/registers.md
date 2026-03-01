@@ -30,3 +30,4 @@ Read-Only:
 
 - `host_id` (String)
 - `register_id` (String)
+- `unique_key` (String)

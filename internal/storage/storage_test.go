@@ -94,6 +94,7 @@ func TestHostCRUD(t *testing.T) {
 		Labels: map[string]string{
 			"env": "test",
 		},
+		UniqueKey: "host:primary",
 	}
 
 	created, err := store.CreateHost(ctx, host)
@@ -111,6 +112,7 @@ func TestHostCRUD(t *testing.T) {
 	}
 	assert.Equal(t, host.ID, loaded.ID, "loaded host ID")
 	assert.Equal(t, "test", loaded.Labels["env"], "loaded host labels")
+	assert.Equal(t, "host:primary", loaded.UniqueKey, "loaded host unique key")
 	assert.False(t, loaded.CreatedAt.IsZero(), "created_at should be populated")
 
 	hosts, err := store.ListHosts(ctx)
@@ -127,6 +129,85 @@ func TestHostCRUD(t *testing.T) {
 
 	_, err = store.GetHost(ctx, host.ID)
 	assert.ErrorIs(t, err, ErrHostNotFound, "expected host to be deleted")
+}
+
+func TestHostUniqueKeyEmptyAllowsDuplicates(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := New(ctx, ":memory:")
+	if err != nil {
+		assert.NoError(t, err, "New() error")
+		t.FailNow()
+	}
+	defer closeStore(t, store)
+
+	if err := store.Migrate(ctx); err != nil {
+		assert.NoError(t, err, "Migrate() error")
+		t.FailNow()
+	}
+
+	for i := 0; i < 3; i++ {
+		_, err := store.CreateHost(ctx, Host{})
+		assert.NoError(t, err, "expected host without unique_key to succeed")
+	}
+}
+
+func TestHostUniqueKeyConflicts(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := New(ctx, ":memory:")
+	if err != nil {
+		assert.NoError(t, err, "New() error")
+		t.FailNow()
+	}
+	defer closeStore(t, store)
+
+	if err := store.Migrate(ctx); err != nil {
+		assert.NoError(t, err, "Migrate() error")
+		t.FailNow()
+	}
+
+	_, err = store.CreateHost(ctx, Host{UniqueKey: "unique:shared"})
+	if err != nil {
+		assert.NoError(t, err, "CreateHost() error")
+		t.FailNow()
+	}
+
+	_, err = store.CreateHost(ctx, Host{UniqueKey: "unique:shared"})
+	assert.ErrorIs(t, err, ErrHostUniqueKeyConflict, "expected unique key conflict")
+}
+
+func TestHostUniqueKeyReuseAfterDelete(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := New(ctx, ":memory:")
+	if err != nil {
+		assert.NoError(t, err, "New() error")
+		t.FailNow()
+	}
+	defer closeStore(t, store)
+
+	if err := store.Migrate(ctx); err != nil {
+		assert.NoError(t, err, "Migrate() error")
+		t.FailNow()
+	}
+
+	host, err := store.CreateHost(ctx, Host{UniqueKey: "unique:shared"})
+	if err != nil {
+		assert.NoError(t, err, "CreateHost() error")
+		t.FailNow()
+	}
+
+	if err := store.DeleteHost(ctx, host.ID); err != nil {
+		assert.NoError(t, err, "DeleteHost() error")
+		t.FailNow()
+	}
+
+	_, err = store.CreateHost(ctx, Host{UniqueKey: "unique:shared"})
+	assert.NoError(t, err, "expected unique key to be reusable after delete")
 }
 
 func TestCreateHostGeneratesUniqueIDs(t *testing.T) {

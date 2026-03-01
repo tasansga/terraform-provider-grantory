@@ -16,6 +16,12 @@ func resourceHost() *schema.Resource {
 				Computed:    true,
 				Description: "Server-generated identifier for the host.",
 			},
+			"unique_key": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				ForceNew:    true,
+				Description: "Optional unique key used to enforce host uniqueness within a namespace.",
+			},
 			"labels": {
 				Type:        schema.TypeMap,
 				Optional:    true,
@@ -40,7 +46,8 @@ func resourceHostCreate(ctx context.Context, d *schema.ResourceData, meta any) d
 	}
 
 	payload := apiHost{
-		Labels: expandStringMap(rawLabels),
+		UniqueKey: d.Get("unique_key").(string),
+		Labels:    expandStringMap(rawLabels),
 	}
 
 	host, err := client.createHost(ctx, payload)
@@ -104,6 +111,9 @@ func resourceHostRefresh(ctx context.Context, d *schema.ResourceData, host apiHo
 	var diags diag.Diagnostics
 
 	if err := d.Set("host_id", host.ID); err != nil {
+		diags = append(diags, diag.FromErr(err)...)
+	}
+	if err := d.Set("unique_key", host.UniqueKey); err != nil {
 		diags = append(diags, diag.FromErr(err)...)
 	}
 	if host.Labels != nil {

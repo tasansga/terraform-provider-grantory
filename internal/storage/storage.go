@@ -45,6 +45,7 @@ type Store interface {
 // Host describes the persisted labels for a registered host.
 type Host struct {
 	ID        string            `json:"id"`
+	UniqueKey string            `json:"unique_key,omitempty"`
 	Labels    map[string]string `json:"labels,omitempty"`
 	CreatedAt time.Time         `json:"created_at"`
 }
@@ -99,6 +100,8 @@ var (
 	ErrHostNotFound = errors.New("host not found")
 	// ErrHostAlreadyExists is returned when a host with the given ID exists.
 	ErrHostAlreadyExists = errors.New("host already exists")
+	// ErrHostUniqueKeyConflict is returned when a host with the same unique key exists.
+	ErrHostUniqueKeyConflict = errors.New("host unique key already exists")
 	// ErrRequestAlreadyExists is returned when a request with the given ID exists.
 	ErrRequestAlreadyExists = errors.New("request already exists")
 	// ErrGrantAlreadyExists is returned when a grant with the given ID exists.

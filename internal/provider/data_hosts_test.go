@@ -19,11 +19,13 @@ func TestDataHostsSource(t *testing.T) {
 	handler := newHostsDataSourceTestHandler([]apiHost{
 		{
 			ID:        "host-2",
+			UniqueKey: "unique:host-2",
 			Labels:    map[string]string{"env": "dev"},
 			CreatedAt: "2024-02-02T00:00:00Z",
 		},
 		{
 			ID:        "host-1",
+			UniqueKey: "unique:host-1",
 			Labels:    map[string]string{"env": "prod"},
 			CreatedAt: "2024-02-02T00:00:00Z",
 		},
@@ -64,11 +66,13 @@ func TestDataHostsSourceLabels(t *testing.T) {
 	handler := newHostsDataSourceTestHandler([]apiHost{
 		{
 			ID:        "host-1",
+			UniqueKey: "unique:host-1",
 			Labels:    map[string]string{"env": "prod"},
 			CreatedAt: "2024-02-02T00:00:00Z",
 		},
 		{
 			ID:        "host-2",
+			UniqueKey: "unique:host-2",
 			Labels:    map[string]string{"env": "dev"},
 			CreatedAt: "2024-02-02T00:00:00Z",
 		},

@@ -29,7 +29,8 @@ func registerHostRoutes(app fiber.Router) {
 type hostHandler struct{}
 
 type hostPayload struct {
-	Labels map[string]string `json:"labels"`
+	UniqueKey string            `json:"unique_key"`
+	Labels    map[string]string `json:"labels"`
 }
 
 type hostLabelsPayload struct {
@@ -75,12 +76,15 @@ func (h hostHandler) create(c *fiber.Ctx) error {
 	}
 
 	host, err := store.CreateHost(c.Context(), storage.Host{
-		Labels: payload.Labels,
+		UniqueKey: payload.UniqueKey,
+		Labels:    payload.Labels,
 	})
 	if err != nil {
 		switch {
 		case errors.Is(err, storage.ErrHostAlreadyExists):
 			return fiber.NewError(fiber.StatusConflict, "host already exists")
+		case errors.Is(err, storage.ErrHostUniqueKeyConflict):
+			return fiber.NewError(fiber.StatusConflict, "host unique key already exists")
 		default:
 			logrus.WithError(err).WithField("namespace", namespace).Error("create host")
 			return fiber.NewError(fiber.StatusInternalServerError, "unable to persist host")

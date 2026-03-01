@@ -17,6 +17,7 @@ var errResourceNotFound = errors.New("grantory: resource not found")
 
 type apiHost struct {
 	ID        string            `json:"id"`
+	UniqueKey string            `json:"unique_key,omitempty"`
 	Labels    map[string]string `json:"labels,omitempty"`
 	CreatedAt string            `json:"created_at"`
 }

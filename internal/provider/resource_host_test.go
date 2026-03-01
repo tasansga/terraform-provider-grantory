@@ -29,6 +29,7 @@ func TestResourceHostLifecycle(t *testing.T) {
 
 	resource := resourceHost()
 	data := schema.TestResourceDataRaw(t, resource.Schema, map[string]any{
+		"unique_key": "unique:host",
 		"labels": map[string]any{
 			"env": "test",
 		},
@@ -36,6 +37,7 @@ func TestResourceHostLifecycle(t *testing.T) {
 
 	assert.False(t, resource.CreateContext(context.Background(), data, client).HasError(), "unexpected diagnostics from create")
 	assert.Equal(t, data.Id(), data.Get("host_id"), "host_id should expose generated ID")
+	assert.Equal(t, "unique:host", data.Get("unique_key"), "unique_key should be set")
 
 	labels, ok := data.Get("labels").(map[string]any)
 	assert.True(t, ok, "labels should be a map")

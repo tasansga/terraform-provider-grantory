@@ -112,6 +112,7 @@ const (
 	hostsTableStatement = `
 CREATE TABLE IF NOT EXISTS hosts (
 	id TEXT PRIMARY KEY,
+	unique_key TEXT,
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 )`
 	requestsTableStatement = `
@@ -272,6 +273,12 @@ func (s *sqliteStore) ensureHostsTable(ctx context.Context, tx *sql.Tx) error {
 	if _, err := tx.ExecContext(ctx, hostsTableStatement); err != nil {
 		return fmt.Errorf("create hosts table: %w", err)
 	}
+	if err := ensureSQLiteColumn(ctx, tx, "hosts", "unique_key", "TEXT"); err != nil {
+		return fmt.Errorf("add hosts unique_key column: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS hosts_unique_key_idx ON hosts(unique_key) WHERE unique_key IS NOT NULL`); err != nil {
+		return fmt.Errorf("create hosts unique_key index: %w", err)
+	}
 	return nil
 }
 
@@ -391,15 +398,23 @@ func (s *sqliteStore) CreateHost(ctx context.Context, host Host) (Host, error) {
 	defer rollbackTx(tx, "rollback create host transaction")
 
 	s.logDBOperation("hosts", "create", logrus.Fields{
-		"host_id": host.ID,
-		"labels":  host.Labels,
+		"host_id":    host.ID,
+		"unique_key": host.UniqueKey,
+		"labels":     host.Labels,
 	})
 
+	var uniqueKey any
+	if host.UniqueKey != "" {
+		uniqueKey = host.UniqueKey
+	}
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO hosts (id)
-VALUES (?)
-`, host.ID); err != nil {
+INSERT INTO hosts (id, unique_key)
+VALUES (?, ?)
+`, host.ID, uniqueKey); err != nil {
 		if isUniqueConstraintError(err) {
+			if isUniqueHostKeyConstraintError(err) {
+				return Host{}, ErrHostUniqueKeyConflict
+			}
 			return Host{}, ErrHostAlreadyExists
 		}
 		return Host{}, fmt.Errorf("insert host: %w", err)
@@ -427,7 +442,7 @@ func (s *sqliteStore) GetHost(ctx context.Context, id string) (Host, error) {
 	})
 
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, created_at
+SELECT id, unique_key, created_at
 FROM hosts
 WHERE id = ?
 `, id)
@@ -451,7 +466,7 @@ func (s *sqliteStore) ListHosts(ctx context.Context) ([]Host, error) {
 	s.logDBOperation("hosts", "list", nil)
 
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, created_at
+SELECT id, unique_key, created_at
 FROM hosts
 ORDER BY created_at ASC
 `)
@@ -1204,14 +1219,19 @@ type rowScanner interface {
 func scanHost(scanner rowScanner) (Host, error) {
 	var (
 		host      Host
+		uniqueKey sql.NullString
 		createdAt any
 	)
 
-	if err := scanner.Scan(&host.ID, &createdAt); err != nil {
+	if err := scanner.Scan(&host.ID, &uniqueKey, &createdAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Host{}, ErrHostNotFound
 		}
 		return Host{}, err
+	}
+
+	if uniqueKey.Valid {
+		host.UniqueKey = uniqueKey.String
 	}
 
 	t, err := parseDBTime(createdAt)

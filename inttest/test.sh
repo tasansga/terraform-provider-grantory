@@ -249,6 +249,8 @@ assert_outputs() {
   echo "$outputs_json" | jq -e --arg id "$host_with_labels" '.data_grantory_hosts.value.hosts | index($id) != null' >/dev/null
   echo "$outputs_json" | jq -e --arg id "$host_without_labels" '.data_grantory_hosts.value.hosts | index($id) != null' >/dev/null
   echo "$outputs_json" | jq -e '.data_grantory_hosts.value.hosts | length == 2' >/dev/null
+  echo "$outputs_json" | jq -e --arg id "$host_with_labels" '.data_grantory_host_details.value.host_id == $id' >/dev/null
+  echo "$outputs_json" | jq -e '.data_grantory_host_details.value.labels.env == "inttest"' >/dev/null
 
   echo "$outputs_json" | jq -e '.data_grantory_registers_all.value | length == 2' >/dev/null
   echo "$outputs_json" | jq -e '.data_grantory_registers_with_labels.value | length == 1' >/dev/null

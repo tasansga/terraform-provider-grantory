@@ -161,10 +161,17 @@ func (s *postgresStore) ensureHostsTable(ctx context.Context, tx *sql.Tx) error 
 	stmt := fmt.Sprintf(`
 CREATE TABLE IF NOT EXISTS %s (
 	id TEXT PRIMARY KEY,
+	unique_key TEXT,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 )`, s.table("hosts"))
 	if _, err := tx.ExecContext(ctx, stmt); err != nil {
 		return fmt.Errorf("create hosts table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS unique_key TEXT`, s.table("hosts"))); err != nil {
+		return fmt.Errorf("add hosts unique_key column: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`CREATE UNIQUE INDEX IF NOT EXISTS hosts_unique_key_idx ON %s (unique_key) WHERE unique_key IS NOT NULL`, s.table("hosts"))); err != nil {
+		return fmt.Errorf("create hosts unique_key index: %w", err)
 	}
 	return nil
 }
@@ -342,13 +349,21 @@ func (s *postgresStore) CreateHost(ctx context.Context, host Host) (Host, error)
 	defer rollbackTx(tx, "rollback create host transaction")
 
 	s.logDBOperation("hosts", "create", logrus.Fields{
-		"host_id": host.ID,
-		"labels":  host.Labels,
+		"host_id":    host.ID,
+		"unique_key": host.UniqueKey,
+		"labels":     host.Labels,
 	})
 
-	stmt := fmt.Sprintf(`INSERT INTO %s (id) VALUES ($1)`, s.table("hosts"))
-	if _, err := tx.ExecContext(ctx, stmt, host.ID); err != nil {
+	stmt := fmt.Sprintf(`INSERT INTO %s (id, unique_key) VALUES ($1, $2)`, s.table("hosts"))
+	var uniqueKey any
+	if host.UniqueKey != "" {
+		uniqueKey = host.UniqueKey
+	}
+	if _, err := tx.ExecContext(ctx, stmt, host.ID, uniqueKey); err != nil {
 		if isUniqueConstraintError(err) {
+			if isUniqueHostKeyConstraintError(err) {
+				return Host{}, ErrHostUniqueKeyConflict
+			}
 			return Host{}, ErrHostAlreadyExists
 		}
 		return Host{}, fmt.Errorf("insert host: %w", err)
@@ -375,7 +390,7 @@ func (s *postgresStore) GetHost(ctx context.Context, id string) (Host, error) {
 		"host_id": id,
 	})
 
-	query := fmt.Sprintf(`SELECT id, created_at FROM %s WHERE id = $1`, s.table("hosts"))
+query := fmt.Sprintf(`SELECT id, unique_key, created_at FROM %s WHERE id = $1`, s.table("hosts"))
 	row := s.db.QueryRowContext(ctx, query, id)
 	host, err := scanHost(row)
 	if err != nil {
@@ -396,7 +411,7 @@ func (s *postgresStore) ListHosts(ctx context.Context) ([]Host, error) {
 
 	s.logDBOperation("hosts", "list", nil)
 
-	query := fmt.Sprintf(`SELECT id, created_at FROM %s ORDER BY created_at ASC`, s.table("hosts"))
+query := fmt.Sprintf(`SELECT id, unique_key, created_at FROM %s ORDER BY created_at ASC`, s.table("hosts"))
 	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("query hosts: %w", err)
@@ -1229,4 +1244,15 @@ func isUniqueRegisterKeyConstraintError(err error) bool {
 		return pgErr.ConstraintName == "registers_unique_key_idx"
 	}
 	return strings.Contains(err.Error(), "registers.unique_key")
+}
+
+func isUniqueHostKeyConstraintError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.ConstraintName == "hosts_unique_key_idx"
+	}
+	return strings.Contains(err.Error(), "hosts.unique_key")
 }

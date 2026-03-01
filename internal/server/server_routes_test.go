@@ -201,13 +201,15 @@ func TestAPIEndpoints(t *testing.T) {
 	hostsBefore := decodeJSON[[]storage.Host](t, res)
 	assert.Len(t, hostsBefore, 0, "expected no hosts initially")
 
-	hostPayload := map[string]any{"labels": map[string]string{"env": "test"}}
+	hostPayload := map[string]any{"labels": map[string]string{"env": "test"}, "unique_key": "host-unique"}
 	res = sendTestRequest(t, app, http.MethodPost, "/hosts", headers, hostPayload)
 	assert.Equal(t, http.StatusCreated, res.StatusCode, "create host status")
 	host := decodeJSON[storage.Host](t, res)
+	assert.Equal(t, "host-unique", host.UniqueKey, "host should expose unique key")
 	res = sendTestRequest(t, app, http.MethodGet, fmt.Sprintf("/hosts/%s", host.ID), headers, nil)
 	assert.Equal(t, http.StatusOK, res.StatusCode, "get host status")
-	decodeJSON[storage.Host](t, res)
+	loadedHost := decodeJSON[storage.Host](t, res)
+	assert.Equal(t, "host-unique", loadedHost.UniqueKey, "loaded host should expose unique key")
 
 	labelsUpdate := map[string]any{"labels": map[string]string{"env": "prod"}}
 	res = sendTestRequest(t, app, http.MethodPatch, fmt.Sprintf("/hosts/%s/labels", host.ID), headers, labelsUpdate)
