@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -22,6 +23,17 @@ func closeStore(t *testing.T, store storage.Store) {
 	if err := store.Close(); err != nil {
 		t.Errorf("close store: %v", err)
 	}
+}
+
+func runCLI(t *testing.T, args ...string) string {
+	t.Helper()
+
+	cmd := NewRootCommand()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs(args)
+	assert.NoError(t, cmd.Execute(), "command should succeed")
+	return buf.String()
 }
 
 func TestListHostsCommand(t *testing.T) {
@@ -494,6 +506,59 @@ func TestInspectHostsCommand(t *testing.T) {
 	assert.NoError(t, cmd.Execute(), "inspect hosts command should succeed")
 }
 
+func TestInspectRequestWithoutGrant(t *testing.T) {
+	t.Parallel()
+
+	var requestID string
+	dataDir := prepareTestDataDir(t, func(ctx context.Context, store storage.Store) {
+		host, err := store.CreateHost(ctx, storage.Host{})
+		assert.NoError(t, err, "create host failed")
+		req, err := store.CreateRequest(ctx, storage.Request{HostID: host.ID})
+		assert.NoError(t, err, "create request failed")
+		requestID = req.ID
+	})
+
+	output := runCLI(t, "--database", dataDir, "inspect", "requests", requestID)
+
+	var response map[string]any
+	assert.NoError(t, json.Unmarshal([]byte(output), &response))
+	assert.Equal(t, false, response["has_grant"], "has_grant should be false")
+	_, hasGrantID := response["grant_id"]
+	assert.False(t, hasGrantID, "grant_id should be absent without grant")
+	_, hasGrantPayload := response["grant_payload"]
+	assert.False(t, hasGrantPayload, "grant_payload should be absent without grant")
+}
+
+func TestInspectRequestWithGrant(t *testing.T) {
+	t.Parallel()
+
+	var requestID string
+	var grantID string
+	dataDir := prepareTestDataDir(t, func(ctx context.Context, store storage.Store) {
+		host, err := store.CreateHost(ctx, storage.Host{})
+		assert.NoError(t, err, "create host failed")
+		req, err := store.CreateRequest(ctx, storage.Request{HostID: host.ID})
+		assert.NoError(t, err, "create request failed")
+		requestID = req.ID
+		grant, err := store.CreateGrant(ctx, storage.Grant{
+			RequestID: req.ID,
+			Payload:   map[string]any{"user": "alice"},
+		})
+		assert.NoError(t, err, "create grant failed")
+		grantID = grant.ID
+	})
+
+	output := runCLI(t, "--database", dataDir, "inspect", "requests", requestID)
+
+	var response map[string]any
+	assert.NoError(t, json.Unmarshal([]byte(output), &response))
+	assert.Equal(t, true, response["has_grant"], "has_grant should be true")
+	assert.Equal(t, grantID, response["grant_id"], "grant_id should match")
+	payload, ok := response["grant_payload"].(map[string]any)
+	assert.True(t, ok, "grant_payload should be an object")
+	assert.Equal(t, "alice", payload["user"], "grant_payload user should match")
+}
+
 func TestDeleteHostsCommand(t *testing.T) {
 	t.Parallel()
 
@@ -801,6 +866,66 @@ func TestDeleteCommandsForAllResources(t *testing.T) {
 		cmd.SetArgs([]string{"--backend", "api", "--server-url", server.URL, "delete", resource, "id"})
 		assert.NoError(t, cmd.Execute(), "delete resource %s should succeed", resource)
 	}
+}
+
+func TestInspectRequestAPIWithoutGrant(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || !strings.HasPrefix(r.URL.Path, "/requests/") {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":        "req-no-grant",
+			"host_id":   "host-1",
+			"has_grant": false,
+			"grant":     nil,
+		})
+	}))
+	defer server.Close()
+
+	output := runCLI(t, "--backend", "api", "--server-url", server.URL, "inspect", "requests", "req-no-grant")
+
+	var response map[string]any
+	assert.NoError(t, json.Unmarshal([]byte(output), &response))
+	assert.Equal(t, false, response["has_grant"], "has_grant should be false")
+	_, hasGrantID := response["grant_id"]
+	assert.False(t, hasGrantID, "grant_id should be absent without grant")
+	_, hasGrantPayload := response["grant_payload"]
+	assert.False(t, hasGrantPayload, "grant_payload should be absent without grant")
+}
+
+func TestInspectRequestAPIWithGrant(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || !strings.HasPrefix(r.URL.Path, "/requests/") {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":        "req-grant",
+			"host_id":   "host-1",
+			"has_grant": true,
+			"grant_id":  "grant-1",
+			"grant": map[string]any{
+				"grant_id": "grant-1",
+				"payload":  map[string]any{"user": "alice"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	output := runCLI(t, "--backend", "api", "--server-url", server.URL, "inspect", "requests", "req-grant")
+
+	var response map[string]any
+	assert.NoError(t, json.Unmarshal([]byte(output), &response))
+	assert.Equal(t, true, response["has_grant"], "has_grant should be true")
+	assert.Equal(t, "grant-1", response["grant_id"], "grant_id should match")
+	payload, ok := response["grant_payload"].(map[string]any)
+	assert.True(t, ok, "grant_payload should be an object")
+	assert.Equal(t, "alice", payload["user"], "grant_payload user should match")
 }
 
 func prepareTestDataDir(t *testing.T, setup func(context.Context, storage.Store)) string {

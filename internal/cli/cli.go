@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strings"
 
@@ -95,6 +96,10 @@ func newListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list <resource_type>",
 		Short: "List hosts, requests, registers, or grants",
+		Long: "List resources and return JSON arrays of objects.\n\n" +
+			"Examples:\n" +
+			"  grantory list hosts\n" +
+			"  grantory list requests\n",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resType, err := parseResourceType(args[0])
@@ -109,25 +114,25 @@ func newListCmd() *cobra.Command {
 					if err != nil {
 						return err
 					}
-					return outputJSON(hosts)
+					return outputJSON(cmd, hosts)
 				case resourceTypeRequests:
 					requests, err := backend.ListRequests(ctx, nil)
 					if err != nil {
 						return err
 					}
-					return outputJSON(requests)
+					return outputJSON(cmd, requests)
 				case resourceTypeRegisters:
 					registers, err := backend.ListRegisters(ctx, nil)
 					if err != nil {
 						return err
 					}
-					return outputJSON(registers)
+					return outputJSON(cmd, registers)
 				case resourceTypeGrants:
 					grants, err := backend.ListGrants(ctx)
 					if err != nil {
 						return err
 					}
-					return outputJSON(grants)
+					return outputJSON(cmd, grants)
 				default:
 					return fmt.Errorf("unsupported resource type: %s", resType)
 				}
@@ -140,6 +145,12 @@ func newInspectCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "inspect <resource_type> <id>",
 		Short: "Show a single host, request, register, or grant",
+		Long: "Show a single resource as JSON.\n\n" +
+			"For requests, the response also includes the applied grant ID and payload if present.\n\n" +
+			"Examples:\n" +
+			"  grantory inspect hosts <host-id>\n" +
+			"  grantory inspect requests <request-id>\n" +
+			"  grantory inspect requests <request-id> | jq '.grant_id, .grant_payload'\n",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resType, err := parseResourceType(args[0])
@@ -149,11 +160,19 @@ func newInspectCmd() *cobra.Command {
 			id := args[1]
 
 			return runWithBackend(cmd, func(ctx context.Context, backend cliBackend) error {
+				if resType == resourceTypeRequests {
+					response, err := fetchRequestInspectResponse(ctx, backend, id)
+					if err != nil {
+						return err
+					}
+					return outputJSON(cmd, response)
+				}
+
 				resource, err := fetchResource(ctx, backend, resType, id)
 				if err != nil {
 					return err
 				}
-				return outputJSON(resource)
+				return outputJSON(cmd, resource)
 			})
 		},
 	}
@@ -163,6 +182,9 @@ func newDeleteCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "delete <resource_type> <id>",
 		Short: "Delete a host, request, register, or grant",
+		Long: "Delete a single resource by ID.\n\n" +
+			"Examples:\n" +
+			"  grantory delete requests <request-id>\n",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resType, err := parseResourceType(args[0])
@@ -192,7 +214,7 @@ func newDeleteCmd() *cobra.Command {
 				default:
 					return fmt.Errorf("unsupported resource type: %s", resType)
 				}
-				return outputJSON(map[string]string{"id": id, "resource": string(resType), "status": "deleted"})
+				return outputJSON(cmd, map[string]string{"id": id, "resource": string(resType), "status": "deleted"})
 			})
 		},
 	}
@@ -202,6 +224,10 @@ func newMutateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "mutate <resource_type> <id>",
 		Short: "Mutate host, request, or register labels",
+		Long: "Replace labels for a host, request, or register using JSON.\n\n" +
+			"Examples:\n" +
+			"  grantory mutate hosts <host-id> --labels '{\"env\":\"prod\"}'\n" +
+			"  grantory mutate requests <request-id> --labels-file labels.json\n",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resType, err := parseResourceType(args[0])
@@ -253,7 +279,7 @@ func newMutateCmd() *cobra.Command {
 					return err
 				}
 
-				return outputJSON(updated)
+				return outputJSON(cmd, updated)
 			})
 		},
 	}
@@ -291,6 +317,61 @@ func fetchResource(ctx context.Context, backend cliBackend, resType resourceType
 		return backend.GetGrant(ctx, id)
 	default:
 		return nil, fmt.Errorf("unsupported resource type: %s", resType)
+	}
+}
+
+type requestInspectResponse struct {
+	storage.Request
+	GrantID      string `json:"grant_id,omitempty"`
+	GrantPayload any    `json:"grant_payload,omitempty"`
+}
+
+type apiRequestInspectResponse struct {
+	storage.Request
+	GrantID string         `json:"grant_id,omitempty"`
+	Grant   map[string]any `json:"grant"`
+}
+
+func fetchRequestInspectResponse(ctx context.Context, backend cliBackend, id string) (requestInspectResponse, error) {
+	switch b := backend.(type) {
+	case *directBackend:
+		req, err := b.store.GetRequest(ctx, id)
+		if err != nil {
+			return requestInspectResponse{}, err
+		}
+		resp := requestInspectResponse{Request: req}
+		grant, found, err := b.store.GetGrantForRequest(ctx, req.ID)
+		if err != nil {
+			return resp, err
+		}
+		if found {
+			resp.GrantID = grant.ID
+			if grant.Payload != nil {
+				resp.GrantPayload = grant.Payload
+			}
+		}
+		return resp, nil
+	case *apiBackend:
+		var apiResp apiRequestInspectResponse
+		if err := b.doJSON(ctx, http.MethodGet, fmt.Sprintf("/requests/%s", id), nil, &apiResp); err != nil {
+			return requestInspectResponse{}, err
+		}
+		resp := requestInspectResponse{Request: apiResp.Request}
+		if apiResp.GrantID != "" {
+			resp.GrantID = apiResp.GrantID
+			if apiResp.Grant != nil {
+				if payload, ok := apiResp.Grant["payload"]; ok {
+					resp.GrantPayload = payload
+				}
+			}
+		}
+		return resp, nil
+	default:
+		req, err := backend.GetRequest(ctx, id)
+		if err != nil {
+			return requestInspectResponse{}, err
+		}
+		return requestInspectResponse{Request: req}, nil
 	}
 }
 
@@ -345,8 +426,12 @@ func loadLabelsFromSource(cmd *cobra.Command, source string) (map[string]string,
 	return parseLabels(string(data))
 }
 
-func outputJSON(value any) error {
-	encoder := json.NewEncoder(os.Stdout)
+func outputJSON(cmd *cobra.Command, value any) error {
+	return outputJSONTo(cmd.OutOrStdout(), value)
+}
+
+func outputJSONTo(out io.Writer, value any) error {
+	encoder := json.NewEncoder(out)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(value)
 }
@@ -355,6 +440,7 @@ func newNamespaceCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "namespace",
 		Short: "Manage namespace databases",
+		Long: "Manage namespace databases (direct backend) or schemas (Postgres).\n",
 	}
 	cmd.AddCommand(newNamespaceDeleteCmd())
 	return cmd
@@ -364,6 +450,9 @@ func newNamespaceDeleteCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "delete <namespace>",
 		Short: "Remove a namespace database",
+		Long: "Remove a namespace database (SQLite) or schema (Postgres).\n\n" +
+			"Examples:\n" +
+			"  grantory namespace delete staging\n",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			namespace := args[0]
@@ -380,7 +469,7 @@ func newNamespaceDeleteCmd() *cobra.Command {
 				if err := dropPostgresNamespace(cmd.Context(), cfg.Database, namespace); err != nil {
 					return err
 				}
-				return outputJSON(map[string]any{
+				return outputJSON(cmd, map[string]any{
 					"namespace": namespace,
 					"database":  cfg.Database,
 					"status":    "deleted",
@@ -392,7 +481,7 @@ func newNamespaceDeleteCmd() *cobra.Command {
 				return err
 			}
 
-			return outputJSON(map[string]any{
+			return outputJSON(cmd, map[string]any{
 				"namespace": namespace,
 				"path":      path,
 				"status":    "deleted",

@@ -21,7 +21,11 @@ func NewRootCommand() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "grantory",
 		Short: "Grantory command-line interface",
-		Long:  "Manage Grantory resources or start the server with the 'serve' subcommand.",
+		Long: "Manage Grantory resources or start the server with the 'serve' subcommand.\n\n" +
+			"Examples:\n" +
+			"  grantory serve\n" +
+			"  grantory list hosts\n" +
+			"  grantory inspect requests <request-id>\n",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cmd.Help()
 		},
@@ -121,7 +125,9 @@ func newServeCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "serve",
 		Short: "Start the Grantory server",
-		Long:  "Start the HTTP API server that manages hosts, resource requests, and grants.",
+		Long: "Start the HTTP API server that manages hosts, resource requests, and grants.\n\n" +
+			"Examples:\n" +
+			"  grantory serve\n",
 		RunE:  runServer,
 	}
 }
@@ -130,6 +136,7 @@ func newVersionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
 		Short: "Print version information",
+		Example: "  grantory version\n",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			_, err := fmt.Fprintln(cmd.OutOrStdout(), versionString())
 			return err
