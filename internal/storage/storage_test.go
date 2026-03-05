@@ -1613,7 +1613,7 @@ func TestUpdateRequestLabelsAppliesChanges(t *testing.T) {
 	assert.Nil(t, afterClear.Labels)
 }
 
-func TestGetLatestGrantForRequest(t *testing.T) {
+func TestGetGrantForRequest(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -1628,7 +1628,7 @@ func TestGetLatestGrantForRequest(t *testing.T) {
 	req, err := store.CreateRequest(ctx, Request{HostID: host.ID})
 	assert.NoError(t, err)
 
-	grant, found, err := store.GetLatestGrantForRequest(ctx, req.ID)
+	grant, found, err := store.GetGrantForRequest(ctx, req.ID)
 	assert.NoError(t, err)
 	assert.False(t, found)
 	assert.Equal(t, Grant{}, grant)
@@ -1637,7 +1637,7 @@ func TestGetLatestGrantForRequest(t *testing.T) {
 	createdGrant, err := store.CreateGrant(ctx, Grant{RequestID: req.ID, Payload: payload})
 	assert.NoError(t, err)
 
-	latest, found, err := store.GetLatestGrantForRequest(ctx, req.ID)
+	latest, found, err := store.GetGrantForRequest(ctx, req.ID)
 	assert.NoError(t, err)
 	assert.True(t, found)
 	assert.Equal(t, createdGrant.ID, latest.ID)

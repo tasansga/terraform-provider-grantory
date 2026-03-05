@@ -1157,13 +1157,13 @@ func (s *sqliteStore) CountGrants(ctx context.Context) (map[string]int64, error)
 	return map[string]int64{"total": total}, nil
 }
 
-// GetLatestGrantForRequest returns the most recently created grant for the request.
-func (s *sqliteStore) GetLatestGrantForRequest(ctx context.Context, requestID string) (Grant, bool, error) {
+// GetGrantForRequest returns the grant for the request.
+func (s *sqliteStore) GetGrantForRequest(ctx context.Context, requestID string) (Grant, bool, error) {
 	if s == nil || s.db == nil {
 		return Grant{}, false, fmt.Errorf("store not initialized")
 	}
 
-	s.logDBOperation("grants", "get_latest_for_request", logrus.Fields{
+	s.logDBOperation("grants", "get_for_request", logrus.Fields{
 		"request_id": requestID,
 	})
 
@@ -1180,7 +1180,7 @@ LIMIT 1
 		if errors.Is(err, ErrGrantNotFound) {
 			return Grant{}, false, nil
 		}
-		return Grant{}, false, fmt.Errorf("get latest grant for request: %w", err)
+		return Grant{}, false, fmt.Errorf("get grant for request: %w", err)
 	}
 
 	return grant, true, nil

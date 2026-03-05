@@ -38,7 +38,7 @@ type Store interface {
 	GetGrant(ctx context.Context, id string) (Grant, error)
 	ListGrants(ctx context.Context) ([]Grant, error)
 	CountGrants(ctx context.Context) (map[string]int64, error)
-	GetLatestGrantForRequest(ctx context.Context, requestID string) (Grant, bool, error)
+	GetGrantForRequest(ctx context.Context, requestID string) (Grant, bool, error)
 	DeleteGrant(ctx context.Context, id string) error
 }
 

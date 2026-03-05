@@ -455,7 +455,7 @@ func matchesLabelFilters(labels map[string]string, filters map[string]string) bo
 
 func buildRequestResponse(ctx context.Context, store storage.Store, req storage.Request) (requestResponse, error) {
 	resp := requestResponse{Request: req}
-	grant, found, err := store.GetLatestGrantForRequest(ctx, req.ID)
+	grant, found, err := store.GetGrantForRequest(ctx, req.ID)
 	if err != nil {
 		return resp, fmt.Errorf("fetch applied grant: %w", err)
 	}
