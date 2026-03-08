@@ -210,19 +210,25 @@ assert_outputs() {
   local host_without_labels
   local request_with_labels_id
   local request_without_labels_id
+  local request_with_schema_id
   local register_with_labels_id
   local register_without_labels_id
   local grant_with_payload_id
   local grant_without_payload_id
+  local grant_with_schema_id
+  local schema_definition_id
 
   host_with_labels="$(echo "$outputs_json" | jq -r '.grantory_host_with_labels.value.host_id')"
   host_without_labels="$(echo "$outputs_json" | jq -r '.grantory_host_without_labels.value.host_id')"
   request_with_labels_id="$(echo "$outputs_json" | jq -r '.grantory_request_with_labels_payload.value.id')"
   request_without_labels_id="$(echo "$outputs_json" | jq -r '.grantory_request_without_labels_payload.value.id')"
+  request_with_schema_id="$(echo "$outputs_json" | jq -r '.grantory_request_with_schema.value.id')"
   register_with_labels_id="$(echo "$outputs_json" | jq -r '.grantory_register_with_labels_payload.value.id')"
   register_without_labels_id="$(echo "$outputs_json" | jq -r '.grantory_register_without_labels_payload.value.id')"
   grant_with_payload_id="$(echo "$outputs_json" | jq -r '.grantory_grant_with_payload.value.id')"
   grant_without_payload_id="$(echo "$outputs_json" | jq -r '.grantory_grant_without_payload.value.id')"
+  grant_with_schema_id="$(echo "$outputs_json" | jq -r '.grantory_grant_with_schema.value.id')"
+  schema_definition_id="$(echo "$outputs_json" | jq -r '.grantory_schema_definition_basic.value.id')"
 
   echo "$outputs_json" | jq -e '.grantory_host_with_labels.value.host_id | length > 0' >/dev/null
   echo "$outputs_json" | jq -e '.grantory_host_without_labels.value.host_id | length > 0' >/dev/null
@@ -230,9 +236,13 @@ assert_outputs() {
 
   echo "$outputs_json" | jq -e '.grantory_request_with_labels_payload.value.id | length > 0' >/dev/null
   echo "$outputs_json" | jq -e '.grantory_request_without_labels_payload.value.id | length > 0' >/dev/null
+  echo "$outputs_json" | jq -e '.grantory_request_with_schema.value.id | length > 0' >/dev/null
   echo "$outputs_json" | jq -e '.grantory_request_with_labels_payload.value.labels.pipeline == "inttest"' >/dev/null
   echo "$outputs_json" | jq -e '.grantory_request_with_labels_payload.value.payload | fromjson == {"payme":"alot"}' >/dev/null
   echo "$outputs_json" | jq -e '.grantory_request_without_labels_payload.value.payload == null' >/dev/null
+  echo "$outputs_json" | jq -e '.grantory_schema_definition_basic.value.id | length > 0' >/dev/null
+  echo "$outputs_json" | jq -e --arg id "$schema_definition_id" '.grantory_request_with_schema.value.schema_definition_id == $id' >/dev/null
+  echo "$outputs_json" | jq -e '.grantory_request_with_schema.value.payload | fromjson == {"name":"schema-request"}' >/dev/null
 
   echo "$outputs_json" | jq -e '.grantory_register_with_labels_payload.value.id | length > 0' >/dev/null
   echo "$outputs_json" | jq -e '.grantory_register_without_labels_payload.value.id | length > 0' >/dev/null
@@ -243,8 +253,10 @@ assert_outputs() {
 
   echo "$outputs_json" | jq -e '.grantory_grant_with_payload.value.id | length > 0' >/dev/null
   echo "$outputs_json" | jq -e '.grantory_grant_without_payload.value.id | length > 0' >/dev/null
+  echo "$outputs_json" | jq -e '.grantory_grant_with_schema.value.id | length > 0' >/dev/null
   echo "$outputs_json" | jq -e '.grantory_grant_with_payload.value.payload | fromjson == {"mygreatpayload":true}' >/dev/null
   echo "$outputs_json" | jq -e '.grantory_grant_without_payload.value.payload == null' >/dev/null
+  echo "$outputs_json" | jq -e '.grantory_grant_with_schema.value.payload | fromjson == {"detail":"ok"}' >/dev/null
 
   echo "$outputs_json" | jq -e --arg id "$host_with_labels" '.data_grantory_hosts.value.hosts | index($id) != null' >/dev/null
   echo "$outputs_json" | jq -e --arg id "$host_without_labels" '.data_grantory_hosts.value.hosts | index($id) != null' >/dev/null
@@ -259,7 +271,7 @@ assert_outputs() {
   echo "$outputs_json" | jq -e --arg id "$register_with_labels_id" '.data_grantory_register_details.value | map(select(.register_id == $id))[0].labels.pipeline == "inttest"' >/dev/null
   echo "$outputs_json" | jq -e --arg id "$register_without_labels_id" '.data_grantory_register_details.value | map(select(.register_id == $id))[0].payload == null' >/dev/null
 
-  echo "$outputs_json" | jq -e '.data_grantory_requests_all.value | length == 2' >/dev/null
+  echo "$outputs_json" | jq -e '.data_grantory_requests_all.value | length == 3' >/dev/null
   echo "$outputs_json" | jq -e '.data_grantory_requests_with_labels.value | length == 1' >/dev/null
   echo "$outputs_json" | jq -e --arg id "$request_with_labels_id" '.data_grantory_requests_with_labels.value[0].request_id == $id' >/dev/null
   echo "$outputs_json" | jq -e --arg id "$request_with_labels_id" '.data_grantory_request_details.value | map(select(.request_id == $id)) | length == 1' >/dev/null
@@ -272,9 +284,10 @@ assert_outputs() {
   echo "$outputs_json" | jq -e --arg id "$request_without_labels_id" '.data_grantory_request_details.value | map(select(.request_id == $id))[0].grant_payload == null' >/dev/null
   echo "$outputs_json" | jq -e --arg req "$request_without_labels_id" --arg grant "$grant_without_payload_id" '.data_grantory_request_details.value | map(select(.request_id == $req))[0].grant_id == $grant' >/dev/null
 
-  echo "$outputs_json" | jq -e '.data_grantory_grants.value.grants | length == 2' >/dev/null
+  echo "$outputs_json" | jq -e '.data_grantory_grants.value.grants | length == 3' >/dev/null
   echo "$outputs_json" | jq -e --arg id "$grant_with_payload_id" '.data_grantory_grants.value.grants | map(.grant_id) | index($id) != null' >/dev/null
   echo "$outputs_json" | jq -e --arg id "$grant_without_payload_id" '.data_grantory_grants.value.grants | map(.grant_id) | index($id) != null' >/dev/null
+  echo "$outputs_json" | jq -e --arg id "$grant_with_schema_id" '.data_grantory_grants.value.grants | map(.grant_id) | index($id) != null' >/dev/null
   echo "$outputs_json" | jq -e --arg id "$grant_with_payload_id" '.data_grantory_grant_details.value | map(select(.grant_id == $id)) | length == 1' >/dev/null
   echo "$outputs_json" | jq -e --arg id "$grant_with_payload_id" '.data_grantory_grant_details.value | map(select(.grant_id == $id))[0].payload | fromjson == {"mygreatpayload":true}' >/dev/null
   echo "$outputs_json" | jq -e --arg id "$grant_without_payload_id" '.data_grantory_grant_details.value | map(select(.grant_id == $id))[0].payload == null' >/dev/null

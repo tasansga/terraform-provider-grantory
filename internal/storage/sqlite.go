@@ -119,11 +119,20 @@ CREATE TABLE IF NOT EXISTS hosts (
 CREATE TABLE IF NOT EXISTS requests (
 	id TEXT PRIMARY KEY,
 	host_id TEXT NOT NULL,
+	schema_definition_id TEXT,
 	unique_key TEXT,
 	data TEXT,
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	FOREIGN KEY(host_id) REFERENCES hosts(id) ON DELETE CASCADE
+	FOREIGN KEY(host_id) REFERENCES hosts(id) ON DELETE CASCADE,
+	FOREIGN KEY(schema_definition_id) REFERENCES schema_definitions(id) ON DELETE SET NULL
+)`
+	schemaDefinitionsTableStatement = `
+CREATE TABLE IF NOT EXISTS schema_definitions (
+	id TEXT PRIMARY KEY,
+	request_schema TEXT,
+	grant_schema TEXT,
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 )`
 	registersTableStatement = `
 CREATE TABLE IF NOT EXISTS registers (
@@ -246,6 +255,7 @@ func (s *sqliteStore) Migrate(ctx context.Context) error {
 		fn   func(context.Context, *sql.Tx) error
 	}{
 		{"hosts", s.ensureHostsTable},
+		{"schema definitions", s.ensureSchemaDefinitionsTable},
 		{"requests", s.ensureRequestsTable},
 		{"registers", s.ensureRegistersTable},
 		{"grants", s.ensureGrantsTable},
@@ -286,11 +296,21 @@ func (s *sqliteStore) ensureRequestsTable(ctx context.Context, tx *sql.Tx) error
 	if _, err := tx.ExecContext(ctx, requestsTableStatement); err != nil {
 		return fmt.Errorf("create requests table: %w", err)
 	}
+	if err := ensureSQLiteColumn(ctx, tx, "requests", "schema_definition_id", "TEXT"); err != nil {
+		return fmt.Errorf("add requests schema_definition_id column: %w", err)
+	}
 	if err := ensureSQLiteColumn(ctx, tx, "requests", "unique_key", "TEXT"); err != nil {
 		return fmt.Errorf("add requests unique_key column: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS requests_unique_key_idx ON requests(unique_key) WHERE unique_key IS NOT NULL`); err != nil {
 		return fmt.Errorf("create requests unique_key index: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteStore) ensureSchemaDefinitionsTable(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, schemaDefinitionsTableStatement); err != nil {
+		return fmt.Errorf("create schema definitions table: %w", err)
 	}
 	return nil
 }
@@ -569,11 +589,12 @@ func (s *sqliteStore) CreateRequest(ctx context.Context, req Request) (Request, 
 	req.ID = generateID()
 
 	s.logDBOperation("requests", "create", logrus.Fields{
-		"request_id": req.ID,
-		"host_id":    req.HostID,
-		"unique_key": req.UniqueKey,
-		"payload":    req.Payload,
-		"labels":     req.Labels,
+		"request_id":           req.ID,
+		"host_id":              req.HostID,
+		"schema_definition_id": req.SchemaDefinitionID,
+		"unique_key":           req.UniqueKey,
+		"payload":              req.Payload,
+		"labels":               req.Labels,
 	})
 
 	payloadValue, err := encodeJSON(req.Payload)
@@ -591,10 +612,14 @@ func (s *sqliteStore) CreateRequest(ctx context.Context, req Request) (Request, 
 	if req.UniqueKey != "" {
 		uniqueKey = req.UniqueKey
 	}
+	var schemaDefinitionID any
+	if req.SchemaDefinitionID != "" {
+		schemaDefinitionID = req.SchemaDefinitionID
+	}
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO requests (id, host_id, unique_key, data)
-VALUES (?, ?, ?, ?)
-`, req.ID, req.HostID, uniqueKey, payloadValue); err != nil {
+INSERT INTO requests (id, host_id, schema_definition_id, unique_key, data)
+VALUES (?, ?, ?, ?, ?)
+`, req.ID, req.HostID, schemaDefinitionID, uniqueKey, payloadValue); err != nil {
 		if isUniqueConstraintError(err) {
 			if isUniqueKeyConstraintError(err) {
 				return Request{}, fmt.Errorf("%w: %w", ErrRequestUniqueKeyConflict, err)
@@ -626,7 +651,7 @@ func (s *sqliteStore) GetRequest(ctx context.Context, id string) (Request, error
 	})
 
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, host_id, unique_key, data,
+SELECT id, host_id, schema_definition_id, unique_key, data,
        CASE WHEN EXISTS (SELECT 1 FROM grants WHERE request_id = requests.id) THEN 1 ELSE 0 END AS has_grant,
        created_at, updated_at
 FROM requests
@@ -672,7 +697,7 @@ func (s *sqliteStore) ListRequests(ctx context.Context, filters *RequestListFilt
 
 	query := strings.Builder{}
 	query.WriteString(`
-SELECT id, host_id, unique_key, data,
+SELECT id, host_id, schema_definition_id, unique_key, data,
        CASE WHEN EXISTS (SELECT 1 FROM grants WHERE request_id = requests.id) THEN 1 ELSE 0 END AS has_grant,
        created_at, updated_at
 FROM requests`)
@@ -1212,6 +1237,140 @@ func (s *sqliteStore) DeleteGrant(ctx context.Context, id string) error {
 	return nil
 }
 
+// CreateSchemaDefinition stores a new schema definition.
+func (s *sqliteStore) CreateSchemaDefinition(ctx context.Context, def SchemaDefinition) (SchemaDefinition, error) {
+	if s == nil || s.db == nil {
+		return SchemaDefinition{}, fmt.Errorf("store not initialized")
+	}
+	if len(def.RequestSchema) == 0 {
+		return SchemaDefinition{}, fmt.Errorf("request_schema is required")
+	}
+	if len(def.GrantSchema) == 0 {
+		return SchemaDefinition{}, fmt.Errorf("grant_schema is required")
+	}
+
+	def.ID = generateID()
+
+	s.logDBOperation("schema_definitions", "create", logrus.Fields{
+		"schema_definition_id": def.ID,
+	})
+
+	requestValue, err := encodeJSON(def.RequestSchema)
+	if err != nil {
+		return SchemaDefinition{}, fmt.Errorf("encode request schema: %w", err)
+	}
+	grantValue, err := encodeJSON(def.GrantSchema)
+	if err != nil {
+		return SchemaDefinition{}, fmt.Errorf("encode grant schema: %w", err)
+	}
+
+	if _, err := s.db.ExecContext(ctx, `
+INSERT INTO schema_definitions (id, request_schema, grant_schema)
+VALUES (?, ?, ?)
+`, def.ID, requestValue, grantValue); err != nil {
+		if isUniqueConstraintError(err) {
+			return SchemaDefinition{}, fmt.Errorf("%w: %w", ErrSchemaDefinitionAlreadyExists, err)
+		}
+		return SchemaDefinition{}, fmt.Errorf("insert schema definition: %w", err)
+	}
+
+	return def, nil
+}
+
+// GetSchemaDefinition returns a schema definition by ID.
+func (s *sqliteStore) GetSchemaDefinition(ctx context.Context, id string) (SchemaDefinition, error) {
+	if s == nil || s.db == nil {
+		return SchemaDefinition{}, fmt.Errorf("store not initialized")
+	}
+
+	s.logDBOperation("schema_definitions", "get", logrus.Fields{
+		"schema_definition_id": id,
+	})
+
+	row := s.db.QueryRowContext(ctx, `
+SELECT id, request_schema, grant_schema, created_at
+FROM schema_definitions
+WHERE id = ?
+`, id)
+	return scanSchemaDefinition(row)
+}
+
+// ListSchemaDefinitions returns stored schema definitions ordered by creation time.
+func (s *sqliteStore) ListSchemaDefinitions(ctx context.Context) ([]SchemaDefinition, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("store not initialized")
+	}
+
+	s.logDBOperation("schema_definitions", "list", nil)
+
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, request_schema, grant_schema, created_at
+FROM schema_definitions
+ORDER BY created_at ASC
+`)
+	if err != nil {
+		return nil, fmt.Errorf("query schema definitions: %w", err)
+	}
+	defer closeRows(rows, "close schema definitions rows")
+
+	defs := make([]SchemaDefinition, 0)
+	for rows.Next() {
+		def, err := scanSchemaDefinition(rows)
+		if err != nil {
+			return nil, err
+		}
+		defs = append(defs, def)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("scan schema definitions: %w", err)
+	}
+	return defs, nil
+}
+
+// DeleteSchemaDefinition removes a schema definition.
+func (s *sqliteStore) DeleteSchemaDefinition(ctx context.Context, id string) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("store not initialized")
+	}
+
+	s.logDBOperation("schema_definitions", "delete", logrus.Fields{
+		"schema_definition_id": id,
+	})
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin schema definition delete transaction: %w", err)
+	}
+	defer rollbackTx(tx, "rollback schema definition delete transaction")
+
+	if _, err := tx.ExecContext(ctx, `
+UPDATE requests
+SET schema_definition_id = NULL
+WHERE schema_definition_id = ?
+`, id); err != nil {
+		return fmt.Errorf("null schema definition references: %w", err)
+	}
+
+	res, err := tx.ExecContext(ctx, `DELETE FROM schema_definitions WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete schema definition: %w", err)
+	}
+
+	count, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete schema definition rows affected: %w", err)
+	}
+	if count == 0 {
+		return ErrSchemaDefinitionNotFound
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit schema definition delete transaction: %w", err)
+	}
+
+	return nil
+}
+
 type rowScanner interface {
 	Scan(dest ...any) error
 }
@@ -1245,21 +1404,25 @@ func scanHost(scanner rowScanner) (Host, error) {
 
 func scanRequest(scanner rowScanner) (Request, error) {
 	var (
-		req          Request
-		uniqueKey    sql.NullString
-		payloadValue sql.NullString
-		hasGrant     sql.NullInt64
-		createdAt    any
-		updatedAt    any
+		req                Request
+		schemaDefinitionID sql.NullString
+		uniqueKey          sql.NullString
+		payloadValue       sql.NullString
+		hasGrant           sql.NullInt64
+		createdAt          any
+		updatedAt          any
 	)
 
-	if err := scanner.Scan(&req.ID, &req.HostID, &uniqueKey, &payloadValue, &hasGrant, &createdAt, &updatedAt); err != nil {
+	if err := scanner.Scan(&req.ID, &req.HostID, &schemaDefinitionID, &uniqueKey, &payloadValue, &hasGrant, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Request{}, ErrRequestNotFound
 		}
 		return Request{}, err
 	}
 
+	if schemaDefinitionID.Valid {
+		req.SchemaDefinitionID = schemaDefinitionID.String
+	}
 	if uniqueKey.Valid {
 		req.UniqueKey = uniqueKey.String
 	}
@@ -1280,6 +1443,38 @@ func scanRequest(scanner rowScanner) (Request, error) {
 	req.HasGrant = hasGrant.Valid && hasGrant.Int64 > 0
 
 	return req, nil
+}
+
+func scanSchemaDefinition(scanner rowScanner) (SchemaDefinition, error) {
+	var (
+		def          SchemaDefinition
+		requestValue sql.NullString
+		grantValue   sql.NullString
+		createdAt    any
+	)
+
+	if err := scanner.Scan(&def.ID, &requestValue, &grantValue, &createdAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return SchemaDefinition{}, ErrSchemaDefinitionNotFound
+		}
+		return SchemaDefinition{}, err
+	}
+
+	var err error
+	def.RequestSchema, err = decodeRawJSON(requestValue)
+	if err != nil {
+		return SchemaDefinition{}, fmt.Errorf("decode request schema: %w", err)
+	}
+	def.GrantSchema, err = decodeRawJSON(grantValue)
+	if err != nil {
+		return SchemaDefinition{}, fmt.Errorf("decode grant schema: %w", err)
+	}
+
+	if def.CreatedAt, err = parseDBTime(createdAt); err != nil {
+		return SchemaDefinition{}, err
+	}
+
+	return def, nil
 }
 
 func scanRegister(scanner rowScanner) (Register, error) {
@@ -1406,6 +1601,16 @@ func decodeAnyMap(value sql.NullString) (map[string]any, error) {
 		return nil, err
 	}
 	return dest, nil
+}
+
+func decodeRawJSON(value sql.NullString) (json.RawMessage, error) {
+	if !value.Valid || value.String == "" {
+		return nil, nil
+	}
+	if !json.Valid([]byte(value.String)) {
+		return nil, fmt.Errorf("invalid JSON payload")
+	}
+	return json.RawMessage([]byte(value.String)), nil
 }
 
 func insertLabels(ctx context.Context, tx *sql.Tx, table, idColumn, id string, labels map[string]string) error {

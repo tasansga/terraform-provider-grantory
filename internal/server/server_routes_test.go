@@ -81,6 +81,7 @@ func newTestApp(t *testing.T) (*fiber.App, func()) {
 	registerHostRoutes(api)
 	registerRequestRoutes(api)
 	registerRegisterRoutes(api)
+	registerSchemaDefinitionRoutes(api)
 	registerGrantRoutes(api)
 	api.Get("/metrics", srv.handleMetrics)
 
@@ -339,6 +340,178 @@ func TestAPIEndpoints(t *testing.T) {
 	assert.Equal(t, http.StatusNoContent, res.StatusCode, "delete host status")
 	res = sendTestRequest(t, app, http.MethodGet, fmt.Sprintf("/hosts/%s", host.ID), headers, nil)
 	assert.Equal(t, http.StatusNotFound, res.StatusCode, "host should be missing after delete")
+}
+
+func TestSchemaDefinitionsValidation(t *testing.T) {
+	t.Parallel()
+
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+
+	headers := map[string]string{}
+
+	validSchema := map[string]any{
+		"request_schema": map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"name": map[string]any{"type": "string"},
+			},
+			"required": []string{"name"},
+		},
+		"grant_schema": map[string]any{
+			"type": "object",
+		},
+	}
+
+	res := sendTestRequest(t, app, http.MethodPost, "/schema-definitions", headers, validSchema)
+	assert.Equal(t, http.StatusCreated, res.StatusCode, "create schema definition status")
+	created := decodeJSON[storage.SchemaDefinition](t, res)
+	assert.NotEmpty(t, created.ID, "schema definition should have ID")
+	assert.NotEmpty(t, created.RequestSchema, "schema definition should include request schema")
+	assert.NotEmpty(t, created.GrantSchema, "schema definition should include grant schema")
+
+	invalidSchema := map[string]any{
+		"request_schema": map[string]any{
+			"type": 1,
+		},
+		"grant_schema": map[string]any{
+			"type": "object",
+		},
+	}
+
+	res = sendTestRequest(t, app, http.MethodPost, "/schema-definitions", headers, invalidSchema)
+	assert.Equal(t, http.StatusBadRequest, res.StatusCode, "invalid schema definition should fail")
+
+	res = sendTestRequest(t, app, http.MethodGet, "/schema-definitions", headers, nil)
+	assert.Equal(t, http.StatusOK, res.StatusCode, "list schema definitions status")
+	list := decodeJSON[[]storage.SchemaDefinition](t, res)
+	if assert.Len(t, list, 1, "expected one schema definition") {
+		assert.Equal(t, created.ID, list[0].ID, "listed schema should match created")
+	}
+}
+
+func TestRequestSchemaValidation(t *testing.T) {
+	t.Parallel()
+
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+
+	headers := map[string]string{}
+
+	res := sendTestRequest(t, app, http.MethodPost, "/hosts", headers, map[string]any{
+		"labels": map[string]string{"env": "test"},
+	})
+	assert.Equal(t, http.StatusCreated, res.StatusCode, "create host status")
+	host := decodeJSON[storage.Host](t, res)
+
+	defPayload := map[string]any{
+		"request_schema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name": map[string]any{"type": "string"},
+			},
+			"required": []string{"name"},
+		},
+		"grant_schema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"detail": map[string]any{"type": "string"},
+			},
+			"required": []string{"detail"},
+		},
+	}
+	res = sendTestRequest(t, app, http.MethodPost, "/schema-definitions", headers, defPayload)
+	assert.Equal(t, http.StatusCreated, res.StatusCode, "create schema definition status")
+	def := decodeJSON[storage.SchemaDefinition](t, res)
+
+	goodRequest := map[string]any{
+		"host_id":              host.ID,
+		"schema_definition_id": def.ID,
+		"payload": map[string]any{
+			"name": "db",
+		},
+	}
+	res = sendTestRequest(t, app, http.MethodPost, "/requests", headers, goodRequest)
+	assert.Equal(t, http.StatusCreated, res.StatusCode, "request should pass schema validation")
+
+	badRequest := map[string]any{
+		"host_id":              host.ID,
+		"schema_definition_id": def.ID,
+		"payload": map[string]any{
+			"name": 42,
+		},
+	}
+	res = sendTestRequest(t, app, http.MethodPost, "/requests", headers, badRequest)
+	assert.Equal(t, http.StatusBadRequest, res.StatusCode, "request should fail schema validation")
+
+	missingSchemaRequest := map[string]any{
+		"host_id":              host.ID,
+		"schema_definition_id": "missing",
+		"payload": map[string]any{
+			"name": "db",
+		},
+	}
+	res = sendTestRequest(t, app, http.MethodPost, "/requests", headers, missingSchemaRequest)
+	assert.Equal(t, http.StatusBadRequest, res.StatusCode, "request should fail with missing schema id")
+}
+
+func TestGrantSchemaValidation(t *testing.T) {
+	t.Parallel()
+
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+
+	headers := map[string]string{}
+
+	res := sendTestRequest(t, app, http.MethodPost, "/hosts", headers, map[string]any{
+		"labels": map[string]string{"env": "test"},
+	})
+	assert.Equal(t, http.StatusCreated, res.StatusCode, "create host status")
+	host := decodeJSON[storage.Host](t, res)
+
+	defPayload := map[string]any{
+		"request_schema": map[string]any{
+			"type": "object",
+		},
+		"grant_schema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"detail": map[string]any{"type": "string"},
+			},
+			"required": []string{"detail"},
+		},
+	}
+	res = sendTestRequest(t, app, http.MethodPost, "/schema-definitions", headers, defPayload)
+	assert.Equal(t, http.StatusCreated, res.StatusCode, "create schema definition status")
+	def := decodeJSON[storage.SchemaDefinition](t, res)
+
+	reqPayload := map[string]any{
+		"host_id":              host.ID,
+		"schema_definition_id": def.ID,
+		"payload":              map[string]any{},
+	}
+	res = sendTestRequest(t, app, http.MethodPost, "/requests", headers, reqPayload)
+	assert.Equal(t, http.StatusCreated, res.StatusCode, "create request status")
+	req := decodeJSON[storage.Request](t, res)
+
+	goodGrant := map[string]any{
+		"request_id": req.ID,
+		"payload": map[string]any{
+			"detail": "ok",
+		},
+	}
+	res = sendTestRequest(t, app, http.MethodPost, "/grants", headers, goodGrant)
+	assert.Equal(t, http.StatusCreated, res.StatusCode, "grant should pass schema validation")
+
+	badGrant := map[string]any{
+		"request_id": req.ID,
+		"payload": map[string]any{
+			"detail": 123,
+		},
+	}
+	res = sendTestRequest(t, app, http.MethodPost, "/grants", headers, badGrant)
+	assert.Equal(t, http.StatusBadRequest, res.StatusCode, "grant should fail schema validation")
 }
 
 func TestRequestHandlerListNoFilters(t *testing.T) {

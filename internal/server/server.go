@@ -53,6 +53,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	registerHostRoutes(api)
 	registerRequestRoutes(api)
 	registerRegisterRoutes(api)
+	registerSchemaDefinitionRoutes(api)
 	registerGrantRoutes(api)
 	api.Get("/metrics", s.handleMetrics)
 	api.Get("/index.html", s.handleIndex)

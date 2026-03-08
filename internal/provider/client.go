@@ -27,16 +27,17 @@ type hostLabelsPayload struct {
 }
 
 type apiRequest struct {
-	ID        string            `json:"id"`
-	HostID    string            `json:"host_id"`
-	UniqueKey string            `json:"unique_key,omitempty"`
-	Payload   map[string]any    `json:"payload,omitempty"`
-	Labels    map[string]string `json:"labels,omitempty"`
-	HasGrant  bool              `json:"has_grant"`
-	Grant     *apiRequestGrant  `json:"grant"`
-	GrantID   string            `json:"grant_id,omitempty"`
-	CreatedAt string            `json:"created_at"`
-	UpdatedAt string            `json:"updated_at"`
+	ID                 string            `json:"id"`
+	HostID             string            `json:"host_id"`
+	SchemaDefinitionID string            `json:"schema_definition_id,omitempty"`
+	UniqueKey          string            `json:"unique_key,omitempty"`
+	Payload            map[string]any    `json:"payload,omitempty"`
+	Labels             map[string]string `json:"labels,omitempty"`
+	HasGrant           bool              `json:"has_grant"`
+	Grant              *apiRequestGrant  `json:"grant"`
+	GrantID            string            `json:"grant_id,omitempty"`
+	CreatedAt          string            `json:"created_at"`
+	UpdatedAt          string            `json:"updated_at"`
 }
 
 type apiRequestGrant struct {
@@ -60,6 +61,13 @@ type apiGrant struct {
 	Payload   map[string]any `json:"payload,omitempty"`
 	CreatedAt string         `json:"created_at"`
 	UpdatedAt string         `json:"updated_at"`
+}
+
+type apiSchemaDefinition struct {
+	ID            string          `json:"id"`
+	RequestSchema json.RawMessage `json:"request_schema"`
+	GrantSchema   json.RawMessage `json:"grant_schema"`
+	CreatedAt     string          `json:"created_at"`
 }
 
 type apiGrantCreatePayload struct {
@@ -328,4 +336,32 @@ func (c *grantoryClient) updateRequest(ctx context.Context, id string, payload a
 		return apiRequest{}, err
 	}
 	return updated, nil
+}
+
+func (c *grantoryClient) createSchemaDefinition(ctx context.Context, def apiSchemaDefinition) (apiSchemaDefinition, error) {
+	var created apiSchemaDefinition
+	if err := c.doJSON(ctx, http.MethodPost, "/schema-definitions", def, &created); err != nil {
+		return apiSchemaDefinition{}, err
+	}
+	return created, nil
+}
+
+func (c *grantoryClient) getSchemaDefinition(ctx context.Context, id string) (apiSchemaDefinition, error) {
+	var def apiSchemaDefinition
+	if err := c.doJSON(ctx, http.MethodGet, fmt.Sprintf("/schema-definitions/%s", id), nil, &def); err != nil {
+		return apiSchemaDefinition{}, err
+	}
+	return def, nil
+}
+
+func (c *grantoryClient) deleteSchemaDefinition(ctx context.Context, id string) error {
+	return c.doJSON(ctx, http.MethodDelete, fmt.Sprintf("/schema-definitions/%s", id), nil, nil)
+}
+
+func (c *grantoryClient) listSchemaDefinitions(ctx context.Context) ([]apiSchemaDefinition, error) {
+	var defs []apiSchemaDefinition
+	if err := c.doJSON(ctx, http.MethodGet, "/schema-definitions", nil, &defs); err != nil {
+		return nil, err
+	}
+	return defs, nil
 }

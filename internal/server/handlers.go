@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/sirupsen/logrus"
 
 	"github.com/tasansga/terraform-provider-grantory/internal/storage"
@@ -205,6 +208,15 @@ func registerRegisterRoutes(app fiber.Router) {
 	group.Delete("/:id", handler.delete)
 }
 
+func registerSchemaDefinitionRoutes(app fiber.Router) {
+	handler := schemaDefinitionHandler{}
+	group := app.Group("/schema-definitions")
+	group.Get("/", handler.list)
+	group.Post("/", handler.create)
+	group.Get("/:id", handler.get)
+	group.Delete("/:id", handler.delete)
+}
+
 type requestHandler struct{}
 
 type requestResponse struct {
@@ -214,14 +226,22 @@ type requestResponse struct {
 }
 
 type requestCreatePayload struct {
-	HostID    string            `json:"host_id"`
-	UniqueKey string            `json:"unique_key"`
-	Payload   map[string]any    `json:"payload"`
-	Labels    map[string]string `json:"labels"`
+	HostID             string            `json:"host_id"`
+	SchemaDefinitionID string            `json:"schema_definition_id"`
+	UniqueKey          string            `json:"unique_key"`
+	Payload            map[string]any    `json:"payload"`
+	Labels             map[string]string `json:"labels"`
 }
 
 type requestUpdatePayload struct {
 	Labels *map[string]string `json:"labels"`
+}
+
+type schemaDefinitionHandler struct{}
+
+type schemaDefinitionCreatePayload struct {
+	RequestSchema json.RawMessage `json:"request_schema"`
+	GrantSchema   json.RawMessage `json:"grant_schema"`
 }
 
 func (h requestHandler) create(c *fiber.Ctx) error {
@@ -234,10 +254,11 @@ func (h requestHandler) create(c *fiber.Ctx) error {
 	}
 
 	logRequestEntry(c, "requestHandler.create", map[string]any{
-		"host_id":    payload.HostID,
-		"unique_key": payload.UniqueKey,
-		"payload":    payload.Payload,
-		"labels":     payload.Labels,
+		"host_id":              payload.HostID,
+		"schema_definition_id": payload.SchemaDefinitionID,
+		"unique_key":           payload.UniqueKey,
+		"payload":              payload.Payload,
+		"labels":               payload.Labels,
 	})
 
 	store, namespace, err := resolveNamespaceStore(c)
@@ -245,11 +266,26 @@ func (h requestHandler) create(c *fiber.Ctx) error {
 		return err
 	}
 
+	if payload.SchemaDefinitionID != "" {
+		def, err := store.GetSchemaDefinition(c.Context(), payload.SchemaDefinitionID)
+		if err != nil {
+			if errors.Is(err, storage.ErrSchemaDefinitionNotFound) {
+				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("schema definition %s not found", payload.SchemaDefinitionID))
+			}
+			logrus.WithError(err).WithField("namespace", namespace).Error("get schema definition for request")
+			return fiber.NewError(fiber.StatusInternalServerError, "unable to load schema definition")
+		}
+		if err := validateJSONInstance(def.RequestSchema, payload.Payload, "request payload", "request_schema"); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		}
+	}
+
 	req := storage.Request{
-		HostID:    payload.HostID,
-		UniqueKey: payload.UniqueKey,
-		Payload:   payload.Payload,
-		Labels:    payload.Labels,
+		HostID:             payload.HostID,
+		SchemaDefinitionID: payload.SchemaDefinitionID,
+		UniqueKey:          payload.UniqueKey,
+		Payload:            payload.Payload,
+		Labels:             payload.Labels,
 	}
 	created, err := store.CreateRequest(c.Context(), req)
 	if err != nil {
@@ -701,6 +737,120 @@ func parseRegisterListFilters(c *fiber.Ctx) (storage.RegisterListFilters, error)
 	return filters, nil
 }
 
+func (h schemaDefinitionHandler) create(c *fiber.Ctx) error {
+	var payload schemaDefinitionCreatePayload
+	if err := c.BodyParser(&payload); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, err.Error())
+	}
+	if err := requireJSONValue(payload.RequestSchema, "request_schema"); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, err.Error())
+	}
+	if err := requireJSONValue(payload.GrantSchema, "grant_schema"); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, err.Error())
+	}
+	if err := validateJSONSchema(payload.RequestSchema, "request_schema"); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, err.Error())
+	}
+	if err := validateJSONSchema(payload.GrantSchema, "grant_schema"); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, err.Error())
+	}
+
+	logRequestEntry(c, "schemaDefinitionHandler.create", map[string]any{
+		"request_schema_bytes": len(payload.RequestSchema),
+		"grant_schema_bytes":   len(payload.GrantSchema),
+	})
+
+	store, namespace, err := resolveNamespaceStore(c)
+	if err != nil {
+		return err
+	}
+
+	def := storage.SchemaDefinition{
+		RequestSchema: payload.RequestSchema,
+		GrantSchema:   payload.GrantSchema,
+	}
+	created, err := store.CreateSchemaDefinition(c.Context(), def)
+	if err != nil {
+		switch {
+		case errors.Is(err, storage.ErrSchemaDefinitionAlreadyExists):
+			return fiber.NewError(fiber.StatusConflict, "schema definition already exists")
+		default:
+			logrus.WithError(err).WithField("namespace", namespace).Error("create schema definition")
+			return fiber.NewError(fiber.StatusInternalServerError, "unable to persist schema definition")
+		}
+	}
+
+	loaded, err := store.GetSchemaDefinition(c.Context(), created.ID)
+	if err != nil {
+		logrus.WithError(err).WithField("namespace", namespace).Error("fetch schema definition after create")
+		return fiber.NewError(fiber.StatusInternalServerError, "unable to return schema definition")
+	}
+
+	return c.Status(http.StatusCreated).JSON(loaded)
+}
+
+func (h schemaDefinitionHandler) get(c *fiber.Ctx) error {
+	defID := c.Params("id")
+	logRequestEntry(c, "schemaDefinitionHandler.get", map[string]any{
+		"schema_definition_id": defID,
+	})
+
+	store, namespace, err := resolveNamespaceStore(c)
+	if err != nil {
+		return err
+	}
+
+	def, err := store.GetSchemaDefinition(c.Context(), defID)
+	if err != nil {
+		if errors.Is(err, storage.ErrSchemaDefinitionNotFound) {
+			return fiber.NewError(fiber.StatusNotFound, "schema definition not found")
+		}
+		logrus.WithError(err).WithField("namespace", namespace).Error("get schema definition")
+		return fiber.NewError(fiber.StatusInternalServerError, "unable to fetch schema definition")
+	}
+
+	return c.JSON(def)
+}
+
+func (h schemaDefinitionHandler) list(c *fiber.Ctx) error {
+	logRequestEntry(c, "schemaDefinitionHandler.list", nil)
+
+	store, namespace, err := resolveNamespaceStore(c)
+	if err != nil {
+		return err
+	}
+
+	defs, err := store.ListSchemaDefinitions(c.Context())
+	if err != nil {
+		logrus.WithError(err).WithField("namespace", namespace).Error("list schema definitions")
+		return fiber.NewError(fiber.StatusInternalServerError, "unable to list schema definitions")
+	}
+
+	return c.JSON(defs)
+}
+
+func (h schemaDefinitionHandler) delete(c *fiber.Ctx) error {
+	defID := c.Params("id")
+	logRequestEntry(c, "schemaDefinitionHandler.delete", map[string]any{
+		"schema_definition_id": defID,
+	})
+
+	store, namespace, err := resolveNamespaceStore(c)
+	if err != nil {
+		return err
+	}
+
+	if err := store.DeleteSchemaDefinition(c.Context(), defID); err != nil {
+		if errors.Is(err, storage.ErrSchemaDefinitionNotFound) {
+			return fiber.NewError(fiber.StatusNotFound, "schema definition not found")
+		}
+		logrus.WithError(err).WithField("namespace", namespace).Error("delete schema definition")
+		return fiber.NewError(fiber.StatusInternalServerError, "unable to delete schema definition")
+	}
+
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
 func registerGrantRoutes(app fiber.Router) {
 	handler := grantHandler{}
 	group := app.Group("/grants")
@@ -733,6 +883,29 @@ func (h grantHandler) create(c *fiber.Ctx) error {
 	store, namespace, err := resolveNamespaceStore(c)
 	if err != nil {
 		return err
+	}
+
+	req, err := store.GetRequest(c.Context(), payload.RequestID)
+	if err != nil {
+		if errors.Is(err, storage.ErrRequestNotFound) {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("request %s not found", payload.RequestID))
+		}
+		logrus.WithError(err).WithField("namespace", namespace).Error("get request for grant")
+		return fiber.NewError(fiber.StatusInternalServerError, "unable to load request")
+	}
+
+	if req.SchemaDefinitionID != "" {
+		def, err := store.GetSchemaDefinition(c.Context(), req.SchemaDefinitionID)
+		if err != nil {
+			if errors.Is(err, storage.ErrSchemaDefinitionNotFound) {
+				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("schema definition %s not found", req.SchemaDefinitionID))
+			}
+			logrus.WithError(err).WithField("namespace", namespace).Error("get schema definition for grant")
+			return fiber.NewError(fiber.StatusInternalServerError, "unable to load schema definition")
+		}
+		if err := validateJSONInstance(def.GrantSchema, payload.Payload, "grant payload", "grant_schema"); err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		}
 	}
 
 	grant := storage.Grant{
@@ -844,4 +1017,60 @@ func namespaceFromCtx(c *fiber.Ctx) string {
 		}
 	}
 	return DefaultNamespace
+}
+
+func requireJSONValue(value json.RawMessage, field string) error {
+	trimmed := bytes.TrimSpace(value)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return fmt.Errorf("%s is required", field)
+	}
+	if !json.Valid(trimmed) {
+		return fmt.Errorf("%s must be valid JSON", field)
+	}
+	return nil
+}
+
+func validateJSONSchema(value json.RawMessage, field string) error {
+	_, err := compileJSONSchema(value, field)
+	return err
+}
+
+func validateJSONInstance(schemaValue json.RawMessage, instance any, field, schemaField string) error {
+	schema, err := compileJSONSchema(schemaValue, schemaField)
+	if err != nil {
+		return err
+	}
+
+	instanceBytes, err := json.Marshal(instance)
+	if err != nil {
+		return fmt.Errorf("%s must be valid JSON: %w", field, err)
+	}
+	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(instanceBytes))
+	if err != nil {
+		return fmt.Errorf("%s must be valid JSON: %w", field, err)
+	}
+	if err := schema.Validate(doc); err != nil {
+		return fmt.Errorf("%s does not match %s: %w", field, schemaField, err)
+	}
+	return nil
+}
+
+func compileJSONSchema(value json.RawMessage, field string) (*jsonschema.Schema, error) {
+	compiler := jsonschema.NewCompiler()
+	compiler.DefaultDraft(jsonschema.Draft2020)
+
+	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(value))
+	if err != nil {
+		return nil, fmt.Errorf("%s must be valid JSON: %w", field, err)
+	}
+
+	resourceID := fmt.Sprintf("%s.json", field)
+	if err := compiler.AddResource(resourceID, doc); err != nil {
+		return nil, fmt.Errorf("%s is not valid JSON Schema: %w", field, err)
+	}
+	schema, err := compiler.Compile(resourceID)
+	if err != nil {
+		return nil, fmt.Errorf("%s is not valid JSON Schema: %w", field, err)
+	}
+	return schema, nil
 }

@@ -79,6 +79,22 @@ func parseJSONString(value string) (map[string]any, error) {
 	return result, nil
 }
 
+func parseRawJSON(value string) (json.RawMessage, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil, nil
+	}
+	var decoded any
+	if err := json.Unmarshal([]byte(trimmed), &decoded); err != nil {
+		return nil, err
+	}
+	normalized, err := json.Marshal(decoded)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(normalized), nil
+}
+
 func encodeMapToJSONString(value map[string]any) (string, error) {
 	if value == nil {
 		return "", nil

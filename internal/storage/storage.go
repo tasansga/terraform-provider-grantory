@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"time"
 )
@@ -40,6 +41,11 @@ type Store interface {
 	CountGrants(ctx context.Context) (map[string]int64, error)
 	GetGrantForRequest(ctx context.Context, requestID string) (Grant, bool, error)
 	DeleteGrant(ctx context.Context, id string) error
+
+	CreateSchemaDefinition(ctx context.Context, def SchemaDefinition) (SchemaDefinition, error)
+	GetSchemaDefinition(ctx context.Context, id string) (SchemaDefinition, error)
+	ListSchemaDefinitions(ctx context.Context) ([]SchemaDefinition, error)
+	DeleteSchemaDefinition(ctx context.Context, id string) error
 }
 
 // Host describes the persisted labels for a registered host.
@@ -52,14 +58,15 @@ type Host struct {
 
 // Request describes the persisted state for a resource request.
 type Request struct {
-	ID        string            `json:"id"`
-	HostID    string            `json:"host_id"`
-	UniqueKey string            `json:"unique_key,omitempty"`
-	Payload   map[string]any    `json:"payload,omitempty"`
-	Labels    map[string]string `json:"labels,omitempty"`
-	HasGrant  bool              `json:"has_grant"`
-	CreatedAt time.Time         `json:"created_at"`
-	UpdatedAt time.Time         `json:"updated_at"`
+	ID                 string            `json:"id"`
+	HostID             string            `json:"host_id"`
+	SchemaDefinitionID string            `json:"schema_definition_id,omitempty"`
+	UniqueKey          string            `json:"unique_key,omitempty"`
+	Payload            map[string]any    `json:"payload,omitempty"`
+	Labels             map[string]string `json:"labels,omitempty"`
+	HasGrant           bool              `json:"has_grant"`
+	CreatedAt          time.Time         `json:"created_at"`
+	UpdatedAt          time.Time         `json:"updated_at"`
 }
 
 // RequestListFilters describes optional filters for listing requests.
@@ -95,6 +102,14 @@ type Grant struct {
 	UpdatedAt time.Time      `json:"updated_at"`
 }
 
+// SchemaDefinition stores request and grant JSON schema payloads.
+type SchemaDefinition struct {
+	ID            string          `json:"id"`
+	RequestSchema json.RawMessage `json:"request_schema"`
+	GrantSchema   json.RawMessage `json:"grant_schema"`
+	CreatedAt     time.Time       `json:"created_at"`
+}
+
 var (
 	// ErrHostNotFound is returned when a host cannot be located in storage.
 	ErrHostNotFound = errors.New("host not found")
@@ -118,6 +133,10 @@ var (
 	ErrRegisterNotFound = errors.New("register not found")
 	// ErrRegisterUniqueKeyConflict is returned when a register with the same unique key exists.
 	ErrRegisterUniqueKeyConflict = errors.New("register unique key already exists")
+	// ErrSchemaDefinitionNotFound is returned when a schema definition cannot be located.
+	ErrSchemaDefinitionNotFound = errors.New("schema definition not found")
+	// ErrSchemaDefinitionAlreadyExists is returned when a schema definition with the given ID exists.
+	ErrSchemaDefinitionAlreadyExists = errors.New("schema definition already exists")
 	// ErrReferencedHostNotFound is returned when a request/register refers to a host that does not exist.
 	ErrReferencedHostNotFound    = errors.New("referenced host not found")
 	ErrReferencedRequestNotFound = errors.New("referenced request not found")

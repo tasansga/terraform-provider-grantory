@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -61,7 +62,7 @@ func TestMigrateCreatesTables(t *testing.T) {
 		t.FailNow()
 	}
 
-	tables := []string{"hosts", "requests", "registers", "grants"}
+	tables := []string{"hosts", "schema_definitions", "requests", "registers", "grants"}
 	for _, name := range tables {
 		var count int
 		if err := store.DB().QueryRowContext(ctx,
@@ -1489,6 +1490,7 @@ func TestEnsureTablesReturnErrorWhenContextCanceled(t *testing.T) {
 		fn   func(context.Context, *sql.Tx) error
 	}{
 		{"hosts", sqliteStore.ensureHostsTable},
+		{"schema_definitions", sqliteStore.ensureSchemaDefinitionsTable},
 		{"requests", sqliteStore.ensureRequestsTable},
 		{"registers", sqliteStore.ensureRegistersTable},
 		{"grants", sqliteStore.ensureGrantsTable},
@@ -1520,6 +1522,48 @@ func TestNamespaceForLogHandlesNilAndTrim(t *testing.T) {
 	store = &sqliteStore{}
 	store.SetNamespace("  custom  ")
 	assert.Equal(t, "custom", store.namespaceForLog(), "should trim namespace")
+}
+
+func TestSQLiteDeleteSchemaDefinitionNullsRequestReference(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := New(ctx, ":memory:")
+	require.NoError(t, err)
+	defer closeStore(t, store)
+	require.NoError(t, store.Migrate(ctx))
+
+	sqliteStore, ok := store.(*sqliteStore)
+	require.True(t, ok, "expected sqlite store implementation")
+
+	host, err := store.CreateHost(ctx, Host{})
+	require.NoError(t, err)
+
+	def, err := store.CreateSchemaDefinition(ctx, SchemaDefinition{
+		RequestSchema: json.RawMessage(`{"type":"object"}`),
+		GrantSchema:   json.RawMessage(`{"type":"object"}`),
+	})
+	require.NoError(t, err)
+
+	req, err := store.CreateRequest(ctx, Request{
+		HostID:             host.ID,
+		SchemaDefinitionID: def.ID,
+		Payload:            map[string]any{"name": "db"},
+	})
+	require.NoError(t, err)
+
+	var before sql.NullString
+	err = store.DB().QueryRowContext(ctx, `SELECT schema_definition_id FROM requests WHERE id = ?`, req.ID).Scan(&before)
+	require.NoError(t, err)
+	require.True(t, before.Valid)
+	require.Equal(t, def.ID, before.String)
+
+	require.NoError(t, sqliteStore.DeleteSchemaDefinition(ctx, def.ID))
+
+	var after sql.NullString
+	err = store.DB().QueryRowContext(ctx, `SELECT schema_definition_id FROM requests WHERE id = ?`, req.ID).Scan(&after)
+	require.NoError(t, err)
+	require.False(t, after.Valid, "schema_definition_id should be NULL after delete")
 }
 
 func TestNewFailsWhenForeignKeyEnableContextCanceled(t *testing.T) {

@@ -49,6 +49,10 @@ func dataRequests() *schema.Resource {
 							Type:     schema.TypeString,
 							Computed: true,
 						},
+						"schema_definition_id": {
+							Type:     schema.TypeString,
+							Computed: true,
+						},
 						"has_grant": {
 							Type:     schema.TypeBool,
 							Computed: true,
@@ -80,17 +84,19 @@ func dataRequestsRead(ctx context.Context, d *schema.ResourceData, meta any) dia
 	hashEntries := make([]requestListEntry, 0, len(requests))
 	for _, req := range requests {
 		entry := map[string]any{
-			"request_id": req.ID,
-			"host_id":    req.HostID,
-			"unique_key": req.UniqueKey,
-			"has_grant":  req.HasGrant,
+			"request_id":           req.ID,
+			"host_id":              req.HostID,
+			"unique_key":           req.UniqueKey,
+			"schema_definition_id": req.SchemaDefinitionID,
+			"has_grant":            req.HasGrant,
 		}
 		values = append(values, entry)
 		hashEntries = append(hashEntries, requestListEntry{
-			RequestID: req.ID,
-			HostID:    req.HostID,
-			UniqueKey: req.UniqueKey,
-			HasGrant:  req.HasGrant,
+			RequestID:          req.ID,
+			HostID:             req.HostID,
+			SchemaDefinitionID: req.SchemaDefinitionID,
+			UniqueKey:          req.UniqueKey,
+			HasGrant:           req.HasGrant,
 		})
 	}
 
@@ -110,10 +116,11 @@ func dataRequestsRead(ctx context.Context, d *schema.ResourceData, meta any) dia
 }
 
 type requestListEntry struct {
-	RequestID string `json:"request_id"`
-	HostID    string `json:"host_id"`
-	UniqueKey string `json:"unique_key,omitempty"`
-	HasGrant  bool   `json:"has_grant"`
+	RequestID          string `json:"request_id"`
+	HostID             string `json:"host_id"`
+	SchemaDefinitionID string `json:"schema_definition_id,omitempty"`
+	UniqueKey          string `json:"unique_key,omitempty"`
+	HasGrant           bool   `json:"has_grant"`
 }
 
 func getOptionalBool(d *schema.ResourceData, key string) (bool, bool) {

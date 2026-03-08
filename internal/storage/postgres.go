@@ -130,6 +130,7 @@ func (s *postgresStore) Migrate(ctx context.Context) error {
 		fn   func(context.Context, *sql.Tx) error
 	}{
 		{"hosts", s.ensureHostsTable},
+		{"schema definitions", s.ensureSchemaDefinitionsTable},
 		{"requests", s.ensureRequestsTable},
 		{"registers", s.ensureRegistersTable},
 		{"grants", s.ensureGrantsTable},
@@ -181,20 +182,58 @@ func (s *postgresStore) ensureRequestsTable(ctx context.Context, tx *sql.Tx) err
 CREATE TABLE IF NOT EXISTS %s (
 	id TEXT PRIMARY KEY,
 	host_id TEXT NOT NULL,
+	schema_definition_id TEXT,
 	unique_key TEXT,
 	data JSONB,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-	FOREIGN KEY(host_id) REFERENCES %s(id) ON DELETE CASCADE
-)`, s.table("requests"), s.table("hosts"))
+	FOREIGN KEY(host_id) REFERENCES %s(id) ON DELETE CASCADE,
+	FOREIGN KEY(schema_definition_id) REFERENCES %s(id) ON DELETE SET NULL
+)`, s.table("requests"), s.table("hosts"), s.table("schema_definitions"))
 	if _, err := tx.ExecContext(ctx, stmt); err != nil {
 		return fmt.Errorf("create requests table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS schema_definition_id TEXT`, s.table("requests"))); err != nil {
+		return fmt.Errorf("add requests schema_definition_id column: %w", err)
+	}
+	constraintStmt := fmt.Sprintf(`
+DO $$
+BEGIN
+	IF NOT EXISTS (
+		SELECT 1
+		FROM pg_constraint
+		WHERE conname = 'requests_schema_definition_fk'
+			AND conrelid = '%s'::regclass
+	) THEN
+		ALTER TABLE %s
+			ADD CONSTRAINT requests_schema_definition_fk
+			FOREIGN KEY (schema_definition_id)
+			REFERENCES %s(id)
+			ON DELETE SET NULL;
+	END IF;
+END $$;`, s.table("requests"), s.table("requests"), s.table("schema_definitions"))
+	if _, err := tx.ExecContext(ctx, constraintStmt); err != nil {
+		return fmt.Errorf("add requests schema_definition_id foreign key: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS unique_key TEXT`, s.table("requests"))); err != nil {
 		return fmt.Errorf("add requests unique_key column: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`CREATE UNIQUE INDEX IF NOT EXISTS requests_unique_key_idx ON %s (unique_key) WHERE unique_key IS NOT NULL`, s.table("requests"))); err != nil {
 		return fmt.Errorf("create requests unique_key index: %w", err)
+	}
+	return nil
+}
+
+func (s *postgresStore) ensureSchemaDefinitionsTable(ctx context.Context, tx *sql.Tx) error {
+	stmt := fmt.Sprintf(`
+CREATE TABLE IF NOT EXISTS %s (
+	id TEXT PRIMARY KEY,
+	request_schema JSONB,
+	grant_schema JSONB,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)`, s.table("schema_definitions"))
+	if _, err := tx.ExecContext(ctx, stmt); err != nil {
+		return fmt.Errorf("create schema definitions table: %w", err)
 	}
 	return nil
 }
@@ -390,7 +429,7 @@ func (s *postgresStore) GetHost(ctx context.Context, id string) (Host, error) {
 		"host_id": id,
 	})
 
-query := fmt.Sprintf(`SELECT id, unique_key, created_at FROM %s WHERE id = $1`, s.table("hosts"))
+	query := fmt.Sprintf(`SELECT id, unique_key, created_at FROM %s WHERE id = $1`, s.table("hosts"))
 	row := s.db.QueryRowContext(ctx, query, id)
 	host, err := scanHost(row)
 	if err != nil {
@@ -411,7 +450,7 @@ func (s *postgresStore) ListHosts(ctx context.Context) ([]Host, error) {
 
 	s.logDBOperation("hosts", "list", nil)
 
-query := fmt.Sprintf(`SELECT id, unique_key, created_at FROM %s ORDER BY created_at ASC`, s.table("hosts"))
+	query := fmt.Sprintf(`SELECT id, unique_key, created_at FROM %s ORDER BY created_at ASC`, s.table("hosts"))
 	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("query hosts: %w", err)
@@ -513,11 +552,12 @@ func (s *postgresStore) CreateRequest(ctx context.Context, req Request) (Request
 	req.ID = generateID()
 
 	s.logDBOperation("requests", "create", logrus.Fields{
-		"request_id": req.ID,
-		"host_id":    req.HostID,
-		"unique_key": req.UniqueKey,
-		"payload":    req.Payload,
-		"labels":     req.Labels,
+		"request_id":           req.ID,
+		"host_id":              req.HostID,
+		"schema_definition_id": req.SchemaDefinitionID,
+		"unique_key":           req.UniqueKey,
+		"payload":              req.Payload,
+		"labels":               req.Labels,
 	})
 
 	payloadValue, err := encodeJSON(req.Payload)
@@ -531,12 +571,16 @@ func (s *postgresStore) CreateRequest(ctx context.Context, req Request) (Request
 	}
 	defer rollbackTx(tx, "rollback create request transaction")
 
-	stmt := fmt.Sprintf(`INSERT INTO %s (id, host_id, unique_key, data) VALUES ($1, $2, $3, $4)`, s.table("requests"))
+	stmt := fmt.Sprintf(`INSERT INTO %s (id, host_id, schema_definition_id, unique_key, data) VALUES ($1, $2, $3, $4, $5)`, s.table("requests"))
 	var uniqueKey any
 	if req.UniqueKey != "" {
 		uniqueKey = req.UniqueKey
 	}
-	if _, err := tx.ExecContext(ctx, stmt, req.ID, req.HostID, uniqueKey, payloadValue); err != nil {
+	var schemaDefinitionID any
+	if req.SchemaDefinitionID != "" {
+		schemaDefinitionID = req.SchemaDefinitionID
+	}
+	if _, err := tx.ExecContext(ctx, stmt, req.ID, req.HostID, schemaDefinitionID, uniqueKey, payloadValue); err != nil {
 		if isUniqueConstraintError(err) {
 			if isUniqueKeyConstraintError(err) {
 				return Request{}, fmt.Errorf("%w: %w", ErrRequestUniqueKeyConflict, err)
@@ -568,7 +612,7 @@ func (s *postgresStore) GetRequest(ctx context.Context, id string) (Request, err
 	})
 
 	query := fmt.Sprintf(`
-SELECT id, host_id, unique_key, data,
+SELECT id, host_id, schema_definition_id, unique_key, data,
        CASE WHEN EXISTS (SELECT 1 FROM %s WHERE request_id = %s.id) THEN 1 ELSE 0 END AS has_grant,
        created_at, updated_at
 FROM %s
@@ -616,7 +660,7 @@ func (s *postgresStore) ListRequests(ctx context.Context, filters *RequestListFi
 
 	query := strings.Builder{}
 	_, _ = fmt.Fprintf(&query, `
-SELECT id, host_id, unique_key, data,
+SELECT id, host_id, schema_definition_id, unique_key, data,
        CASE WHEN EXISTS (SELECT 1 FROM %s WHERE request_id = %s.id) THEN 1 ELSE 0 END AS has_grant,
        created_at, updated_at
 FROM %s`, s.table("grants"), s.table("requests"), s.table("requests"))
@@ -1139,6 +1183,121 @@ func (s *postgresStore) DeleteGrant(ctx context.Context, id string) error {
 	}
 	if count == 0 {
 		return ErrGrantNotFound
+	}
+
+	return nil
+}
+
+// CreateSchemaDefinition stores a new schema definition.
+func (s *postgresStore) CreateSchemaDefinition(ctx context.Context, def SchemaDefinition) (SchemaDefinition, error) {
+	if s == nil || s.db == nil {
+		return SchemaDefinition{}, fmt.Errorf("store not initialized")
+	}
+	if len(def.RequestSchema) == 0 {
+		return SchemaDefinition{}, fmt.Errorf("request_schema is required")
+	}
+	if len(def.GrantSchema) == 0 {
+		return SchemaDefinition{}, fmt.Errorf("grant_schema is required")
+	}
+
+	def.ID = generateID()
+
+	s.logDBOperation("schema_definitions", "create", logrus.Fields{
+		"schema_definition_id": def.ID,
+	})
+
+	requestValue, err := encodeJSON(def.RequestSchema)
+	if err != nil {
+		return SchemaDefinition{}, fmt.Errorf("encode request schema: %w", err)
+	}
+	grantValue, err := encodeJSON(def.GrantSchema)
+	if err != nil {
+		return SchemaDefinition{}, fmt.Errorf("encode grant schema: %w", err)
+	}
+
+	stmt := fmt.Sprintf(`INSERT INTO %s (id, request_schema, grant_schema) VALUES ($1, $2, $3)`, s.table("schema_definitions"))
+	if _, err := s.db.ExecContext(ctx, stmt, def.ID, requestValue, grantValue); err != nil {
+		if isUniqueConstraintError(err) {
+			return SchemaDefinition{}, fmt.Errorf("%w: %w", ErrSchemaDefinitionAlreadyExists, err)
+		}
+		return SchemaDefinition{}, fmt.Errorf("insert schema definition: %w", err)
+	}
+
+	return def, nil
+}
+
+// GetSchemaDefinition fetches a schema definition by ID.
+func (s *postgresStore) GetSchemaDefinition(ctx context.Context, id string) (SchemaDefinition, error) {
+	if s == nil || s.db == nil {
+		return SchemaDefinition{}, fmt.Errorf("store not initialized")
+	}
+
+	s.logDBOperation("schema_definitions", "get", logrus.Fields{
+		"schema_definition_id": id,
+	})
+
+	stmt := fmt.Sprintf(`
+SELECT id, request_schema, grant_schema, created_at
+FROM %s
+WHERE id = $1`, s.table("schema_definitions"))
+	row := s.db.QueryRowContext(ctx, stmt, id)
+	return scanSchemaDefinition(row)
+}
+
+// ListSchemaDefinitions returns stored schema definitions ordered by creation time.
+func (s *postgresStore) ListSchemaDefinitions(ctx context.Context) ([]SchemaDefinition, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("store not initialized")
+	}
+
+	s.logDBOperation("schema_definitions", "list", nil)
+
+	stmt := fmt.Sprintf(`
+SELECT id, request_schema, grant_schema, created_at
+FROM %s
+ORDER BY created_at ASC`, s.table("schema_definitions"))
+	rows, err := s.db.QueryContext(ctx, stmt)
+	if err != nil {
+		return nil, fmt.Errorf("query schema definitions: %w", err)
+	}
+	defer closeRows(rows, "close schema definitions rows")
+
+	defs := make([]SchemaDefinition, 0)
+	for rows.Next() {
+		def, err := scanSchemaDefinition(rows)
+		if err != nil {
+			return nil, err
+		}
+		defs = append(defs, def)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("scan schema definitions: %w", err)
+	}
+	return defs, nil
+}
+
+// DeleteSchemaDefinition removes a schema definition.
+func (s *postgresStore) DeleteSchemaDefinition(ctx context.Context, id string) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("store not initialized")
+	}
+
+	s.logDBOperation("schema_definitions", "delete", logrus.Fields{
+		"schema_definition_id": id,
+	})
+
+	stmt := fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, s.table("schema_definitions"))
+	res, err := s.db.ExecContext(ctx, stmt, id)
+	if err != nil {
+		return fmt.Errorf("delete schema definition: %w", err)
+	}
+
+	count, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete schema definition rows affected: %w", err)
+	}
+	if count == 0 {
+		return ErrSchemaDefinitionNotFound
 	}
 
 	return nil
