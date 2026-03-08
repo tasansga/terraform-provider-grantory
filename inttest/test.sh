@@ -14,6 +14,7 @@ PROVIDER_VERSION="${PROVIDER_VERSION:-0.1.0-test}"
 mkdir -p "$BIN_DIR" "$DEV_DIR" "$TF_BASE_DIR"
 
 GO_CMD=${GO_CMD:-go}
+"$GO_CMD" test ./...
 "$GO_CMD" build -o "$BIN_DIR/terraform-provider-grantory" ./cmd/terraform-provider-grantory
 "$GO_CMD" build -o "$BIN_DIR/grantory" ./cmd/grantory
 cp "$BIN_DIR/terraform-provider-grantory" "$DEV_DIR/terraform-provider-grantory"
@@ -351,6 +352,7 @@ run_postgres() {
   fi
 
   local dsn="postgres://${pg_user}:${pg_pass}@127.0.0.1:${pg_port}/${pg_db}?sslmode=disable"
+  POSTGRES_DSN="$dsn" "$GO_CMD" test -tags=postgres ./internal/storage
   start_server "$dsn" "$server_port" "$log_file"
   run_tf "$tf_dir" "http://127.0.0.1:${server_port}" "postgres"
   cleanup

@@ -311,12 +311,21 @@ func (s *sqliteStore) ensureRequestsTable(ctx context.Context, tx *sql.Tx) error
 	if _, err := tx.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS requests_unique_key_idx ON requests(unique_key) WHERE unique_key IS NOT NULL`); err != nil {
 		return fmt.Errorf("create requests unique_key index: %w", err)
 	}
+	if err := migrateSQLiteRequestSchemaDefinitions(ctx, tx); err != nil {
+		return err
+	}
 	return nil
 }
 
 func (s *sqliteStore) ensureSchemaDefinitionsTable(ctx context.Context, tx *sql.Tx) error {
 	if _, err := tx.ExecContext(ctx, schemaDefinitionsTableStatement); err != nil {
 		return fmt.Errorf("create schema definitions table: %w", err)
+	}
+	if err := ensureSQLiteColumn(ctx, tx, "schema_definitions", "schema", "TEXT"); err != nil {
+		return fmt.Errorf("add schema_definitions schema column: %w", err)
+	}
+	if err := migrateSQLiteSchemaDefinitions(ctx, tx); err != nil {
+		return err
 	}
 	return nil
 }
@@ -411,6 +420,121 @@ func sqliteColumnExists(ctx context.Context, tx *sql.Tx, table, column string) (
 		return false, err
 	}
 	return false, nil
+}
+
+func migrateSQLiteSchemaDefinitions(ctx context.Context, tx *sql.Tx) error {
+	requestExists, err := sqliteColumnExists(ctx, tx, "schema_definitions", "request_schema")
+	if err != nil {
+		return fmt.Errorf("check schema_definitions request_schema column: %w", err)
+	}
+	grantExists, err := sqliteColumnExists(ctx, tx, "schema_definitions", "grant_schema")
+	if err != nil {
+		return fmt.Errorf("check schema_definitions grant_schema column: %w", err)
+	}
+	if !requestExists && !grantExists {
+		return nil
+	}
+
+	update := `UPDATE schema_definitions SET schema = COALESCE(schema`
+	if requestExists {
+		update += `, request_schema`
+	}
+	if grantExists {
+		update += `, grant_schema`
+	}
+	update += `) WHERE (schema IS NULL OR schema = '')`
+
+	if _, err := tx.ExecContext(ctx, update); err != nil {
+		return fmt.Errorf("backfill schema_definitions schema: %w", err)
+	}
+	return nil
+}
+
+func migrateSQLiteRequestSchemaDefinitions(ctx context.Context, tx *sql.Tx) error {
+	exists, err := sqliteColumnExists(ctx, tx, "requests", "schema_definition_id")
+	if err != nil {
+		return fmt.Errorf("check requests schema_definition_id column: %w", err)
+	}
+	if !exists {
+		return nil
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+UPDATE requests
+SET request_schema_definition_id = COALESCE(request_schema_definition_id, schema_definition_id),
+    grant_schema_definition_id = COALESCE(grant_schema_definition_id, schema_definition_id)
+WHERE schema_definition_id IS NOT NULL
+`); err != nil {
+		return fmt.Errorf("backfill request schema definition ids: %w", err)
+	}
+
+	requestSchemaExists, err := sqliteColumnExists(ctx, tx, "schema_definitions", "request_schema")
+	if err != nil {
+		return fmt.Errorf("check schema_definitions request_schema column: %w", err)
+	}
+	grantSchemaExists, err := sqliteColumnExists(ctx, tx, "schema_definitions", "grant_schema")
+	if err != nil {
+		return fmt.Errorf("check schema_definitions grant_schema column: %w", err)
+	}
+	if !requestSchemaExists || !grantSchemaExists {
+		return nil
+	}
+
+	rows, err := tx.QueryContext(ctx, `SELECT id, request_schema, grant_schema FROM schema_definitions`)
+	if err != nil {
+		return fmt.Errorf("load legacy schema definitions: %w", err)
+	}
+	defer closeRows(rows, "close legacy schema definitions")
+
+	type legacySchema struct {
+		defID      string
+		grantValue string
+	}
+	var legacy []legacySchema
+	for rows.Next() {
+		var (
+			defID       string
+			reqSchema   sql.NullString
+			grantSchema sql.NullString
+		)
+		if err := rows.Scan(&defID, &reqSchema, &grantSchema); err != nil {
+			return fmt.Errorf("scan legacy schema definition: %w", err)
+		}
+		if !reqSchema.Valid || !grantSchema.Valid {
+			continue
+		}
+		reqValue := strings.TrimSpace(reqSchema.String)
+		grantValue := strings.TrimSpace(grantSchema.String)
+		if reqValue == "" || grantValue == "" || reqValue == grantValue {
+			continue
+		}
+		legacy = append(legacy, legacySchema{defID: defID, grantValue: grantValue})
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate legacy schema definitions: %w", err)
+	}
+
+	for _, entry := range legacy {
+		var remaining int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM requests WHERE grant_schema_definition_id = ?`, entry.defID).Scan(&remaining); err != nil {
+			return fmt.Errorf("count grant schema references: %w", err)
+		}
+		if remaining == 0 {
+			continue
+		}
+		grantDefID := generateID()
+		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_definitions (id, schema) VALUES (?, ?)`, grantDefID, entry.grantValue); err != nil {
+			return fmt.Errorf("create grant schema definition: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+UPDATE requests
+SET grant_schema_definition_id = ?
+WHERE grant_schema_definition_id = ?
+`, grantDefID, entry.defID); err != nil {
+			return fmt.Errorf("update grant schema references: %w", err)
+		}
+	}
+	return nil
 }
 
 // CreateHost registers a new host with the given labels.

@@ -44,4 +44,4 @@ clean:
 	go mod tidy
 	rm -f "${DIST_DIR}/terraform-provider-grantory"
 
-.PHONY: all build lint modupdate tidy doc test unittest clean
+.PHONY: all build lint modupdate tidy doc test unittest clean inttest

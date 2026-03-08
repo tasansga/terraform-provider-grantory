@@ -245,6 +245,9 @@ END $$;`, s.table("requests"), s.table("requests"), s.table("schema_definitions"
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`CREATE UNIQUE INDEX IF NOT EXISTS requests_unique_key_idx ON %s (unique_key) WHERE unique_key IS NOT NULL`, s.table("requests"))); err != nil {
 		return fmt.Errorf("create requests unique_key index: %w", err)
 	}
+	if err := s.migratePostgresRequestSchemaDefinitions(ctx, tx); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -257,6 +260,12 @@ CREATE TABLE IF NOT EXISTS %s (
 )`, s.table("schema_definitions"))
 	if _, err := tx.ExecContext(ctx, stmt); err != nil {
 		return fmt.Errorf("create schema definitions table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS schema JSONB`, s.table("schema_definitions"))); err != nil {
+		return fmt.Errorf("add schema_definitions schema column: %w", err)
+	}
+	if err := s.migratePostgresSchemaDefinitions(ctx, tx); err != nil {
+		return err
 	}
 	return nil
 }
@@ -285,6 +294,27 @@ CREATE TABLE IF NOT EXISTS %s (
 	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`CREATE UNIQUE INDEX IF NOT EXISTS registers_unique_key_idx ON %s (unique_key) WHERE unique_key IS NOT NULL`, s.table("registers"))); err != nil {
 		return fmt.Errorf("create registers unique_key index: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+DO $$ BEGIN
+	IF NOT EXISTS (
+		SELECT 1
+		FROM information_schema.table_constraints tc
+		JOIN information_schema.key_column_usage kcu
+		  ON tc.constraint_name = kcu.constraint_name
+		 AND tc.constraint_schema = kcu.constraint_schema
+		WHERE tc.constraint_type = 'FOREIGN KEY'
+		  AND tc.table_schema = '%s'
+		  AND tc.table_name = 'registers'
+		  AND kcu.column_name = 'schema_definition_id'
+	) THEN
+		ALTER TABLE %s
+			ADD CONSTRAINT registers_schema_definition_fk
+			FOREIGN KEY (schema_definition_id)
+			REFERENCES %s(id) ON DELETE SET NULL;
+	END IF;
+END $$;`, s.schema, s.table("registers"), s.table("schema_definitions"))); err != nil {
+		return fmt.Errorf("add registers schema_definition_id foreign key: %w", err)
 	}
 	return nil
 }
@@ -1396,6 +1426,136 @@ func setUpdatedAtPostgres(ctx context.Context, tx *sql.Tx, table, idColumn, id, 
 		return fmt.Errorf("update %s timestamp: %w", table, err)
 	}
 	return nil
+}
+
+func (s *postgresStore) migratePostgresSchemaDefinitions(ctx context.Context, tx *sql.Tx) error {
+	requestExists, err := s.postgresColumnExists(ctx, tx, "schema_definitions", "request_schema")
+	if err != nil {
+		return fmt.Errorf("check schema_definitions request_schema column: %w", err)
+	}
+	grantExists, err := s.postgresColumnExists(ctx, tx, "schema_definitions", "grant_schema")
+	if err != nil {
+		return fmt.Errorf("check schema_definitions grant_schema column: %w", err)
+	}
+	if !requestExists && !grantExists {
+		return nil
+	}
+
+	update := fmt.Sprintf(`UPDATE %s SET schema = COALESCE(schema`, s.table("schema_definitions"))
+	if requestExists {
+		update += `, request_schema`
+	}
+	if grantExists {
+		update += `, grant_schema`
+	}
+	update += `) WHERE schema IS NULL`
+
+	if _, err := tx.ExecContext(ctx, update); err != nil {
+		return fmt.Errorf("backfill schema_definitions schema: %w", err)
+	}
+	return nil
+}
+
+func (s *postgresStore) migratePostgresRequestSchemaDefinitions(ctx context.Context, tx *sql.Tx) error {
+	exists, err := s.postgresColumnExists(ctx, tx, "requests", "schema_definition_id")
+	if err != nil {
+		return fmt.Errorf("check requests schema_definition_id column: %w", err)
+	}
+	if !exists {
+		return nil
+	}
+
+	stmt := fmt.Sprintf(`
+UPDATE %s
+SET request_schema_definition_id = COALESCE(request_schema_definition_id, schema_definition_id),
+    grant_schema_definition_id = COALESCE(grant_schema_definition_id, schema_definition_id)
+WHERE schema_definition_id IS NOT NULL
+`, s.table("requests"))
+	if _, err := tx.ExecContext(ctx, stmt); err != nil {
+		return fmt.Errorf("backfill request schema definition ids: %w", err)
+	}
+
+	requestSchemaExists, err := s.postgresColumnExists(ctx, tx, "schema_definitions", "request_schema")
+	if err != nil {
+		return fmt.Errorf("check schema_definitions request_schema column: %w", err)
+	}
+	grantSchemaExists, err := s.postgresColumnExists(ctx, tx, "schema_definitions", "grant_schema")
+	if err != nil {
+		return fmt.Errorf("check schema_definitions grant_schema column: %w", err)
+	}
+	if !requestSchemaExists || !grantSchemaExists {
+		return nil
+	}
+
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`SELECT id, request_schema, grant_schema FROM %s`, s.table("schema_definitions")))
+	if err != nil {
+		return fmt.Errorf("load legacy schema definitions: %w", err)
+	}
+	defer closeRows(rows, "close legacy schema definitions")
+
+	type legacySchema struct {
+		defID      string
+		grantValue []byte
+	}
+	var legacy []legacySchema
+	for rows.Next() {
+		var (
+			defID       string
+			reqSchema   []byte
+			grantSchema []byte
+		)
+		if err := rows.Scan(&defID, &reqSchema, &grantSchema); err != nil {
+			return fmt.Errorf("scan legacy schema definition: %w", err)
+		}
+		if len(reqSchema) == 0 || len(grantSchema) == 0 {
+			continue
+		}
+		if string(reqSchema) == string(grantSchema) {
+			continue
+		}
+		legacy = append(legacy, legacySchema{defID: defID, grantValue: grantSchema})
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate legacy schema definitions: %w", err)
+	}
+
+	for _, entry := range legacy {
+		var remaining int
+		if err := tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT COUNT(1) FROM %s WHERE grant_schema_definition_id = $1`, s.table("requests")), entry.defID).Scan(&remaining); err != nil {
+			return fmt.Errorf("count grant schema references: %w", err)
+		}
+		if remaining == 0 {
+			continue
+		}
+		grantDefID := generateID()
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (id, schema) VALUES ($1, $2)`, s.table("schema_definitions")), grantDefID, entry.grantValue); err != nil {
+			return fmt.Errorf("create grant schema definition: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
+UPDATE %s
+SET grant_schema_definition_id = $1
+WHERE grant_schema_definition_id = $2
+`, s.table("requests")), grantDefID, entry.defID); err != nil {
+			return fmt.Errorf("update grant schema references: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *postgresStore) postgresColumnExists(ctx context.Context, tx *sql.Tx, table, column string) (bool, error) {
+	var exists bool
+	stmt := `
+SELECT EXISTS (
+	SELECT 1
+	FROM information_schema.columns
+	WHERE table_schema = $1
+	  AND table_name = $2
+	  AND column_name = $3
+)`
+	if err := tx.QueryRowContext(ctx, stmt, s.schema, table, column).Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
 }
 
 func quoteIdent(value string) string {

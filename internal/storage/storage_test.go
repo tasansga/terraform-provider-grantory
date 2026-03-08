@@ -1513,6 +1513,77 @@ func TestEnsureTablesReturnErrorWhenContextCanceled(t *testing.T) {
 	}
 }
 
+func TestSQLiteMigrateSchemaDefinitionsAndRequests(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := New(ctx, ":memory:")
+	require.NoError(t, err)
+	defer closeStore(t, store)
+
+	sqliteStore, ok := store.(*sqliteStore)
+	require.True(t, ok, "expected sqlite store implementation")
+
+	_, err = sqliteStore.DB().ExecContext(ctx, `
+CREATE TABLE schema_definitions (
+	id TEXT PRIMARY KEY,
+	request_schema TEXT,
+	grant_schema TEXT,
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE hosts (
+	id TEXT PRIMARY KEY,
+	unique_key TEXT,
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE requests (
+	id TEXT PRIMARY KEY,
+	host_id TEXT NOT NULL,
+	schema_definition_id TEXT,
+	unique_key TEXT,
+	data TEXT,
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	FOREIGN KEY(host_id) REFERENCES hosts(id) ON DELETE CASCADE,
+	FOREIGN KEY(schema_definition_id) REFERENCES schema_definitions(id) ON DELETE SET NULL
+);
+`)
+	require.NoError(t, err)
+
+	defID := "schema-legacy"
+	hostID := "host-legacy"
+	reqID := "request-legacy"
+	requestSchema := `{"type":"object"}`
+	grantSchema := `{"type":"object","required":["detail"]}`
+
+	_, err = sqliteStore.DB().ExecContext(ctx, `INSERT INTO schema_definitions (id, request_schema, grant_schema) VALUES (?, ?, ?)`, defID, requestSchema, grantSchema)
+	require.NoError(t, err)
+	_, err = sqliteStore.DB().ExecContext(ctx, `INSERT INTO hosts (id) VALUES (?)`, hostID)
+	require.NoError(t, err)
+	_, err = sqliteStore.DB().ExecContext(ctx, `INSERT INTO requests (id, host_id, schema_definition_id) VALUES (?, ?, ?)`, reqID, hostID, defID)
+	require.NoError(t, err)
+
+	require.NoError(t, sqliteStore.Migrate(ctx))
+
+	var schemaValue string
+	err = sqliteStore.DB().QueryRowContext(ctx, `SELECT schema FROM schema_definitions WHERE id = ?`, defID).Scan(&schemaValue)
+	require.NoError(t, err)
+	assert.JSONEq(t, requestSchema, schemaValue, "schema should backfill from request_schema")
+
+	var requestSchemaID, grantSchemaID sql.NullString
+	err = sqliteStore.DB().QueryRowContext(ctx, `SELECT request_schema_definition_id, grant_schema_definition_id FROM requests WHERE id = ?`, reqID).Scan(&requestSchemaID, &grantSchemaID)
+	require.NoError(t, err)
+	require.True(t, requestSchemaID.Valid)
+	require.True(t, grantSchemaID.Valid)
+	assert.Equal(t, defID, requestSchemaID.String)
+	assert.NotEqual(t, defID, grantSchemaID.String)
+
+	var grantDefID string
+	err = sqliteStore.DB().QueryRowContext(ctx, `SELECT id FROM schema_definitions WHERE id != ? AND schema = ?`, defID, grantSchema).Scan(&grantDefID)
+	require.NoError(t, err)
+	assert.Equal(t, grantDefID, grantSchemaID.String)
+}
+
 func TestNamespaceForLogHandlesNilAndTrim(t *testing.T) {
 	t.Parallel()
 
