@@ -30,4 +30,5 @@ Read-Only:
 
 - `host_id` (String)
 - `register_id` (String)
+- `schema_definition_id` (String)
 - `unique_key` (String)

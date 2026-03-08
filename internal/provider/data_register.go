@@ -26,6 +26,11 @@ func dataRegister() *schema.Resource {
 				Computed:    true,
 				Description: "Unique key used to enforce register uniqueness within a namespace.",
 			},
+			"schema_definition_id": {
+				Type:        schema.TypeString,
+				Computed:    true,
+				Description: "Schema definition identifier associated with the register.",
+			},
 			"payload": {
 				Type:        schema.TypeString,
 				Computed:    true,

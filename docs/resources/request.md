@@ -34,9 +34,10 @@ resource "grantory_request" "database" {
 
 ### Optional
 
+- `grant_schema_definition_id` (String) Optional schema definition identifier used to validate grant payloads.
 - `labels` (Map of String) Optional labels that tag the request.
 - `payload` (String) JSON-encoded payload that describes the requested resource.
-- `schema_definition_id` (String) Optional schema definition identifier used to validate request and grant payloads.
+- `request_schema_definition_id` (String) Optional schema definition identifier used to validate request payloads.
 - `unique_key` (String) Optional unique key used to enforce request uniqueness within a namespace.
 
 ### Read-Only

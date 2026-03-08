@@ -21,16 +21,14 @@ func TestDataSchemaDefinitionsSource(t *testing.T) {
 		}
 		resp := []apiSchemaDefinition{
 			{
-				ID:            "schema-1",
-				RequestSchema: json.RawMessage(`{"type":"object"}`),
-				GrantSchema:   json.RawMessage(`{"type":"object"}`),
-				CreatedAt:     "2024-02-02T00:00:00Z",
+				ID:        "schema-1",
+				Schema:    json.RawMessage(`{"type":"object"}`),
+				CreatedAt: "2024-02-02T00:00:00Z",
 			},
 			{
-				ID:            "schema-2",
-				RequestSchema: json.RawMessage(`{"type":"object","required":["name"]}`),
-				GrantSchema:   json.RawMessage(`{"type":"object","required":["detail"]}`),
-				CreatedAt:     "2024-02-02T00:00:00Z",
+				ID:        "schema-2",
+				Schema:    json.RawMessage(`{"type":"object","required":["name"]}`),
+				CreatedAt: "2024-02-02T00:00:00Z",
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")

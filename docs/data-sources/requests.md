@@ -38,8 +38,9 @@ data "grantory_requests" "operations" {
 
 Read-Only:
 
+- `grant_schema_definition_id` (String)
 - `has_grant` (Boolean)
 - `host_id` (String)
 - `request_id` (String)
-- `schema_definition_id` (String)
+- `request_schema_definition_id` (String)
 - `unique_key` (String)

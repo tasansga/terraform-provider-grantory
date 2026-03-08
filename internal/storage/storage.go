@@ -58,15 +58,16 @@ type Host struct {
 
 // Request describes the persisted state for a resource request.
 type Request struct {
-	ID                 string            `json:"id"`
-	HostID             string            `json:"host_id"`
-	SchemaDefinitionID string            `json:"schema_definition_id,omitempty"`
-	UniqueKey          string            `json:"unique_key,omitempty"`
-	Payload            map[string]any    `json:"payload,omitempty"`
-	Labels             map[string]string `json:"labels,omitempty"`
-	HasGrant           bool              `json:"has_grant"`
-	CreatedAt          time.Time         `json:"created_at"`
-	UpdatedAt          time.Time         `json:"updated_at"`
+	ID                        string            `json:"id"`
+	HostID                    string            `json:"host_id"`
+	RequestSchemaDefinitionID string            `json:"request_schema_definition_id,omitempty"`
+	GrantSchemaDefinitionID   string            `json:"grant_schema_definition_id,omitempty"`
+	UniqueKey                 string            `json:"unique_key,omitempty"`
+	Payload                   map[string]any    `json:"payload,omitempty"`
+	Labels                    map[string]string `json:"labels,omitempty"`
+	HasGrant                  bool              `json:"has_grant"`
+	CreatedAt                 time.Time         `json:"created_at"`
+	UpdatedAt                 time.Time         `json:"updated_at"`
 }
 
 // RequestListFilters describes optional filters for listing requests.
@@ -78,13 +79,14 @@ type RequestListFilters struct {
 
 // Register describes the persisted state for register entries.
 type Register struct {
-	ID        string            `json:"id"`
-	HostID    string            `json:"host_id"`
-	UniqueKey string            `json:"unique_key,omitempty"`
-	Payload   map[string]any    `json:"payload,omitempty"`
-	Labels    map[string]string `json:"labels,omitempty"`
-	CreatedAt time.Time         `json:"created_at"`
-	UpdatedAt time.Time         `json:"updated_at"`
+	ID                 string            `json:"id"`
+	HostID             string            `json:"host_id"`
+	SchemaDefinitionID string            `json:"schema_definition_id,omitempty"`
+	UniqueKey          string            `json:"unique_key,omitempty"`
+	Payload            map[string]any    `json:"payload,omitempty"`
+	Labels             map[string]string `json:"labels,omitempty"`
+	CreatedAt          time.Time         `json:"created_at"`
+	UpdatedAt          time.Time         `json:"updated_at"`
 }
 
 // RegisterListFilters describes optional filters for listing registers.
@@ -104,10 +106,9 @@ type Grant struct {
 
 // SchemaDefinition stores request and grant JSON schema payloads.
 type SchemaDefinition struct {
-	ID            string          `json:"id"`
-	RequestSchema json.RawMessage `json:"request_schema"`
-	GrantSchema   json.RawMessage `json:"grant_schema"`
-	CreatedAt     time.Time       `json:"created_at"`
+	ID        string          `json:"id"`
+	Schema    json.RawMessage `json:"schema"`
+	CreatedAt time.Time       `json:"created_at"`
 }
 
 var (

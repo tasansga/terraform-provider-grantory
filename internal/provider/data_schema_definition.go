@@ -16,15 +16,10 @@ func dataSchemaDefinition() *schema.Resource {
 				Required:    true,
 				Description: "Identifier of the schema definition to fetch.",
 			},
-			"request_schema": {
+			"schema": {
 				Type:        schema.TypeString,
 				Computed:    true,
-				Description: "JSON Schema used for request payload validation.",
-			},
-			"grant_schema": {
-				Type:        schema.TypeString,
-				Computed:    true,
-				Description: "JSON Schema used for grant payload validation.",
+				Description: "JSON Schema definition payload.",
 			},
 		},
 		ReadContext: dataSchemaDefinitionRead,
@@ -51,10 +46,7 @@ func dataSchemaDefinitionRead(ctx context.Context, d *schema.ResourceData, meta 
 	}
 
 	d.SetId(def.ID)
-	if err := d.Set("request_schema", string(def.RequestSchema)); err != nil {
-		return diag.FromErr(err)
-	}
-	if err := d.Set("grant_schema", string(def.GrantSchema)); err != nil {
+	if err := d.Set("schema", string(def.Schema)); err != nil {
 		return diag.FromErr(err)
 	}
 	return nil

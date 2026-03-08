@@ -2,16 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TEMPFILE="$SCRIPT_DIR/.tempdir"
-if [[ -f "$TEMPFILE" ]]; then
-  WORKDIR="$(cat "$TEMPFILE")"
-  if [[ ! -d "$WORKDIR" ]]; then
-    mkdir -p "$WORKDIR"
-  fi
-else
-  WORKDIR="$(mktemp -d)"
-  echo "$WORKDIR" >"$TEMPFILE"
-fi
+WORKDIR="$(mktemp -d)"
 
 echo "using temporary workspace: $WORKDIR"
 
@@ -216,7 +207,8 @@ assert_outputs() {
   local grant_with_payload_id
   local grant_without_payload_id
   local grant_with_schema_id
-  local schema_definition_id
+  local request_schema_definition_id
+  local grant_schema_definition_id
 
   host_with_labels="$(echo "$outputs_json" | jq -r '.grantory_host_with_labels.value.host_id')"
   host_without_labels="$(echo "$outputs_json" | jq -r '.grantory_host_without_labels.value.host_id')"
@@ -228,7 +220,8 @@ assert_outputs() {
   grant_with_payload_id="$(echo "$outputs_json" | jq -r '.grantory_grant_with_payload.value.id')"
   grant_without_payload_id="$(echo "$outputs_json" | jq -r '.grantory_grant_without_payload.value.id')"
   grant_with_schema_id="$(echo "$outputs_json" | jq -r '.grantory_grant_with_schema.value.id')"
-  schema_definition_id="$(echo "$outputs_json" | jq -r '.grantory_schema_definition_basic.value.id')"
+  request_schema_definition_id="$(echo "$outputs_json" | jq -r '.grantory_schema_definition_basic.value.id')"
+  grant_schema_definition_id="$(echo "$outputs_json" | jq -r '.grantory_schema_definition_grant.value.id')"
 
   echo "$outputs_json" | jq -e '.grantory_host_with_labels.value.host_id | length > 0' >/dev/null
   echo "$outputs_json" | jq -e '.grantory_host_without_labels.value.host_id | length > 0' >/dev/null
@@ -241,7 +234,9 @@ assert_outputs() {
   echo "$outputs_json" | jq -e '.grantory_request_with_labels_payload.value.payload | fromjson == {"payme":"alot"}' >/dev/null
   echo "$outputs_json" | jq -e '.grantory_request_without_labels_payload.value.payload == null' >/dev/null
   echo "$outputs_json" | jq -e '.grantory_schema_definition_basic.value.id | length > 0' >/dev/null
-  echo "$outputs_json" | jq -e --arg id "$schema_definition_id" '.grantory_request_with_schema.value.schema_definition_id == $id' >/dev/null
+  echo "$outputs_json" | jq -e '.grantory_schema_definition_grant.value.id | length > 0' >/dev/null
+  echo "$outputs_json" | jq -e --arg id "$request_schema_definition_id" '.grantory_request_with_schema.value.request_schema_definition_id == $id' >/dev/null
+  echo "$outputs_json" | jq -e --arg id "$grant_schema_definition_id" '.grantory_request_with_schema.value.grant_schema_definition_id == $id' >/dev/null
   echo "$outputs_json" | jq -e '.grantory_request_with_schema.value.payload | fromjson == {"name":"schema-request"}' >/dev/null
 
   echo "$outputs_json" | jq -e '.grantory_register_with_labels_payload.value.id | length > 0' >/dev/null

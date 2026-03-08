@@ -23,6 +23,5 @@ Use this data source to filter Grantory records inside a Terraform/OpenTofu plan
 
 Read-Only:
 
-- `grant_schema` (String)
-- `request_schema` (String)
+- `schema` (String)
 - `schema_definition_id` (String)

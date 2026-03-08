@@ -23,11 +23,17 @@ func resourceRequest() *schema.Resource {
 				ForceNew:    true,
 				Description: "Optional unique key used to enforce request uniqueness within a namespace.",
 			},
-			"schema_definition_id": {
+			"request_schema_definition_id": {
 				Type:        schema.TypeString,
 				Optional:    true,
 				ForceNew:    true,
-				Description: "Optional schema definition identifier used to validate request and grant payloads.",
+				Description: "Optional schema definition identifier used to validate request payloads.",
+			},
+			"grant_schema_definition_id": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				ForceNew:    true,
+				Description: "Optional schema definition identifier used to validate grant payloads.",
 			},
 			"payload": {
 				Type:        schema.TypeString,
@@ -84,11 +90,12 @@ func resourceRequestCreate(ctx context.Context, d *schema.ResourceData, meta any
 	}
 
 	payload := apiRequest{
-		HostID:             d.Get("host_id").(string),
-		SchemaDefinitionID: d.Get("schema_definition_id").(string),
-		UniqueKey:          d.Get("unique_key").(string),
-		Payload:            requestPayload,
-		Labels:             expandStringMap(extractMap(d.Get("labels"))),
+		HostID:                    d.Get("host_id").(string),
+		RequestSchemaDefinitionID: d.Get("request_schema_definition_id").(string),
+		GrantSchemaDefinitionID:   d.Get("grant_schema_definition_id").(string),
+		UniqueKey:                 d.Get("unique_key").(string),
+		Payload:                   requestPayload,
+		Labels:                    expandStringMap(extractMap(d.Get("labels"))),
 	}
 
 	created, err := client.createRequest(ctx, payload)
@@ -168,7 +175,10 @@ func setRequestAttributes(d *schema.ResourceData, req apiRequest) diag.Diagnosti
 	if err := d.Set("unique_key", req.UniqueKey); err != nil {
 		diags = append(diags, diag.FromErr(err)...)
 	}
-	if err := d.Set("schema_definition_id", req.SchemaDefinitionID); err != nil {
+	if err := d.Set("request_schema_definition_id", req.RequestSchemaDefinitionID); err != nil {
+		diags = append(diags, diag.FromErr(err)...)
+	}
+	if err := d.Set("grant_schema_definition_id", req.GrantSchemaDefinitionID); err != nil {
 		diags = append(diags, diag.FromErr(err)...)
 	}
 	if req.Payload != nil {

@@ -7,7 +7,7 @@ import (
 )
 
 // APIVersion must be bumped whenever the HTTP API contracts change.
-const APIVersion = "1.4.1"
+const APIVersion = "1.5.0"
 
 type FeatureInfo struct {
 	Name  string `json:"name"`
@@ -67,11 +67,19 @@ func Features() []FeatureInfo {
 		},
 		{
 			Name:  "schema_definitions.crud",
-			Since: "1.4.0",
+			Since: "1.5.0",
 		},
 		{
-			Name:  "requests.schema_definition_id",
-			Since: "1.4.0",
+			Name:  "schema_definitions.list",
+			Since: "1.5.0",
+		},
+		{
+			Name:  "requests.schema_definition_ids",
+			Since: "1.5.0",
+		},
+		{
+			Name:  "registers.schema_definition_id",
+			Since: "1.5.0",
 		},
 	}
 }

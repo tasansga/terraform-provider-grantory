@@ -26,10 +26,15 @@ func dataRequest() *schema.Resource {
 				Computed:    true,
 				Description: "Unique key used to enforce request uniqueness within a namespace.",
 			},
-			"schema_definition_id": {
+			"request_schema_definition_id": {
 				Type:        schema.TypeString,
 				Computed:    true,
-				Description: "Schema definition identifier associated with the request.",
+				Description: "Schema definition identifier used to validate request payloads.",
+			},
+			"grant_schema_definition_id": {
+				Type:        schema.TypeString,
+				Computed:    true,
+				Description: "Schema definition identifier used to validate grant payloads.",
 			},
 			"payload": {
 				Type:        schema.TypeString,

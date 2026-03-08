@@ -119,6 +119,26 @@ CREATE TABLE IF NOT EXISTS hosts (
 CREATE TABLE IF NOT EXISTS requests (
 	id TEXT PRIMARY KEY,
 	host_id TEXT NOT NULL,
+	request_schema_definition_id TEXT,
+	grant_schema_definition_id TEXT,
+	unique_key TEXT,
+	data TEXT,
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	FOREIGN KEY(host_id) REFERENCES hosts(id) ON DELETE CASCADE,
+	FOREIGN KEY(request_schema_definition_id) REFERENCES schema_definitions(id) ON DELETE SET NULL,
+	FOREIGN KEY(grant_schema_definition_id) REFERENCES schema_definitions(id) ON DELETE SET NULL
+)`
+	schemaDefinitionsTableStatement = `
+CREATE TABLE IF NOT EXISTS schema_definitions (
+	id TEXT PRIMARY KEY,
+	schema TEXT,
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+)`
+	registersTableStatement = `
+CREATE TABLE IF NOT EXISTS registers (
+	id TEXT PRIMARY KEY,
+	host_id TEXT NOT NULL,
 	schema_definition_id TEXT,
 	unique_key TEXT,
 	data TEXT,
@@ -126,23 +146,6 @@ CREATE TABLE IF NOT EXISTS requests (
 	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	FOREIGN KEY(host_id) REFERENCES hosts(id) ON DELETE CASCADE,
 	FOREIGN KEY(schema_definition_id) REFERENCES schema_definitions(id) ON DELETE SET NULL
-)`
-	schemaDefinitionsTableStatement = `
-CREATE TABLE IF NOT EXISTS schema_definitions (
-	id TEXT PRIMARY KEY,
-	request_schema TEXT,
-	grant_schema TEXT,
-	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-)`
-	registersTableStatement = `
-CREATE TABLE IF NOT EXISTS registers (
-	id TEXT PRIMARY KEY,
-	host_id TEXT NOT NULL,
-	unique_key TEXT,
-	data TEXT,
-	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	FOREIGN KEY(host_id) REFERENCES hosts(id) ON DELETE CASCADE
 )`
 	grantsTableStatement = `
 CREATE TABLE IF NOT EXISTS grants (
@@ -296,8 +299,11 @@ func (s *sqliteStore) ensureRequestsTable(ctx context.Context, tx *sql.Tx) error
 	if _, err := tx.ExecContext(ctx, requestsTableStatement); err != nil {
 		return fmt.Errorf("create requests table: %w", err)
 	}
-	if err := ensureSQLiteColumn(ctx, tx, "requests", "schema_definition_id", "TEXT"); err != nil {
-		return fmt.Errorf("add requests schema_definition_id column: %w", err)
+	if err := ensureSQLiteColumn(ctx, tx, "requests", "request_schema_definition_id", "TEXT"); err != nil {
+		return fmt.Errorf("add requests request_schema_definition_id column: %w", err)
+	}
+	if err := ensureSQLiteColumn(ctx, tx, "requests", "grant_schema_definition_id", "TEXT"); err != nil {
+		return fmt.Errorf("add requests grant_schema_definition_id column: %w", err)
 	}
 	if err := ensureSQLiteColumn(ctx, tx, "requests", "unique_key", "TEXT"); err != nil {
 		return fmt.Errorf("add requests unique_key column: %w", err)
@@ -318,6 +324,9 @@ func (s *sqliteStore) ensureSchemaDefinitionsTable(ctx context.Context, tx *sql.
 func (s *sqliteStore) ensureRegistersTable(ctx context.Context, tx *sql.Tx) error {
 	if _, err := tx.ExecContext(ctx, registersTableStatement); err != nil {
 		return fmt.Errorf("create registers table: %w", err)
+	}
+	if err := ensureSQLiteColumn(ctx, tx, "registers", "schema_definition_id", "TEXT"); err != nil {
+		return fmt.Errorf("add registers schema_definition_id column: %w", err)
 	}
 	if err := ensureSQLiteColumn(ctx, tx, "registers", "unique_key", "TEXT"); err != nil {
 		return fmt.Errorf("add registers unique_key column: %w", err)
@@ -589,12 +598,13 @@ func (s *sqliteStore) CreateRequest(ctx context.Context, req Request) (Request, 
 	req.ID = generateID()
 
 	s.logDBOperation("requests", "create", logrus.Fields{
-		"request_id":           req.ID,
-		"host_id":              req.HostID,
-		"schema_definition_id": req.SchemaDefinitionID,
-		"unique_key":           req.UniqueKey,
-		"payload":              req.Payload,
-		"labels":               req.Labels,
+		"request_id":                   req.ID,
+		"host_id":                      req.HostID,
+		"request_schema_definition_id": req.RequestSchemaDefinitionID,
+		"grant_schema_definition_id":   req.GrantSchemaDefinitionID,
+		"unique_key":                   req.UniqueKey,
+		"payload":                      req.Payload,
+		"labels":                       req.Labels,
 	})
 
 	payloadValue, err := encodeJSON(req.Payload)
@@ -612,14 +622,18 @@ func (s *sqliteStore) CreateRequest(ctx context.Context, req Request) (Request, 
 	if req.UniqueKey != "" {
 		uniqueKey = req.UniqueKey
 	}
-	var schemaDefinitionID any
-	if req.SchemaDefinitionID != "" {
-		schemaDefinitionID = req.SchemaDefinitionID
+	var requestSchemaID any
+	if req.RequestSchemaDefinitionID != "" {
+		requestSchemaID = req.RequestSchemaDefinitionID
+	}
+	var grantSchemaID any
+	if req.GrantSchemaDefinitionID != "" {
+		grantSchemaID = req.GrantSchemaDefinitionID
 	}
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO requests (id, host_id, schema_definition_id, unique_key, data)
-VALUES (?, ?, ?, ?, ?)
-`, req.ID, req.HostID, schemaDefinitionID, uniqueKey, payloadValue); err != nil {
+INSERT INTO requests (id, host_id, request_schema_definition_id, grant_schema_definition_id, unique_key, data)
+VALUES (?, ?, ?, ?, ?, ?)
+`, req.ID, req.HostID, requestSchemaID, grantSchemaID, uniqueKey, payloadValue); err != nil {
 		if isUniqueConstraintError(err) {
 			if isUniqueKeyConstraintError(err) {
 				return Request{}, fmt.Errorf("%w: %w", ErrRequestUniqueKeyConflict, err)
@@ -651,7 +665,7 @@ func (s *sqliteStore) GetRequest(ctx context.Context, id string) (Request, error
 	})
 
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, host_id, schema_definition_id, unique_key, data,
+SELECT id, host_id, request_schema_definition_id, grant_schema_definition_id, unique_key, data,
        CASE WHEN EXISTS (SELECT 1 FROM grants WHERE request_id = requests.id) THEN 1 ELSE 0 END AS has_grant,
        created_at, updated_at
 FROM requests
@@ -697,7 +711,7 @@ func (s *sqliteStore) ListRequests(ctx context.Context, filters *RequestListFilt
 
 	query := strings.Builder{}
 	query.WriteString(`
-SELECT id, host_id, schema_definition_id, unique_key, data,
+SELECT id, host_id, request_schema_definition_id, grant_schema_definition_id, unique_key, data,
        CASE WHEN EXISTS (SELECT 1 FROM grants WHERE request_id = requests.id) THEN 1 ELSE 0 END AS has_grant,
        created_at, updated_at
 FROM requests`)
@@ -861,11 +875,12 @@ func (s *sqliteStore) CreateRegister(ctx context.Context, reg Register) (Registe
 	reg.ID = generateID()
 
 	s.logDBOperation("registers", "create", logrus.Fields{
-		"register_id": reg.ID,
-		"host_id":     reg.HostID,
-		"unique_key":  reg.UniqueKey,
-		"payload":     reg.Payload,
-		"labels":      reg.Labels,
+		"register_id":          reg.ID,
+		"host_id":              reg.HostID,
+		"schema_definition_id": reg.SchemaDefinitionID,
+		"unique_key":           reg.UniqueKey,
+		"payload":              reg.Payload,
+		"labels":               reg.Labels,
 	})
 
 	payloadValue, err := encodeJSON(reg.Payload)
@@ -883,10 +898,14 @@ func (s *sqliteStore) CreateRegister(ctx context.Context, reg Register) (Registe
 	if reg.UniqueKey != "" {
 		uniqueKey = reg.UniqueKey
 	}
+	var schemaDefinitionID any
+	if reg.SchemaDefinitionID != "" {
+		schemaDefinitionID = reg.SchemaDefinitionID
+	}
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO registers (id, host_id, unique_key, data)
-VALUES (?, ?, ?, ?)
-`, reg.ID, reg.HostID, uniqueKey, payloadValue); err != nil {
+INSERT INTO registers (id, host_id, schema_definition_id, unique_key, data)
+VALUES (?, ?, ?, ?, ?)
+`, reg.ID, reg.HostID, schemaDefinitionID, uniqueKey, payloadValue); err != nil {
 		if isUniqueConstraintError(err) {
 			if isUniqueRegisterKeyConstraintError(err) {
 				return Register{}, fmt.Errorf("%w: %w", ErrRegisterUniqueKeyConflict, err)
@@ -918,7 +937,7 @@ func (s *sqliteStore) GetRegister(ctx context.Context, id string) (Register, err
 	})
 
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, host_id, unique_key, data, created_at, updated_at
+SELECT id, host_id, schema_definition_id, unique_key, data, created_at, updated_at
 FROM registers
 WHERE id = ?
 `, id)
@@ -956,7 +975,7 @@ func (s *sqliteStore) ListRegisters(ctx context.Context, filters *RegisterListFi
 
 	query := strings.Builder{}
 	query.WriteString(`
-SELECT id, host_id, unique_key, data, created_at, updated_at
+SELECT id, host_id, schema_definition_id, unique_key, data, created_at, updated_at
 FROM registers`)
 
 	var args []any
@@ -1242,11 +1261,8 @@ func (s *sqliteStore) CreateSchemaDefinition(ctx context.Context, def SchemaDefi
 	if s == nil || s.db == nil {
 		return SchemaDefinition{}, fmt.Errorf("store not initialized")
 	}
-	if len(def.RequestSchema) == 0 {
-		return SchemaDefinition{}, fmt.Errorf("request_schema is required")
-	}
-	if len(def.GrantSchema) == 0 {
-		return SchemaDefinition{}, fmt.Errorf("grant_schema is required")
+	if len(def.Schema) == 0 {
+		return SchemaDefinition{}, fmt.Errorf("schema is required")
 	}
 
 	def.ID = generateID()
@@ -1255,19 +1271,15 @@ func (s *sqliteStore) CreateSchemaDefinition(ctx context.Context, def SchemaDefi
 		"schema_definition_id": def.ID,
 	})
 
-	requestValue, err := encodeJSON(def.RequestSchema)
+	schemaValue, err := encodeJSON(def.Schema)
 	if err != nil {
-		return SchemaDefinition{}, fmt.Errorf("encode request schema: %w", err)
-	}
-	grantValue, err := encodeJSON(def.GrantSchema)
-	if err != nil {
-		return SchemaDefinition{}, fmt.Errorf("encode grant schema: %w", err)
+		return SchemaDefinition{}, fmt.Errorf("encode schema: %w", err)
 	}
 
 	if _, err := s.db.ExecContext(ctx, `
-INSERT INTO schema_definitions (id, request_schema, grant_schema)
-VALUES (?, ?, ?)
-`, def.ID, requestValue, grantValue); err != nil {
+INSERT INTO schema_definitions (id, schema)
+VALUES (?, ?)
+`, def.ID, schemaValue); err != nil {
 		if isUniqueConstraintError(err) {
 			return SchemaDefinition{}, fmt.Errorf("%w: %w", ErrSchemaDefinitionAlreadyExists, err)
 		}
@@ -1288,7 +1300,7 @@ func (s *sqliteStore) GetSchemaDefinition(ctx context.Context, id string) (Schem
 	})
 
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, request_schema, grant_schema, created_at
+SELECT id, schema, created_at
 FROM schema_definitions
 WHERE id = ?
 `, id)
@@ -1304,7 +1316,7 @@ func (s *sqliteStore) ListSchemaDefinitions(ctx context.Context) ([]SchemaDefini
 	s.logDBOperation("schema_definitions", "list", nil)
 
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, request_schema, grant_schema, created_at
+SELECT id, schema, created_at
 FROM schema_definitions
 ORDER BY created_at ASC
 `)
@@ -1345,10 +1357,20 @@ func (s *sqliteStore) DeleteSchemaDefinition(ctx context.Context, id string) err
 
 	if _, err := tx.ExecContext(ctx, `
 UPDATE requests
+SET request_schema_definition_id = NULL,
+    grant_schema_definition_id = NULL
+WHERE request_schema_definition_id = ?
+   OR grant_schema_definition_id = ?
+`, id, id); err != nil {
+		return fmt.Errorf("null request schema definition references: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+UPDATE registers
 SET schema_definition_id = NULL
 WHERE schema_definition_id = ?
 `, id); err != nil {
-		return fmt.Errorf("null schema definition references: %w", err)
+		return fmt.Errorf("null register schema definition references: %w", err)
 	}
 
 	res, err := tx.ExecContext(ctx, `DELETE FROM schema_definitions WHERE id = ?`, id)
@@ -1404,24 +1426,28 @@ func scanHost(scanner rowScanner) (Host, error) {
 
 func scanRequest(scanner rowScanner) (Request, error) {
 	var (
-		req                Request
-		schemaDefinitionID sql.NullString
-		uniqueKey          sql.NullString
-		payloadValue       sql.NullString
-		hasGrant           sql.NullInt64
-		createdAt          any
-		updatedAt          any
+		req             Request
+		requestSchemaID sql.NullString
+		grantSchemaID   sql.NullString
+		uniqueKey       sql.NullString
+		payloadValue    sql.NullString
+		hasGrant        sql.NullInt64
+		createdAt       any
+		updatedAt       any
 	)
 
-	if err := scanner.Scan(&req.ID, &req.HostID, &schemaDefinitionID, &uniqueKey, &payloadValue, &hasGrant, &createdAt, &updatedAt); err != nil {
+	if err := scanner.Scan(&req.ID, &req.HostID, &requestSchemaID, &grantSchemaID, &uniqueKey, &payloadValue, &hasGrant, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Request{}, ErrRequestNotFound
 		}
 		return Request{}, err
 	}
 
-	if schemaDefinitionID.Valid {
-		req.SchemaDefinitionID = schemaDefinitionID.String
+	if requestSchemaID.Valid {
+		req.RequestSchemaDefinitionID = requestSchemaID.String
+	}
+	if grantSchemaID.Valid {
+		req.GrantSchemaDefinitionID = grantSchemaID.String
 	}
 	if uniqueKey.Valid {
 		req.UniqueKey = uniqueKey.String
@@ -1447,13 +1473,12 @@ func scanRequest(scanner rowScanner) (Request, error) {
 
 func scanSchemaDefinition(scanner rowScanner) (SchemaDefinition, error) {
 	var (
-		def          SchemaDefinition
-		requestValue sql.NullString
-		grantValue   sql.NullString
-		createdAt    any
+		def       SchemaDefinition
+		schemaVal sql.NullString
+		createdAt any
 	)
 
-	if err := scanner.Scan(&def.ID, &requestValue, &grantValue, &createdAt); err != nil {
+	if err := scanner.Scan(&def.ID, &schemaVal, &createdAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return SchemaDefinition{}, ErrSchemaDefinitionNotFound
 		}
@@ -1461,13 +1486,9 @@ func scanSchemaDefinition(scanner rowScanner) (SchemaDefinition, error) {
 	}
 
 	var err error
-	def.RequestSchema, err = decodeRawJSON(requestValue)
+	def.Schema, err = decodeRawJSON(schemaVal)
 	if err != nil {
-		return SchemaDefinition{}, fmt.Errorf("decode request schema: %w", err)
-	}
-	def.GrantSchema, err = decodeRawJSON(grantValue)
-	if err != nil {
-		return SchemaDefinition{}, fmt.Errorf("decode grant schema: %w", err)
+		return SchemaDefinition{}, fmt.Errorf("decode schema: %w", err)
 	}
 
 	if def.CreatedAt, err = parseDBTime(createdAt); err != nil {
@@ -1480,19 +1501,23 @@ func scanSchemaDefinition(scanner rowScanner) (SchemaDefinition, error) {
 func scanRegister(scanner rowScanner) (Register, error) {
 	var (
 		reg          Register
+		schemaID     sql.NullString
 		uniqueKey    sql.NullString
 		payloadValue sql.NullString
 		createdAt    any
 		updatedAt    any
 	)
 
-	if err := scanner.Scan(&reg.ID, &reg.HostID, &uniqueKey, &payloadValue, &createdAt, &updatedAt); err != nil {
+	if err := scanner.Scan(&reg.ID, &reg.HostID, &schemaID, &uniqueKey, &payloadValue, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Register{}, ErrRegisterNotFound
 		}
 		return Register{}, err
 	}
 
+	if schemaID.Valid {
+		reg.SchemaDefinitionID = schemaID.String
+	}
 	if uniqueKey.Valid {
 		reg.UniqueKey = uniqueKey.String
 	}

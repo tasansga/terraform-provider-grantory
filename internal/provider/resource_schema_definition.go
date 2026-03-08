@@ -11,17 +11,11 @@ import (
 func resourceSchemaDefinition() *schema.Resource {
 	return &schema.Resource{
 		Schema: map[string]*schema.Schema{
-			"request_schema": {
+			"schema": {
 				Type:        schema.TypeString,
 				Required:    true,
 				ForceNew:    true,
-				Description: "JSON Schema that validates request payloads.",
-			},
-			"grant_schema": {
-				Type:        schema.TypeString,
-				Required:    true,
-				ForceNew:    true,
-				Description: "JSON Schema that validates grant payloads.",
+				Description: "JSON Schema definition payload.",
 			},
 		},
 		CreateContext: resourceSchemaDefinitionCreate,
@@ -33,39 +27,23 @@ func resourceSchemaDefinition() *schema.Resource {
 func resourceSchemaDefinitionCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	client := meta.(*grantoryClient)
 
-	requestSchema, err := parseRawJSON(d.Get("request_schema").(string))
+	schemaValue, err := parseRawJSON(d.Get("schema").(string))
 	if err != nil {
 		return diag.Diagnostics{{
 			Severity: diag.Error,
-			Summary:  "invalid request_schema",
+			Summary:  "invalid schema",
 			Detail:   err.Error(),
 		}}
 	}
-	if len(requestSchema) == 0 {
+	if len(schemaValue) == 0 {
 		return diag.Diagnostics{{
 			Severity: diag.Error,
-			Summary:  "request_schema is required",
-		}}
-	}
-
-	grantSchema, err := parseRawJSON(d.Get("grant_schema").(string))
-	if err != nil {
-		return diag.Diagnostics{{
-			Severity: diag.Error,
-			Summary:  "invalid grant_schema",
-			Detail:   err.Error(),
-		}}
-	}
-	if len(grantSchema) == 0 {
-		return diag.Diagnostics{{
-			Severity: diag.Error,
-			Summary:  "grant_schema is required",
+			Summary:  "schema is required",
 		}}
 	}
 
 	created, err := client.createSchemaDefinition(ctx, apiSchemaDefinition{
-		RequestSchema: requestSchema,
-		GrantSchema:   grantSchema,
+		Schema: schemaValue,
 	})
 	if err != nil {
 		return diag.FromErr(err)
@@ -115,10 +93,7 @@ func resourceSchemaDefinitionDelete(ctx context.Context, d *schema.ResourceData,
 }
 
 func resourceSchemaDefinitionRefresh(d *schema.ResourceData, def apiSchemaDefinition) diag.Diagnostics {
-	if err := d.Set("request_schema", string(def.RequestSchema)); err != nil {
-		return diag.FromErr(err)
-	}
-	if err := d.Set("grant_schema", string(def.GrantSchema)); err != nil {
+	if err := d.Set("schema", string(def.Schema)); err != nil {
 		return diag.FromErr(err)
 	}
 	return nil

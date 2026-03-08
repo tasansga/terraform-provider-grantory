@@ -1540,20 +1540,19 @@ func TestSQLiteDeleteSchemaDefinitionNullsRequestReference(t *testing.T) {
 	require.NoError(t, err)
 
 	def, err := store.CreateSchemaDefinition(ctx, SchemaDefinition{
-		RequestSchema: json.RawMessage(`{"type":"object"}`),
-		GrantSchema:   json.RawMessage(`{"type":"object"}`),
+		Schema: json.RawMessage(`{"type":"object"}`),
 	})
 	require.NoError(t, err)
 
 	req, err := store.CreateRequest(ctx, Request{
-		HostID:             host.ID,
-		SchemaDefinitionID: def.ID,
-		Payload:            map[string]any{"name": "db"},
+		HostID:                    host.ID,
+		RequestSchemaDefinitionID: def.ID,
+		Payload:                   map[string]any{"name": "db"},
 	})
 	require.NoError(t, err)
 
 	var before sql.NullString
-	err = store.DB().QueryRowContext(ctx, `SELECT schema_definition_id FROM requests WHERE id = ?`, req.ID).Scan(&before)
+	err = store.DB().QueryRowContext(ctx, `SELECT request_schema_definition_id FROM requests WHERE id = ?`, req.ID).Scan(&before)
 	require.NoError(t, err)
 	require.True(t, before.Valid)
 	require.Equal(t, def.ID, before.String)
@@ -1561,9 +1560,9 @@ func TestSQLiteDeleteSchemaDefinitionNullsRequestReference(t *testing.T) {
 	require.NoError(t, sqliteStore.DeleteSchemaDefinition(ctx, def.ID))
 
 	var after sql.NullString
-	err = store.DB().QueryRowContext(ctx, `SELECT schema_definition_id FROM requests WHERE id = ?`, req.ID).Scan(&after)
+	err = store.DB().QueryRowContext(ctx, `SELECT request_schema_definition_id FROM requests WHERE id = ?`, req.ID).Scan(&after)
 	require.NoError(t, err)
-	require.False(t, after.Valid, "schema_definition_id should be NULL after delete")
+	require.False(t, after.Valid, "request_schema_definition_id should be NULL after delete")
 }
 
 func TestNewFailsWhenForeignKeyEnableContextCanceled(t *testing.T) {

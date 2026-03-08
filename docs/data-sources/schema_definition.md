@@ -19,6 +19,5 @@ Use this data source to filter Grantory records inside a Terraform/OpenTofu plan
 
 ### Read-Only
 
-- `grant_schema` (String) JSON Schema used for grant payload validation.
 - `id` (String) The ID of this resource.
-- `request_schema` (String) JSON Schema used for request payload validation.
+- `schema` (String) JSON Schema definition payload.

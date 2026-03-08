@@ -20,11 +20,7 @@ func dataSchemaDefinitions() *schema.Resource {
 							Type:     schema.TypeString,
 							Computed: true,
 						},
-						"request_schema": {
-							Type:     schema.TypeString,
-							Computed: true,
-						},
-						"grant_schema": {
+						"schema": {
 							Type:     schema.TypeString,
 							Computed: true,
 						},
@@ -48,14 +44,12 @@ func dataSchemaDefinitionsRead(ctx context.Context, d *schema.ResourceData, meta
 	for _, def := range defs {
 		entry := map[string]any{
 			"schema_definition_id": def.ID,
-			"request_schema":       string(def.RequestSchema),
-			"grant_schema":         string(def.GrantSchema),
+			"schema":               string(def.Schema),
 		}
 		values = append(values, entry)
 		hashEntries = append(hashEntries, schemaDefinitionListEntry{
 			SchemaDefinitionID: def.ID,
-			RequestSchema:      string(def.RequestSchema),
-			GrantSchema:        string(def.GrantSchema),
+			Schema:             string(def.Schema),
 		})
 	}
 
@@ -74,6 +68,5 @@ func dataSchemaDefinitionsRead(ctx context.Context, d *schema.ResourceData, meta
 
 type schemaDefinitionListEntry struct {
 	SchemaDefinitionID string `json:"schema_definition_id"`
-	RequestSchema      string `json:"request_schema"`
-	GrantSchema        string `json:"grant_schema"`
+	Schema             string `json:"schema"`
 }

@@ -75,14 +75,17 @@ output "grantory_request_without_labels_payload" {
 }
 
 resource "grantory_schema_definition" "basic" {
-  request_schema = jsonencode({
+  schema = jsonencode({
     type = "object"
     properties = {
       name = { type = "string" }
     }
     required = ["name"]
   })
-  grant_schema = jsonencode({
+}
+
+resource "grantory_schema_definition" "grant" {
+  schema = jsonencode({
     type = "object"
     properties = {
       detail = { type = "string" }
@@ -92,8 +95,9 @@ resource "grantory_schema_definition" "basic" {
 }
 
 resource "grantory_request" "with_schema" {
-  host_id              = grantory_host.with_labels.host_id
-  schema_definition_id = grantory_schema_definition.basic.id
+  host_id                      = grantory_host.with_labels.host_id
+  request_schema_definition_id = grantory_schema_definition.basic.id
+  grant_schema_definition_id   = grantory_schema_definition.grant.id
   payload = jsonencode({
     name = "schema-request"
   })
@@ -101,6 +105,10 @@ resource "grantory_request" "with_schema" {
 
 output "grantory_schema_definition_basic" {
   value = grantory_schema_definition.basic
+}
+
+output "grantory_schema_definition_grant" {
+  value = grantory_schema_definition.grant
 }
 
 output "grantory_request_with_schema" {

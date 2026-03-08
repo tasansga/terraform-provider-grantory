@@ -351,7 +351,7 @@ func TestSchemaDefinitionsValidation(t *testing.T) {
 	headers := map[string]string{}
 
 	validSchema := map[string]any{
-		"request_schema": map[string]any{
+		"schema": map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
@@ -359,24 +359,17 @@ func TestSchemaDefinitionsValidation(t *testing.T) {
 			},
 			"required": []string{"name"},
 		},
-		"grant_schema": map[string]any{
-			"type": "object",
-		},
 	}
 
 	res := sendTestRequest(t, app, http.MethodPost, "/schema-definitions", headers, validSchema)
 	assert.Equal(t, http.StatusCreated, res.StatusCode, "create schema definition status")
 	created := decodeJSON[storage.SchemaDefinition](t, res)
 	assert.NotEmpty(t, created.ID, "schema definition should have ID")
-	assert.NotEmpty(t, created.RequestSchema, "schema definition should include request schema")
-	assert.NotEmpty(t, created.GrantSchema, "schema definition should include grant schema")
+	assert.NotEmpty(t, created.Schema, "schema definition should include schema")
 
 	invalidSchema := map[string]any{
-		"request_schema": map[string]any{
+		"schema": map[string]any{
 			"type": 1,
-		},
-		"grant_schema": map[string]any{
-			"type": "object",
 		},
 	}
 
@@ -406,19 +399,12 @@ func TestRequestSchemaValidation(t *testing.T) {
 	host := decodeJSON[storage.Host](t, res)
 
 	defPayload := map[string]any{
-		"request_schema": map[string]any{
+		"schema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"name": map[string]any{"type": "string"},
 			},
 			"required": []string{"name"},
-		},
-		"grant_schema": map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"detail": map[string]any{"type": "string"},
-			},
-			"required": []string{"detail"},
 		},
 	}
 	res = sendTestRequest(t, app, http.MethodPost, "/schema-definitions", headers, defPayload)
@@ -426,8 +412,8 @@ func TestRequestSchemaValidation(t *testing.T) {
 	def := decodeJSON[storage.SchemaDefinition](t, res)
 
 	goodRequest := map[string]any{
-		"host_id":              host.ID,
-		"schema_definition_id": def.ID,
+		"host_id":                      host.ID,
+		"request_schema_definition_id": def.ID,
 		"payload": map[string]any{
 			"name": "db",
 		},
@@ -436,8 +422,8 @@ func TestRequestSchemaValidation(t *testing.T) {
 	assert.Equal(t, http.StatusCreated, res.StatusCode, "request should pass schema validation")
 
 	badRequest := map[string]any{
-		"host_id":              host.ID,
-		"schema_definition_id": def.ID,
+		"host_id":                      host.ID,
+		"request_schema_definition_id": def.ID,
 		"payload": map[string]any{
 			"name": 42,
 		},
@@ -446,8 +432,8 @@ func TestRequestSchemaValidation(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, res.StatusCode, "request should fail schema validation")
 
 	missingSchemaRequest := map[string]any{
-		"host_id":              host.ID,
-		"schema_definition_id": "missing",
+		"host_id":                      host.ID,
+		"request_schema_definition_id": "missing",
 		"payload": map[string]any{
 			"name": "db",
 		},
@@ -471,10 +457,7 @@ func TestGrantSchemaValidation(t *testing.T) {
 	host := decodeJSON[storage.Host](t, res)
 
 	defPayload := map[string]any{
-		"request_schema": map[string]any{
-			"type": "object",
-		},
-		"grant_schema": map[string]any{
+		"schema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"detail": map[string]any{"type": "string"},
@@ -487,9 +470,9 @@ func TestGrantSchemaValidation(t *testing.T) {
 	def := decodeJSON[storage.SchemaDefinition](t, res)
 
 	reqPayload := map[string]any{
-		"host_id":              host.ID,
-		"schema_definition_id": def.ID,
-		"payload":              map[string]any{},
+		"host_id":                    host.ID,
+		"grant_schema_definition_id": def.ID,
+		"payload":                    map[string]any{},
 	}
 	res = sendTestRequest(t, app, http.MethodPost, "/requests", headers, reqPayload)
 	assert.Equal(t, http.StatusCreated, res.StatusCode, "create request status")

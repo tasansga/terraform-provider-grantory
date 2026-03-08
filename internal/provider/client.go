@@ -27,17 +27,18 @@ type hostLabelsPayload struct {
 }
 
 type apiRequest struct {
-	ID                 string            `json:"id"`
-	HostID             string            `json:"host_id"`
-	SchemaDefinitionID string            `json:"schema_definition_id,omitempty"`
-	UniqueKey          string            `json:"unique_key,omitempty"`
-	Payload            map[string]any    `json:"payload,omitempty"`
-	Labels             map[string]string `json:"labels,omitempty"`
-	HasGrant           bool              `json:"has_grant"`
-	Grant              *apiRequestGrant  `json:"grant"`
-	GrantID            string            `json:"grant_id,omitempty"`
-	CreatedAt          string            `json:"created_at"`
-	UpdatedAt          string            `json:"updated_at"`
+	ID                        string            `json:"id"`
+	HostID                    string            `json:"host_id"`
+	RequestSchemaDefinitionID string            `json:"request_schema_definition_id,omitempty"`
+	GrantSchemaDefinitionID   string            `json:"grant_schema_definition_id,omitempty"`
+	UniqueKey                 string            `json:"unique_key,omitempty"`
+	Payload                   map[string]any    `json:"payload,omitempty"`
+	Labels                    map[string]string `json:"labels,omitempty"`
+	HasGrant                  bool              `json:"has_grant"`
+	Grant                     *apiRequestGrant  `json:"grant"`
+	GrantID                   string            `json:"grant_id,omitempty"`
+	CreatedAt                 string            `json:"created_at"`
+	UpdatedAt                 string            `json:"updated_at"`
 }
 
 type apiRequestGrant struct {
@@ -46,13 +47,14 @@ type apiRequestGrant struct {
 }
 
 type apiRegister struct {
-	ID        string            `json:"id"`
-	HostID    string            `json:"host_id"`
-	UniqueKey string            `json:"unique_key,omitempty"`
-	Payload   map[string]any    `json:"payload,omitempty"`
-	Labels    map[string]string `json:"labels,omitempty"`
-	CreatedAt string            `json:"created_at"`
-	UpdatedAt string            `json:"updated_at"`
+	ID                 string            `json:"id"`
+	HostID             string            `json:"host_id"`
+	SchemaDefinitionID string            `json:"schema_definition_id,omitempty"`
+	UniqueKey          string            `json:"unique_key,omitempty"`
+	Payload            map[string]any    `json:"payload,omitempty"`
+	Labels             map[string]string `json:"labels,omitempty"`
+	CreatedAt          string            `json:"created_at"`
+	UpdatedAt          string            `json:"updated_at"`
 }
 
 type apiGrant struct {
@@ -64,10 +66,9 @@ type apiGrant struct {
 }
 
 type apiSchemaDefinition struct {
-	ID            string          `json:"id"`
-	RequestSchema json.RawMessage `json:"request_schema"`
-	GrantSchema   json.RawMessage `json:"grant_schema"`
-	CreatedAt     string          `json:"created_at"`
+	ID        string          `json:"id"`
+	Schema    json.RawMessage `json:"schema"`
+	CreatedAt string          `json:"created_at"`
 }
 
 type apiGrantCreatePayload struct {

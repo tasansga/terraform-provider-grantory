@@ -15,8 +15,7 @@ Manage the lifecycle of the `grantory_schema_definition` resource.
 
 ### Required
 
-- `grant_schema` (String) JSON Schema that validates grant payloads.
-- `request_schema` (String) JSON Schema that validates request payloads.
+- `schema` (String) JSON Schema definition payload.
 
 ### Read-Only
 

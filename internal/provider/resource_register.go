@@ -23,6 +23,12 @@ func resourceRegister() *schema.Resource {
 				ForceNew:    true,
 				Description: "Optional unique key used to enforce register uniqueness within a namespace.",
 			},
+			"schema_definition_id": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				ForceNew:    true,
+				Description: "Optional schema definition identifier used to validate register payloads.",
+			},
 			"payload": {
 				Type:        schema.TypeString,
 				Optional:    true,
@@ -64,10 +70,11 @@ func resourceRegisterCreate(ctx context.Context, d *schema.ResourceData, meta an
 	}
 
 	payload := apiRegister{
-		HostID:    d.Get("host_id").(string),
-		UniqueKey: d.Get("unique_key").(string),
-		Payload:   registerPayload,
-		Labels:    expandStringMap(extractMap(d.Get("labels"))),
+		HostID:             d.Get("host_id").(string),
+		SchemaDefinitionID: d.Get("schema_definition_id").(string),
+		UniqueKey:          d.Get("unique_key").(string),
+		Payload:            registerPayload,
+		Labels:             expandStringMap(extractMap(d.Get("labels"))),
 	}
 
 	created, err := client.createRegister(ctx, payload)
@@ -145,6 +152,9 @@ func setRegisterAttributes(d *schema.ResourceData, reg apiRegister) diag.Diagnos
 		diags = append(diags, diag.FromErr(err)...)
 	}
 	if err := d.Set("unique_key", reg.UniqueKey); err != nil {
+		diags = append(diags, diag.FromErr(err)...)
+	}
+	if err := d.Set("schema_definition_id", reg.SchemaDefinitionID); err != nil {
 		diags = append(diags, diag.FromErr(err)...)
 	}
 	if reg.Payload != nil {
