@@ -35,7 +35,7 @@ func dataHosts() *schema.Resource {
 func dataHostsRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	client := meta.(*grantoryClient)
 	labels := expandStringMap(extractMap(d.Get("labels")))
-	hosts, err := client.listHosts(ctx)
+	hosts, err := client.ListHosts(ctx)
 	if err != nil {
 		return diag.FromErr(err)
 	}

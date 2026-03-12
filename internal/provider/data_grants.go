@@ -35,7 +35,7 @@ func dataGrants() *schema.Resource {
 func dataGrantsRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	client := meta.(*grantoryClient)
 
-	grants, err := client.listGrants(ctx)
+	grants, err := client.ListGrants(ctx)
 	if err != nil {
 		return diag.FromErr(err)
 	}

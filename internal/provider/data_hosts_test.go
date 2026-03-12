@@ -8,35 +8,35 @@ import (
 	"net/url"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/stretchr/testify/assert"
+	clienttest "github.com/tasansga/terraform-provider-grantory/internal/api/client/testutil"
 )
 
 func TestDataHostsSource(t *testing.T) {
 	t.Parallel()
 
+	createdAt := time.Date(2024, 2, 2, 0, 0, 0, 0, time.UTC)
 	handler := newHostsDataSourceTestHandler([]apiHost{
 		{
 			ID:        "host-2",
 			UniqueKey: "unique:host-2",
 			Labels:    map[string]string{"env": "dev"},
-			CreatedAt: "2024-02-02T00:00:00Z",
+			CreatedAt: createdAt,
 		},
 		{
 			ID:        "host-1",
 			UniqueKey: "unique:host-1",
 			Labels:    map[string]string{"env": "prod"},
-			CreatedAt: "2024-02-02T00:00:00Z",
+			CreatedAt: createdAt,
 		},
 	})
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
-	client := &grantoryClient{
-		baseURL:    mustParseURL(t, server.URL),
-		httpClient: server.Client(),
-	}
+	client := clienttest.New(t, server, "", "", "")
 
 	resource := dataHosts()
 	data := schema.TestResourceDataRaw(t, resource.Schema, nil)
@@ -63,27 +63,25 @@ func TestDataHostsSource(t *testing.T) {
 func TestDataHostsSourceLabels(t *testing.T) {
 	t.Parallel()
 
+	createdAt := time.Date(2024, 2, 2, 0, 0, 0, 0, time.UTC)
 	handler := newHostsDataSourceTestHandler([]apiHost{
 		{
 			ID:        "host-1",
 			UniqueKey: "unique:host-1",
 			Labels:    map[string]string{"env": "prod"},
-			CreatedAt: "2024-02-02T00:00:00Z",
+			CreatedAt: createdAt,
 		},
 		{
 			ID:        "host-2",
 			UniqueKey: "unique:host-2",
 			Labels:    map[string]string{"env": "dev"},
-			CreatedAt: "2024-02-02T00:00:00Z",
+			CreatedAt: createdAt,
 		},
 	})
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
-	client := &grantoryClient{
-		baseURL:    mustParseURL(t, server.URL),
-		httpClient: server.Client(),
-	}
+	client := clienttest.New(t, server, "", "", "")
 
 	resource := dataHosts()
 	data := schema.TestResourceDataRaw(t, resource.Schema, map[string]any{

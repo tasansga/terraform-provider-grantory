@@ -8,14 +8,16 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/stretchr/testify/assert"
+	clienttest "github.com/tasansga/terraform-provider-grantory/internal/api/client/testutil"
 )
 
-const (
-	testRequestCreatedAt = "2024-02-02T00:00:00Z"
-	testRequestUpdatedAt = "2024-02-02T00:00:00Z"
+var (
+	testRequestCreatedAt = time.Date(2024, 2, 2, 0, 0, 0, 0, time.UTC)
+	testRequestUpdatedAt = time.Date(2024, 2, 2, 0, 0, 0, 0, time.UTC)
 	testRequestID        = "req-123"
 )
 
@@ -25,10 +27,7 @@ func TestResourceRequestLifecycle(t *testing.T) {
 	server := newRequestTestServer()
 	defer server.Close()
 
-	client := &grantoryClient{
-		baseURL:    mustParseURL(t, server.URL),
-		httpClient: server.Client(),
-	}
+	client := clienttest.New(t, server, "", "", "")
 
 	resource := resourceRequest()
 	requestData := map[string]any{
@@ -79,10 +78,7 @@ func TestResourceRequestReadNotFound(t *testing.T) {
 	server := newRequestTestServer()
 	defer server.Close()
 
-	client := &grantoryClient{
-		baseURL:    mustParseURL(t, server.URL),
-		httpClient: server.Client(),
-	}
+	client := clienttest.New(t, server, "", "", "")
 
 	resource := resourceRequest()
 	data := schema.TestResourceDataRaw(t, resource.Schema, nil)
@@ -98,10 +94,7 @@ func TestResourceRequestDeleteNotFound(t *testing.T) {
 	server := newRequestTestServer()
 	defer server.Close()
 
-	client := &grantoryClient{
-		baseURL:    mustParseURL(t, server.URL),
-		httpClient: server.Client(),
-	}
+	client := clienttest.New(t, server, "", "", "")
 
 	resource := resourceRequest()
 	data := schema.TestResourceDataRaw(t, resource.Schema, nil)

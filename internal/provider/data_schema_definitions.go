@@ -34,7 +34,7 @@ func dataSchemaDefinitions() *schema.Resource {
 
 func dataSchemaDefinitionsRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	client := meta.(*grantoryClient)
-	defs, err := client.listSchemaDefinitions(ctx)
+	defs, err := client.ListSchemaDefinitions(ctx)
 	if err != nil {
 		return diag.FromErr(err)
 	}

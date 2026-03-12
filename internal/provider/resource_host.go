@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"errors"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -45,12 +44,12 @@ func resourceHostCreate(ctx context.Context, d *schema.ResourceData, meta any) d
 		rawLabels = value
 	}
 
-	payload := apiHost{
+	payload := apiHostCreatePayload{
 		UniqueKey: d.Get("unique_key").(string),
 		Labels:    expandStringMap(rawLabels),
 	}
 
-	host, err := client.createHost(ctx, payload)
+	host, err := client.CreateHost(ctx, payload)
 	if err != nil {
 		return diag.FromErr(err)
 	}
@@ -66,9 +65,9 @@ func resourceHostRead(ctx context.Context, d *schema.ResourceData, meta any) dia
 		hostID = d.Get("host_id").(string)
 	}
 
-	host, err := client.getHost(ctx, hostID)
+	host, err := client.GetHost(ctx, hostID)
 	if err != nil {
-		if errors.Is(err, errResourceNotFound) {
+		if isNotFound(err) {
 			d.SetId("")
 			return nil
 		}
@@ -85,7 +84,7 @@ func resourceHostUpdate(ctx context.Context, d *schema.ResourceData, meta any) d
 		return nil
 	}
 	labels := expandStringMap(extractMap(d.Get("labels")))
-	updated, err := client.updateHostLabels(ctx, d.Id(), labels)
+	updated, err := client.UpdateHostLabels(ctx, d.Id(), labels)
 	if err != nil {
 		return diag.FromErr(err)
 	}
@@ -95,8 +94,8 @@ func resourceHostUpdate(ctx context.Context, d *schema.ResourceData, meta any) d
 
 func resourceHostDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	client := meta.(*grantoryClient)
-	if err := client.deleteHost(ctx, d.Id()); err != nil {
-		if errors.Is(err, errResourceNotFound) {
+	if err := client.DeleteHost(ctx, d.Id()); err != nil {
+		if isNotFound(err) {
 			d.SetId("")
 			return nil
 		}

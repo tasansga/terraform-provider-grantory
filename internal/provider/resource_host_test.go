@@ -5,16 +5,21 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/stretchr/testify/assert"
+	clienttest "github.com/tasansga/terraform-provider-grantory/internal/api/client/testutil"
 )
 
-const testHostCreatedAt = "2024-01-01T00:00:00Z"
+var testHostCreatedAt = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+type hostLabelsPayload struct {
+	Labels map[string]string `json:"labels"`
+}
 
 func TestResourceHostLifecycle(t *testing.T) {
 	t.Parallel()
@@ -22,10 +27,7 @@ func TestResourceHostLifecycle(t *testing.T) {
 	server := newHostTestServer()
 	defer server.Close()
 
-	client := &grantoryClient{
-		baseURL:    mustParseURL(t, server.URL),
-		httpClient: server.Client(),
-	}
+	client := clienttest.New(t, server, "", "", "")
 
 	resource := resourceHost()
 	data := schema.TestResourceDataRaw(t, resource.Schema, map[string]any{
@@ -56,10 +58,7 @@ func TestResourceHostUpdatesLabels(t *testing.T) {
 	server := newHostTestServer()
 	defer server.Close()
 
-	client := &grantoryClient{
-		baseURL:    mustParseURL(t, server.URL),
-		httpClient: server.Client(),
-	}
+	client := clienttest.New(t, server, "", "", "")
 
 	resource := resourceHost()
 	data := schema.TestResourceDataRaw(t, resource.Schema, map[string]any{
@@ -88,10 +87,7 @@ func TestResourceHostReadNotFound(t *testing.T) {
 	server := newHostTestServer()
 	defer server.Close()
 
-	client := &grantoryClient{
-		baseURL:    mustParseURL(t, server.URL),
-		httpClient: server.Client(),
-	}
+	client := clienttest.New(t, server, "", "", "")
 
 	resource := resourceHost()
 	data := schema.TestResourceDataRaw(t, resource.Schema, nil)
@@ -107,10 +103,7 @@ func TestResourceHostDeleteNotFound(t *testing.T) {
 	server := newHostTestServer()
 	defer server.Close()
 
-	client := &grantoryClient{
-		baseURL:    mustParseURL(t, server.URL),
-		httpClient: server.Client(),
-	}
+	client := clienttest.New(t, server, "", "", "")
 
 	resource := resourceHost()
 	data := schema.TestResourceDataRaw(t, resource.Schema, nil)
@@ -223,14 +216,4 @@ func (h *hostTestHandler) handlePatch(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(host)
-}
-
-func mustParseURL(t *testing.T, raw string) *url.URL {
-	t.Helper()
-	u, err := url.Parse(raw)
-	if err != nil {
-		assert.NoError(t, err, "parse url %s", raw)
-		t.FailNow()
-	}
-	return u
 }

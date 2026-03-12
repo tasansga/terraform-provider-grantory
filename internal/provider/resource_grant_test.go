@@ -8,14 +8,16 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/stretchr/testify/assert"
+	clienttest "github.com/tasansga/terraform-provider-grantory/internal/api/client/testutil"
 )
 
-const (
-	testGrantCreatedAt = "2024-02-02T10:00:00Z"
-	testGrantUpdatedAt = "2024-02-02T10:00:00Z"
+var (
+	testGrantCreatedAt = time.Date(2024, 2, 2, 10, 0, 0, 0, time.UTC)
+	testGrantUpdatedAt = time.Date(2024, 2, 2, 10, 0, 0, 0, time.UTC)
 	testGrantID        = "grant-123"
 )
 
@@ -25,10 +27,7 @@ func TestResourceGrantLifecycle(t *testing.T) {
 	server := newGrantTestServer()
 	defer server.Close()
 
-	client := &grantoryClient{
-		baseURL:    mustParseURL(t, server.URL),
-		httpClient: server.Client(),
-	}
+	client := clienttest.New(t, server, "", "", "")
 
 	resource := resourceGrant()
 	grantData := map[string]any{
@@ -63,10 +62,7 @@ func TestResourceGrantReadNotFound(t *testing.T) {
 	server := newGrantTestServer()
 	defer server.Close()
 
-	client := &grantoryClient{
-		baseURL:    mustParseURL(t, server.URL),
-		httpClient: server.Client(),
-	}
+	client := clienttest.New(t, server, "", "", "")
 
 	resource := resourceGrant()
 	data := schema.TestResourceDataRaw(t, resource.Schema, nil)
@@ -82,10 +78,7 @@ func TestResourceGrantDeleteNotFound(t *testing.T) {
 	server := newGrantTestServer()
 	defer server.Close()
 
-	client := &grantoryClient{
-		baseURL:    mustParseURL(t, server.URL),
-		httpClient: server.Client(),
-	}
+	client := clienttest.New(t, server, "", "", "")
 
 	resource := resourceGrant()
 	data := schema.TestResourceDataRaw(t, resource.Schema, nil)
@@ -101,10 +94,7 @@ func TestResourceGrantCreateWithoutPayload(t *testing.T) {
 	server := newGrantTestServer()
 	defer server.Close()
 
-	client := &grantoryClient{
-		baseURL:    mustParseURL(t, server.URL),
-		httpClient: server.Client(),
-	}
+	client := clienttest.New(t, server, "", "", "")
 
 	resource := resourceGrant()
 	data := schema.TestResourceDataRaw(t, resource.Schema, map[string]any{

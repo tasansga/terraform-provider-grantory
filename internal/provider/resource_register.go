@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"errors"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -69,7 +68,7 @@ func resourceRegisterCreate(ctx context.Context, d *schema.ResourceData, meta an
 		}
 	}
 
-	payload := apiRegister{
+	payload := apiRegisterCreatePayload{
 		HostID:             d.Get("host_id").(string),
 		SchemaDefinitionID: d.Get("schema_definition_id").(string),
 		UniqueKey:          d.Get("unique_key").(string),
@@ -77,7 +76,7 @@ func resourceRegisterCreate(ctx context.Context, d *schema.ResourceData, meta an
 		Labels:             expandStringMap(extractMap(d.Get("labels"))),
 	}
 
-	created, err := client.createRegister(ctx, payload)
+	created, err := client.CreateRegister(ctx, payload)
 	if err != nil {
 		return diag.FromErr(err)
 	}
@@ -93,9 +92,9 @@ func resourceRegisterRead(ctx context.Context, d *schema.ResourceData, meta any)
 		return nil
 	}
 
-	reg, err := client.getRegister(ctx, registerID)
+	reg, err := client.GetRegister(ctx, registerID)
 	if err != nil {
-		if errors.Is(err, errResourceNotFound) {
+		if isNotFound(err) {
 			d.SetId("")
 			return nil
 		}
@@ -118,7 +117,7 @@ func resourceRegisterUpdate(ctx context.Context, d *schema.ResourceData, meta an
 		return nil
 	}
 
-	updated, err := client.updateRegister(ctx, d.Id(), payload)
+	updated, err := client.UpdateRegister(ctx, d.Id(), payload)
 	if err != nil {
 		return diag.FromErr(err)
 	}
@@ -129,8 +128,8 @@ func resourceRegisterUpdate(ctx context.Context, d *schema.ResourceData, meta an
 
 func resourceRegisterDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	client := meta.(*grantoryClient)
-	if err := client.deleteRegister(ctx, d.Id()); err != nil {
-		if errors.Is(err, errResourceNotFound) {
+	if err := client.DeleteRegister(ctx, d.Id()); err != nil {
+		if isNotFound(err) {
 			d.SetId("")
 			return nil
 		}

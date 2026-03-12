@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"errors"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -42,7 +41,7 @@ func resourceSchemaDefinitionCreate(ctx context.Context, d *schema.ResourceData,
 		}}
 	}
 
-	created, err := client.createSchemaDefinition(ctx, apiSchemaDefinition{
+	created, err := client.CreateSchemaDefinition(ctx, apiSchemaDefinitionCreatePayload{
 		Schema: schemaValue,
 	})
 	if err != nil {
@@ -60,9 +59,9 @@ func resourceSchemaDefinitionRead(ctx context.Context, d *schema.ResourceData, m
 		return nil
 	}
 
-	def, err := client.getSchemaDefinition(ctx, defID)
+	def, err := client.GetSchemaDefinition(ctx, defID)
 	if err != nil {
-		if errors.Is(err, errResourceNotFound) {
+		if isNotFound(err) {
 			d.SetId("")
 			return nil
 		}
@@ -80,8 +79,8 @@ func resourceSchemaDefinitionDelete(ctx context.Context, d *schema.ResourceData,
 		return nil
 	}
 
-	if err := client.deleteSchemaDefinition(ctx, defID); err != nil {
-		if errors.Is(err, errResourceNotFound) {
+	if err := client.DeleteSchemaDefinition(ctx, defID); err != nil {
+		if isNotFound(err) {
 			d.SetId("")
 			return nil
 		}

@@ -45,6 +45,7 @@ func NewRootCommand() *cobra.Command {
 
 	root.AddCommand(
 		newServeCmd(),
+		newControllerCmd(),
 		newVersionCmd(),
 		newNamespaceCmd(),
 		newListCmd(),
@@ -128,14 +129,14 @@ func newServeCmd() *cobra.Command {
 		Long: "Start the HTTP API server that manages hosts, resource requests, and grants.\n\n" +
 			"Examples:\n" +
 			"  grantory serve\n",
-		RunE:  runServer,
+		RunE: runServer,
 	}
 }
 
 func newVersionCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "version",
-		Short: "Print version information",
+		Use:     "version",
+		Short:   "Print version information",
 		Example: "  grantory version\n",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			_, err := fmt.Fprintln(cmd.OutOrStdout(), versionString())

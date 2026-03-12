@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"errors"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -37,9 +36,9 @@ func dataGrantRead(ctx context.Context, d *schema.ResourceData, meta any) diag.D
 
 	var diags diag.Diagnostics
 
-	grant, err := client.getGrant(ctx, grantID)
+	grant, err := client.GetGrant(ctx, grantID)
 	if err != nil {
-		if errors.Is(err, errResourceNotFound) {
+		if isNotFound(err) {
 			d.SetId("")
 			return nil
 		}
@@ -53,8 +52,10 @@ func dataGrantRead(ctx context.Context, d *schema.ResourceData, meta any) diag.D
 		diags = append(diags, diag.FromErr(err)...)
 	}
 
-	if additional := setJSONStringAttribute(d, "payload", grant.Payload); additional != nil {
-		diags = append(diags, additional...)
+	if grant.Payload != nil {
+		if additional := setJSONStringAttribute(d, "payload", grant.Payload); additional != nil {
+			diags = append(diags, additional...)
+		}
 	}
 
 	d.SetId(grant.ID)

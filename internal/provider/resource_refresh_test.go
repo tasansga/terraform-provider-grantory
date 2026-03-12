@@ -20,9 +20,9 @@ func TestResourceRequestRefreshIncludesGrant(t *testing.T) {
 		HostID:   "host-1",
 		HasGrant: true,
 		GrantID:  "grant-1",
-		Grant: &apiRequestGrant{
-			GrantID: "grant-1",
-			Payload: payload,
+		Grant: map[string]any{
+			"grant_id": "grant-1",
+			"payload":  payload,
 		},
 	}
 

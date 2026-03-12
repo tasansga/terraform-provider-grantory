@@ -7,9 +7,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/stretchr/testify/assert"
+	clienttest "github.com/tasansga/terraform-provider-grantory/internal/api/client/testutil"
 )
 
 func TestDataSchemaDefinitionSource(t *testing.T) {
@@ -26,20 +28,18 @@ func TestDataSchemaDefinitionSource(t *testing.T) {
 			return
 		}
 
+		createdAt := time.Date(2024, 2, 2, 0, 0, 0, 0, time.UTC)
 		resp := apiSchemaDefinition{
 			ID:        defID,
 			Schema:    json.RawMessage(`{"type":"object"}`),
-			CreatedAt: "2024-02-02T00:00:00Z",
+			CreatedAt: createdAt,
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
-	client := &grantoryClient{
-		baseURL:    mustParseURL(t, server.URL),
-		httpClient: server.Client(),
-	}
+	client := clienttest.New(t, server, "", "", "")
 
 	resource := dataSchemaDefinition()
 	data := schema.TestResourceDataRaw(t, resource.Schema, map[string]any{

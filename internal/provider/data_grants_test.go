@@ -6,9 +6,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/stretchr/testify/assert"
+	clienttest "github.com/tasansga/terraform-provider-grantory/internal/api/client/testutil"
 )
 
 func TestDataGrantsSource(t *testing.T) {
@@ -18,10 +20,7 @@ func TestDataGrantsSource(t *testing.T) {
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
-	client := &grantoryClient{
-		baseURL:    mustParseURL(t, server.URL),
-		httpClient: server.Client(),
-	}
+	client := clienttest.New(t, server, "", "", "")
 
 	resource := dataGrants()
 	data := schema.TestResourceDataRaw(t, resource.Schema, nil)
@@ -54,9 +53,10 @@ func newGrantsDataSourceTestHandler() *grantsDataSourceTestHandler {
 
 func (h *grantsDataSourceTestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet && r.URL.Path == "/grants" {
+		createdAt := time.Date(2024, 2, 2, 0, 0, 0, 0, time.UTC)
 		response := []apiGrant{
-			{ID: "grant-pending", RequestID: "grant-pending", CreatedAt: "2024-02-02T00:00:00Z", UpdatedAt: "2024-02-02T00:00:00Z"},
-			{ID: "grant-delivered", RequestID: "grant-delivered", CreatedAt: "2024-02-02T00:00:00Z", UpdatedAt: "2024-02-02T00:00:00Z"},
+			{ID: "grant-pending", RequestID: "grant-pending", CreatedAt: createdAt, UpdatedAt: createdAt},
+			{ID: "grant-delivered", RequestID: "grant-delivered", CreatedAt: createdAt, UpdatedAt: createdAt},
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(response)

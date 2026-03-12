@@ -14,6 +14,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 
 	"github.com/tasansga/terraform-provider-grantory/internal/api"
+	apiclient "github.com/tasansga/terraform-provider-grantory/internal/api/client"
 )
 
 const (
@@ -129,12 +130,20 @@ func configureProvider(ctx context.Context, d *schema.ResourceData) (any, diag.D
 		return nil, diags
 	}
 
-	client := &grantoryClient{
-		baseURL:    u,
-		httpClient: http.DefaultClient,
-		token:      token,
-		user:       user,
-		password:   password,
+	client, err := apiclient.New(apiclient.Options{
+		BaseURL:    u.String(),
+		Token:      token,
+		User:       user,
+		Password:   password,
+		HTTPClient: http.DefaultClient,
+	})
+	if err != nil {
+		diags = append(diags, diag.Diagnostic{
+			Severity: diag.Error,
+			Summary:  "unable to configure grantory client",
+			Detail:   err.Error(),
+		})
+		return nil, diags
 	}
 	diags = append(diags, warnOnAPIMismatch(ctx, client)...)
 	return client, diags
@@ -142,7 +151,7 @@ func configureProvider(ctx context.Context, d *schema.ResourceData) (any, diag.D
 
 func warnOnAPIMismatch(ctx context.Context, client *grantoryClient) diag.Diagnostics {
 	var diags diag.Diagnostics
-	if client == nil || client.baseURL == nil {
+	if client == nil || client.BaseURL() == nil {
 		return diags
 	}
 
@@ -172,7 +181,12 @@ func warnOnAPIMismatch(ctx context.Context, client *grantoryClient) diag.Diagnos
 }
 
 func fetchServerAPIMajor(ctx context.Context, client *grantoryClient) (string, error) {
-	metaURL := *client.baseURL
+	metaURL := client.BaseURL()
+	if metaURL == nil {
+		return "", fmt.Errorf("grantory client not configured")
+	}
+	metaCopy := *metaURL
+	metaURL = &metaCopy
 	if strings.HasSuffix(metaURL.Path, "/") {
 		metaURL.Path += "meta"
 	} else {
@@ -188,7 +202,11 @@ func fetchServerAPIMajor(ctx context.Context, client *grantoryClient) (string, e
 	if err != nil {
 		return "", err
 	}
-	resp, err := client.httpClient.Do(req)
+	httpClient := http.DefaultClient
+	if client != nil && client.HTTPClient() != nil {
+		httpClient = client.HTTPClient()
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -250,19 +268,4 @@ func parseServerURL(raw string) (*url.URL, diag.Diagnostics) {
 	}
 
 	return u, diags
-}
-
-type grantoryClient struct {
-	baseURL    *url.URL
-	httpClient *http.Client
-	token      string
-	user       string
-	password   string
-}
-
-func (c *grantoryClient) baseAddress() string {
-	if c == nil || c.baseURL == nil {
-		return ""
-	}
-	return c.baseURL.String()
 }

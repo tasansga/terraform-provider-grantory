@@ -21,7 +21,7 @@ func TestConfigureProviderValidServer(t *testing.T) {
 
 	c, ok := client.(*grantoryClient)
 	assert.True(t, ok, "expected grantoryClient")
-	assert.Equal(t, "https://example.com", c.baseAddress(), "base address should match server URI")
+	assert.Equal(t, "https://example.com", c.BaseAddress(), "base address should match server URI")
 }
 
 func TestConfigureProviderInvalidServer(t *testing.T) {
@@ -87,5 +87,5 @@ func TestGrantoryClientBaseAddressEmpty(t *testing.T) {
 	t.Parallel()
 
 	var c *grantoryClient
-	assert.Equal(t, "", c.baseAddress(), "nil client should return empty base address")
+	assert.Equal(t, "", c.BaseAddress(), "nil client should return empty base address")
 }

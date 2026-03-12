@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"errors"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -61,9 +60,9 @@ func dataRegisterRead(ctx context.Context, d *schema.ResourceData, meta any) dia
 		}}
 	}
 
-	reg, err := client.getRegister(ctx, registerID)
+	reg, err := client.GetRegister(ctx, registerID)
 	if err != nil {
-		if errors.Is(err, errResourceNotFound) {
+		if isNotFound(err) {
 			d.SetId("")
 			return nil
 		}

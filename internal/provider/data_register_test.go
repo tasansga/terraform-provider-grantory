@@ -9,9 +9,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/stretchr/testify/assert"
+	clienttest "github.com/tasansga/terraform-provider-grantory/internal/api/client/testutil"
 )
 
 func TestDataRegisterSource(t *testing.T) {
@@ -21,10 +23,7 @@ func TestDataRegisterSource(t *testing.T) {
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
-	client := &grantoryClient{
-		baseURL:    mustParseURL(t, server.URL),
-		httpClient: server.Client(),
-	}
+	client := clienttest.New(t, server, "", "", "")
 
 	resource := dataRegister()
 	data := schema.TestResourceDataRaw(t, resource.Schema, map[string]any{
@@ -70,14 +69,15 @@ func (h *registerDataSourceTestHandler) ServeHTTP(w http.ResponseWriter, r *http
 		return
 	}
 
+	createdAt := time.Date(2024, 2, 2, 0, 0, 0, 0, time.UTC)
 	response := apiRegister{
 		ID:        registerID,
 		HostID:    "host-123",
 		UniqueKey: "unique:reg",
 		Payload:   map[string]any{"ip": "10.1.1.1"},
 		Labels:    map[string]string{"env": "prod"},
-		CreatedAt: "2024-02-02T00:00:00Z",
-		UpdatedAt: "2024-02-02T00:00:00Z",
+		CreatedAt: createdAt,
+		UpdatedAt: createdAt,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

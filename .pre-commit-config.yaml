@@ -15,6 +15,11 @@ repos:
         args: [--severity=error]
   - repo: local
     hooks:
+      - id: go-govulncheck
+        name: govulncheck
+        entry: govulncheck ./...
+        language: system
+        pass_filenames: false
       - id: ensure-docs-generated
         name: Ensure docs/ is present
         entry: bash -c 'test -d docs && test -f docs/index.md'

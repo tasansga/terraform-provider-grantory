@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"errors"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -89,7 +88,7 @@ func resourceRequestCreate(ctx context.Context, d *schema.ResourceData, meta any
 		}
 	}
 
-	payload := apiRequest{
+	payload := apiRequestCreatePayload{
 		HostID:                    d.Get("host_id").(string),
 		RequestSchemaDefinitionID: d.Get("request_schema_definition_id").(string),
 		GrantSchemaDefinitionID:   d.Get("grant_schema_definition_id").(string),
@@ -98,7 +97,7 @@ func resourceRequestCreate(ctx context.Context, d *schema.ResourceData, meta any
 		Labels:                    expandStringMap(extractMap(d.Get("labels"))),
 	}
 
-	created, err := client.createRequest(ctx, payload)
+	created, err := client.CreateRequest(ctx, payload)
 	if err != nil {
 		return diag.FromErr(err)
 	}
@@ -114,9 +113,9 @@ func resourceRequestRead(ctx context.Context, d *schema.ResourceData, meta any) 
 		return nil
 	}
 
-	req, err := client.getRequest(ctx, reqID)
+	req, err := client.GetRequest(ctx, reqID)
 	if err != nil {
-		if errors.Is(err, errResourceNotFound) {
+		if isNotFound(err) {
 			d.SetId("")
 			return nil
 		}
@@ -139,7 +138,7 @@ func resourceRequestUpdate(ctx context.Context, d *schema.ResourceData, meta any
 		return nil
 	}
 
-	updated, err := client.updateRequest(ctx, d.Id(), payload)
+	updated, err := client.UpdateRequest(ctx, d.Id(), payload)
 	if err != nil {
 		return diag.FromErr(err)
 	}
@@ -150,8 +149,8 @@ func resourceRequestUpdate(ctx context.Context, d *schema.ResourceData, meta any
 
 func resourceRequestDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	client := meta.(*grantoryClient)
-	if err := client.deleteRequest(ctx, d.Id()); err != nil {
-		if errors.Is(err, errResourceNotFound) {
+	if err := client.DeleteRequest(ctx, d.Id()); err != nil {
+		if isNotFound(err) {
 			d.SetId("")
 			return nil
 		}
@@ -221,10 +220,10 @@ func extractMap(value any) map[string]any {
 }
 
 func extractGrantPayload(req apiRequest) map[string]any {
-	if req.Grant == nil || req.Grant.Payload == nil {
+	if req.Grant == nil {
 		return nil
 	}
-	if payloadEntry, ok := req.Grant.Payload["payload"]; ok {
+	if payloadEntry, ok := req.Grant["payload"]; ok {
 		if payloadEntry == nil {
 			return nil
 		}
@@ -233,5 +232,5 @@ func extractGrantPayload(req apiRequest) map[string]any {
 		}
 		return nil
 	}
-	return req.Grant.Payload
+	return req.Grant
 }

@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"errors"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -36,9 +35,9 @@ func dataSchemaDefinitionRead(ctx context.Context, d *schema.ResourceData, meta 
 		}}
 	}
 
-	def, err := client.getSchemaDefinition(ctx, defID)
+	def, err := client.GetSchemaDefinition(ctx, defID)
 	if err != nil {
-		if errors.Is(err, errResourceNotFound) {
+		if isNotFound(err) {
 			d.SetId("")
 			return nil
 		}

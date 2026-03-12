@@ -55,6 +55,13 @@ provider "grantory" {
 }
 ```
 
+## Kubernetes workflow
+
+Grantory can also be driven from Kubernetes using CRDs plus the built-in controller. App teams declare `GrantoryRequest` / `GrantoryRegister` custom resources, and the controller syncs them to a Grantory server instance. Grant handlers still run outside the cluster (or in-cluster) and issue grants via the API.
+
+The CRDs live in `k8s/crds/` and the controller runs via `grantory controller`. It uses the same server configuration flags as the CLI and also supports `GRANTORY_CONTROLLER_*` env vars for server URL and credentials.
+An example controller deployment (RBAC + Deployment) lives in `k8s/controller.yaml`.
+
 ## Running the server
 
 Grantory runs as an HTTP server. Configure the database (sqlite directory path or Postgres DSN), HTTP/HTTPS bind addresses, TLS certificates, and log level via flags or the matching environment variables (`DATABASE`, `HTTP_BIND`, `HTTPS_BIND`, `TLS_CERT`, `TLS_KEY`, `LOG_LEVEL`). TLS is only activated if `TLS_CERT` and `TLS_KEY` are set. Set `HTTP_BIND=off` to disable the HTTP listener.

@@ -8,9 +8,11 @@ import (
 	"net/url"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/stretchr/testify/assert"
+	clienttest "github.com/tasansga/terraform-provider-grantory/internal/api/client/testutil"
 )
 
 func TestDataRequestsSource(t *testing.T) {
@@ -20,10 +22,7 @@ func TestDataRequestsSource(t *testing.T) {
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
-	client := &grantoryClient{
-		baseURL:    mustParseURL(t, server.URL),
-		httpClient: server.Client(),
-	}
+	client := clienttest.New(t, server, "", "", "")
 
 	resource := dataRequests()
 	data := schema.TestResourceDataRaw(t, resource.Schema, map[string]any{
@@ -62,10 +61,7 @@ func TestDataRequestsSourceHasGrantFalse(t *testing.T) {
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
-	client := &grantoryClient{
-		baseURL:    mustParseURL(t, server.URL),
-		httpClient: server.Client(),
-	}
+	client := clienttest.New(t, server, "", "", "")
 
 	resource := dataRequests()
 	data := schema.TestResourceDataRaw(t, resource.Schema, map[string]any{
@@ -85,10 +81,7 @@ func TestDataRequestsSourceNoFilters(t *testing.T) {
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
-	client := &grantoryClient{
-		baseURL:    mustParseURL(t, server.URL),
-		httpClient: server.Client(),
-	}
+	client := clienttest.New(t, server, "", "", "")
 
 	resource := dataRequests()
 	data := schema.TestResourceDataRaw(t, resource.Schema, nil)
@@ -122,6 +115,7 @@ func (h *requestsDataSourceTestHandler) ServeHTTP(w http.ResponseWriter, r *http
 	h.last = r.URL.Query()
 	h.mu.Unlock()
 
+	createdAt := time.Date(2024, 2, 2, 0, 0, 0, 0, time.UTC)
 	response := []apiRequest{
 		{
 			ID:       "req-outstanding",
@@ -130,12 +124,12 @@ func (h *requestsDataSourceTestHandler) ServeHTTP(w http.ResponseWriter, r *http
 			Labels:   map[string]string{"env": "prod"},
 			HasGrant: true,
 			GrantID:  "grant-456",
-			Grant: &apiRequestGrant{
-				GrantID: "grant-456",
-				Payload: map[string]any{"user": "alice"},
+			Grant: map[string]any{
+				"grant_id": "grant-456",
+				"payload":  map[string]any{"user": "alice"},
 			},
-			CreatedAt: "2024-02-02T00:00:00Z",
-			UpdatedAt: "2024-02-02T00:00:00Z",
+			CreatedAt: createdAt,
+			UpdatedAt: createdAt,
 		},
 	}
 

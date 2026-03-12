@@ -1,19 +1,14 @@
 package cli
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	apiclient "github.com/tasansga/terraform-provider-grantory/internal/api/client"
 	"github.com/tasansga/terraform-provider-grantory/internal/storage"
 )
 
@@ -199,256 +194,203 @@ func (d *directBackend) UpdateRegisterLabels(ctx context.Context, id string, lab
 }
 
 func newAPIBackend(namespace, rawURL, token, user, password string) (cliBackend, error) {
-	if strings.TrimSpace(rawURL) == "" {
-		return nil, fmt.Errorf("server URL is required for API backend")
-	}
-
-	u, err := url.Parse(rawURL)
+	client, err := apiclient.New(apiclient.Options{
+		BaseURL:   rawURL,
+		Token:     token,
+		User:      user,
+		Password:  password,
+		Namespace: namespace,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("parse server URL: %w", err)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return nil, fmt.Errorf("unsupported scheme %q", u.Scheme)
-	}
-	if u.Host == "" {
-		return nil, fmt.Errorf("server host is required")
+		return nil, err
 	}
 
 	return &apiBackend{
-		baseURL:    u,
-		httpClient: http.DefaultClient,
-		namespace:  namespace,
-		token:      strings.TrimSpace(token),
-		user:       user,
-		password:   password,
+		client: client,
 	}, nil
 }
 
 type apiBackend struct {
-	baseURL    *url.URL
-	httpClient *http.Client
-	namespace  string
-	token      string
-	user       string
-	password   string
-}
-
-type labelsPayload struct {
-	Labels map[string]string `json:"labels"`
+	client *apiclient.Client
 }
 
 func (a *apiBackend) ListHosts(ctx context.Context) ([]storage.Host, error) {
-	var hosts []storage.Host
-	if err := a.doJSON(ctx, http.MethodGet, "/hosts", nil, &hosts); err != nil {
+	hosts, err := a.client.ListHosts(ctx)
+	if err != nil {
 		return nil, err
 	}
-	return hosts, nil
+	out := make([]storage.Host, 0, len(hosts))
+	for _, host := range hosts {
+		out = append(out, hostToStorage(host))
+	}
+	return out, nil
 }
 
 //go:noinline
 func (a *apiBackend) ListRequests(ctx context.Context, filters *storage.RequestListFilters) ([]storage.Request, error) {
-	var requests []storage.Request
-	endpoint, err := appendRequestListFilters("/requests", filters)
+	options := apiclient.RequestListOptions{}
+	if filters != nil {
+		options.Labels = filters.Labels
+		options.HostLabels = filters.HostLabels
+		options.HasGrant = filters.HasGrant
+	}
+	requests, err := a.client.ListRequests(ctx, options)
 	if err != nil {
 		return nil, err
 	}
-	if err := a.doJSON(ctx, http.MethodGet, endpoint, nil, &requests); err != nil {
-		return nil, err
+	out := make([]storage.Request, 0, len(requests))
+	for _, req := range requests {
+		out = append(out, requestToStorage(req))
 	}
-	return requests, nil
+	return out, nil
 }
 
 //go:noinline
 func (a *apiBackend) ListRegisters(ctx context.Context, filters *storage.RegisterListFilters) ([]storage.Register, error) {
-	var registers []storage.Register
-	endpoint, err := appendRegisterListFilters("/registers", filters)
+	options := apiclient.RegisterListOptions{}
+	if filters != nil {
+		options.Labels = filters.Labels
+		options.HostLabels = filters.HostLabels
+	}
+	registers, err := a.client.ListRegisters(ctx, options)
 	if err != nil {
 		return nil, err
 	}
-	if err := a.doJSON(ctx, http.MethodGet, endpoint, nil, &registers); err != nil {
-		return nil, err
+	out := make([]storage.Register, 0, len(registers))
+	for _, reg := range registers {
+		out = append(out, registerToStorage(reg))
 	}
-	return registers, nil
+	return out, nil
 }
 
 //go:noinline
 func (a *apiBackend) ListGrants(ctx context.Context) ([]storage.Grant, error) {
-	var grants []storage.Grant
-	if err := a.doJSON(ctx, http.MethodGet, "/grants", nil, &grants); err != nil {
+	grants, err := a.client.ListGrants(ctx)
+	if err != nil {
 		return nil, err
 	}
-	return grants, nil
+	out := make([]storage.Grant, 0, len(grants))
+	for _, grant := range grants {
+		out = append(out, grantToStorage(grant))
+	}
+	return out, nil
 }
 
 //go:noinline
 func (a *apiBackend) GetHost(ctx context.Context, id string) (storage.Host, error) {
-	var host storage.Host
-	if err := a.doJSON(ctx, http.MethodGet, fmt.Sprintf("/hosts/%s", id), nil, &host); err != nil {
+	host, err := a.client.GetHost(ctx, id)
+	if err != nil {
 		return storage.Host{}, err
 	}
-	return host, nil
+	return hostToStorage(host), nil
 }
 
 //go:noinline
 func (a *apiBackend) GetRequest(ctx context.Context, id string) (storage.Request, error) {
-	var req storage.Request
-	if err := a.doJSON(ctx, http.MethodGet, fmt.Sprintf("/requests/%s", id), nil, &req); err != nil {
+	req, err := a.client.GetRequest(ctx, id)
+	if err != nil {
 		return storage.Request{}, err
 	}
-	return req, nil
+	return requestToStorage(req), nil
 }
 
 //go:noinline
 func (a *apiBackend) GetRegister(ctx context.Context, id string) (storage.Register, error) {
-	var reg storage.Register
-	if err := a.doJSON(ctx, http.MethodGet, fmt.Sprintf("/registers/%s", id), nil, &reg); err != nil {
+	reg, err := a.client.GetRegister(ctx, id)
+	if err != nil {
 		return storage.Register{}, err
 	}
-	return reg, nil
+	return registerToStorage(reg), nil
 }
 
 //go:noinline
 func (a *apiBackend) GetGrant(ctx context.Context, id string) (storage.Grant, error) {
-	var grant storage.Grant
-	if err := a.doJSON(ctx, http.MethodGet, fmt.Sprintf("/grants/%s", id), nil, &grant); err != nil {
+	grant, err := a.client.GetGrant(ctx, id)
+	if err != nil {
 		return storage.Grant{}, err
 	}
-	return grant, nil
+	return grantToStorage(grant), nil
 }
 
 //go:noinline
 func (a *apiBackend) DeleteHost(ctx context.Context, id string) error {
-	return a.doJSON(ctx, http.MethodDelete, fmt.Sprintf("/hosts/%s", id), nil, nil)
+	return a.client.DeleteHost(ctx, id)
 }
 
 //go:noinline
 func (a *apiBackend) DeleteRequest(ctx context.Context, id string) error {
-	return a.doJSON(ctx, http.MethodDelete, fmt.Sprintf("/requests/%s", id), nil, nil)
+	return a.client.DeleteRequest(ctx, id)
 }
 
 //go:noinline
 func (a *apiBackend) DeleteRegister(ctx context.Context, id string) error {
-	return a.doJSON(ctx, http.MethodDelete, fmt.Sprintf("/registers/%s", id), nil, nil)
+	return a.client.DeleteRegister(ctx, id)
 }
 
 //go:noinline
 func (a *apiBackend) DeleteGrant(ctx context.Context, id string) error {
-	return a.doJSON(ctx, http.MethodDelete, fmt.Sprintf("/grants/%s", id), nil, nil)
+	return a.client.DeleteGrant(ctx, id)
 }
 
 //go:noinline
 func (a *apiBackend) UpdateHostLabels(ctx context.Context, id string, labels map[string]string) error {
-	return a.doJSON(ctx, http.MethodPatch, fmt.Sprintf("/hosts/%s/labels", id), labelsPayload{Labels: labels}, nil)
+	_, err := a.client.UpdateHostLabels(ctx, id, labels)
+	return err
 }
 
 func (a *apiBackend) UpdateRequestLabels(ctx context.Context, id string, labels map[string]string) error {
-	return a.doJSON(ctx, http.MethodPatch, fmt.Sprintf("/requests/%s", id), labelsPayload{Labels: labels}, nil)
+	_, err := a.client.UpdateRequestLabels(ctx, id, labels)
+	return err
 }
 
 func (a *apiBackend) UpdateRegisterLabels(ctx context.Context, id string, labels map[string]string) error {
-	return a.doJSON(ctx, http.MethodPatch, fmt.Sprintf("/registers/%s", id), labelsPayload{Labels: labels}, nil)
+	_, err := a.client.UpdateRegisterLabels(ctx, id, labels)
+	return err
 }
 
-func appendRequestListFilters(endpoint string, filters *storage.RequestListFilters) (string, error) {
-	if filters == nil {
-		return endpoint, nil
+func hostToStorage(host apiclient.Host) storage.Host {
+	return storage.Host{
+		ID:        host.ID,
+		UniqueKey: host.UniqueKey,
+		Labels:    host.Labels,
+		CreatedAt: host.CreatedAt,
 	}
-	params := url.Values{}
-	if filters.HasGrant != nil {
-		params.Set("has_grant", strconv.FormatBool(*filters.HasGrant))
-	}
-	for key, value := range filters.Labels {
-		params.Add("label", fmt.Sprintf("%s=%s", key, value))
-	}
-	for key, value := range filters.HostLabels {
-		params.Add("host_label", fmt.Sprintf("%s=%s", key, value))
-	}
-	if encoded := params.Encode(); encoded != "" {
-		endpoint = endpoint + "?" + encoded
-	}
-	return endpoint, nil
 }
 
-func appendRegisterListFilters(endpoint string, filters *storage.RegisterListFilters) (string, error) {
-	if filters == nil {
-		return endpoint, nil
+func requestToStorage(req apiclient.Request) storage.Request {
+	return storage.Request{
+		ID:                        req.ID,
+		HostID:                    req.HostID,
+		RequestSchemaDefinitionID: req.RequestSchemaDefinitionID,
+		GrantSchemaDefinitionID:   req.GrantSchemaDefinitionID,
+		UniqueKey:                 req.UniqueKey,
+		Payload:                   req.Payload,
+		Labels:                    req.Labels,
+		HasGrant:                  req.HasGrant,
+		CreatedAt:                 req.CreatedAt,
+		UpdatedAt:                 req.UpdatedAt,
 	}
-	params := url.Values{}
-	for key, value := range filters.Labels {
-		params.Add("label", fmt.Sprintf("%s=%s", key, value))
-	}
-	for key, value := range filters.HostLabels {
-		params.Add("host_label", fmt.Sprintf("%s=%s", key, value))
-	}
-	if encoded := params.Encode(); encoded != "" {
-		endpoint = endpoint + "?" + encoded
-	}
-	return endpoint, nil
 }
 
-func (a *apiBackend) doJSON(ctx context.Context, method, endpoint string, body any, resp any) error {
-	if a == nil {
-		return fmt.Errorf("api backend not configured")
+func registerToStorage(reg apiclient.Register) storage.Register {
+	return storage.Register{
+		ID:                 reg.ID,
+		HostID:             reg.HostID,
+		SchemaDefinitionID: reg.SchemaDefinitionID,
+		UniqueKey:          reg.UniqueKey,
+		Payload:            reg.Payload,
+		Labels:             reg.Labels,
+		CreatedAt:          reg.CreatedAt,
+		UpdatedAt:          reg.UpdatedAt,
 	}
+}
 
-	var payload io.Reader
-	if body != nil {
-		data, err := json.Marshal(body)
-		if err != nil {
-			return fmt.Errorf("marshal %s request: %w", endpoint, err)
-		}
-		payload = bytes.NewReader(data)
+func grantToStorage(grant apiclient.Grant) storage.Grant {
+	return storage.Grant{
+		ID:        grant.ID,
+		RequestID: grant.RequestID,
+		Payload:   grant.Payload,
+		CreatedAt: grant.CreatedAt,
+		UpdatedAt: grant.UpdatedAt,
 	}
-
-	rel, err := url.Parse(endpoint)
-	if err != nil {
-		return fmt.Errorf("parse endpoint %q: %w", endpoint, err)
-	}
-	target := a.baseURL.ResolveReference(rel)
-
-	req, err := http.NewRequestWithContext(ctx, method, target.String(), payload)
-	if err != nil {
-		return fmt.Errorf("build request: %w", err)
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if a.namespace != "" {
-		req.Header.Set("REMOTE_USER", a.namespace)
-	}
-	if a.token != "" {
-		req.Header.Set("Authorization", "Bearer "+a.token)
-	} else if a.user != "" && a.password != "" {
-		req.SetBasicAuth(a.user, a.password)
-	}
-
-	res, err := a.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("perform request: %w", err)
-	}
-
-	data, err := io.ReadAll(res.Body)
-	if err != nil {
-		if cerr := res.Body.Close(); cerr != nil {
-			return fmt.Errorf("read response: %w (close error: %v)", err, cerr)
-		}
-		return fmt.Errorf("read response: %w", err)
-	}
-	if err := res.Body.Close(); err != nil {
-		return fmt.Errorf("close response body: %w", err)
-	}
-
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		msg := strings.TrimSpace(string(data))
-		return fmt.Errorf("unexpected status %d: %s", res.StatusCode, msg)
-	}
-
-	if resp == nil || len(data) == 0 {
-		return nil
-	}
-
-	if err := json.Unmarshal(data, resp); err != nil {
-		return fmt.Errorf("decode response: %w", err)
-	}
-	return nil
 }

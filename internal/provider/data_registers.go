@@ -63,7 +63,7 @@ func dataRegistersRead(ctx context.Context, d *schema.ResourceData, meta any) di
 		HostLabels: expandStringMap(extractMap(d.Get("host_labels"))),
 	}
 
-	registers, err := client.listRegisters(ctx, opts)
+	registers, err := client.ListRegisters(ctx, opts)
 	if err != nil {
 		return diag.FromErr(err)
 	}

@@ -9,127 +9,119 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+
+	apiclient "github.com/tasansga/terraform-provider-grantory/internal/api/client"
 )
+
+func isNotFound(err error) bool {
+	return apiclient.IsNotFound(err)
+}
 
 func expandStringMap(input map[string]any) map[string]string {
 	if len(input) == 0 {
 		return nil
 	}
-
-	result := make(map[string]string, len(input))
+	output := make(map[string]string, len(input))
 	for key, value := range input {
 		if value == nil {
 			continue
 		}
-
-		str, ok := value.(string)
-		if !ok {
-			continue
+		if str, ok := value.(string); ok {
+			output[key] = str
 		}
-
-		result[key] = str
 	}
-
-	if len(result) == 0 {
+	if len(output) == 0 {
 		return nil
 	}
-	return result
+	return output
 }
 
 func flattenStringMap(input map[string]string) map[string]any {
 	if len(input) == 0 {
 		return nil
 	}
-
-	result := make(map[string]any, len(input))
+	output := make(map[string]any, len(input))
 	for key, value := range input {
-		result[key] = value
+		output[key] = value
 	}
-	return result
+	if len(output) == 0 {
+		return nil
+	}
+	return output
 }
 
 func expandAnyMap(input map[string]any) map[string]any {
 	if len(input) == 0 {
 		return nil
 	}
-
-	result := make(map[string]any, len(input))
+	output := make(map[string]any, len(input))
 	for key, value := range input {
 		if value == nil {
 			continue
 		}
-		result[key] = value
+		output[key] = value
 	}
-
-	if len(result) == 0 {
+	if len(output) == 0 {
 		return nil
 	}
-	return result
+	return output
 }
 
-func parseJSONString(value string) (map[string]any, error) {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
+func parseJSONString(payload string) (map[string]any, error) {
+	if strings.TrimSpace(payload) == "" {
 		return nil, nil
 	}
-	var result map[string]any
-	if err := json.Unmarshal([]byte(trimmed), &result); err != nil {
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
 		return nil, err
 	}
-	return result, nil
+	return parsed, nil
 }
 
-func parseRawJSON(value string) (json.RawMessage, error) {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
+func parseRawJSON(payload string) (json.RawMessage, error) {
+	if strings.TrimSpace(payload) == "" {
 		return nil, nil
 	}
-	var decoded any
-	if err := json.Unmarshal([]byte(trimmed), &decoded); err != nil {
-		return nil, err
+	if !json.Valid([]byte(payload)) {
+		return nil, fmt.Errorf("invalid json")
 	}
-	normalized, err := json.Marshal(decoded)
-	if err != nil {
-		return nil, err
-	}
-	return json.RawMessage(normalized), nil
+	return json.RawMessage(payload), nil
 }
 
 func encodeMapToJSONString(value map[string]any) (string, error) {
 	if value == nil {
 		return "", nil
 	}
-	b, err := json.Marshal(value)
+	encoded, err := json.Marshal(value)
 	if err != nil {
 		return "", err
 	}
-	return string(b), nil
+	return string(encoded), nil
 }
 
-func setJSONStringAttribute(d *schema.ResourceData, key string, value map[string]any) diag.Diagnostics {
-	payload, err := encodeMapToJSONString(value)
-	if err != nil {
-		return diag.Diagnostics{{
-			Severity: diag.Error,
-			Summary:  fmt.Sprintf("encode %s", key),
-			Detail:   err.Error(),
-		}}
-	}
-	if payload == "" {
+func setJSONStringAttribute(d *schema.ResourceData, key string, payload map[string]any) diag.Diagnostics {
+	if payload == nil {
+		if err := d.Set(key, nil); err != nil {
+			return diag.FromErr(err)
+		}
 		return nil
 	}
-	if err := d.Set(key, payload); err != nil {
+	value, err := encodeMapToJSONString(payload)
+	if err != nil {
+		return diag.FromErr(err)
+	}
+	if err := d.Set(key, value); err != nil {
 		return diag.FromErr(err)
 	}
 	return nil
 }
 
 func hashAsJSON(value any) (string, error) {
-	b, err := json.Marshal(value)
+	encoded, err := json.Marshal(value)
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256(b)
+	sum := sha256.Sum256(encoded)
 	return hex.EncodeToString(sum[:]), nil
 }
 

@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grantory-controller
+  namespace: grantory-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grantory-controller
+  template:
+    metadata:
+      labels:
+        app: grantory-controller
+    spec:
+      serviceAccountName: grantory-controller
+      containers:
+        - name: controller
+          image: tasansga/grantory:latest
+          args:
+            - controller
+          env:
+            - name: GRANTORY_CONTROLLER_SERVER
+              value: http://grantory.default.svc.cluster.local:8080
+            - name: GRANTORY_CONTROLLER_NAMESPACE
+              value: _def
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi

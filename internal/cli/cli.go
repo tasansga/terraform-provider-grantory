@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"strings"
 
@@ -100,7 +99,7 @@ func newListCmd() *cobra.Command {
 			"Examples:\n" +
 			"  grantory list hosts\n" +
 			"  grantory list requests\n",
-		Args:  cobra.ExactArgs(1),
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resType, err := parseResourceType(args[0])
 			if err != nil {
@@ -151,7 +150,7 @@ func newInspectCmd() *cobra.Command {
 			"  grantory inspect hosts <host-id>\n" +
 			"  grantory inspect requests <request-id>\n" +
 			"  grantory inspect requests <request-id> | jq '.grant_id, .grant_payload'\n",
-		Args:  cobra.ExactArgs(2),
+		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resType, err := parseResourceType(args[0])
 			if err != nil {
@@ -185,7 +184,7 @@ func newDeleteCmd() *cobra.Command {
 		Long: "Delete a single resource by ID.\n\n" +
 			"Examples:\n" +
 			"  grantory delete requests <request-id>\n",
-		Args:  cobra.ExactArgs(2),
+		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resType, err := parseResourceType(args[0])
 			if err != nil {
@@ -228,7 +227,7 @@ func newMutateCmd() *cobra.Command {
 			"Examples:\n" +
 			"  grantory mutate hosts <host-id> --labels '{\"env\":\"prod\"}'\n" +
 			"  grantory mutate requests <request-id> --labels-file labels.json\n",
-		Args:  cobra.ExactArgs(2),
+		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resType, err := parseResourceType(args[0])
 			if err != nil {
@@ -326,12 +325,6 @@ type requestInspectResponse struct {
 	GrantPayload any    `json:"grant_payload,omitempty"`
 }
 
-type apiRequestInspectResponse struct {
-	storage.Request
-	GrantID string         `json:"grant_id,omitempty"`
-	Grant   map[string]any `json:"grant"`
-}
-
 func fetchRequestInspectResponse(ctx context.Context, backend cliBackend, id string) (requestInspectResponse, error) {
 	switch b := backend.(type) {
 	case *directBackend:
@@ -352,11 +345,11 @@ func fetchRequestInspectResponse(ctx context.Context, backend cliBackend, id str
 		}
 		return resp, nil
 	case *apiBackend:
-		var apiResp apiRequestInspectResponse
-		if err := b.doJSON(ctx, http.MethodGet, fmt.Sprintf("/requests/%s", id), nil, &apiResp); err != nil {
+		apiResp, err := b.client.GetRequest(ctx, id)
+		if err != nil {
 			return requestInspectResponse{}, err
 		}
-		resp := requestInspectResponse{Request: apiResp.Request}
+		resp := requestInspectResponse{Request: requestToStorage(apiResp)}
 		if apiResp.GrantID != "" {
 			resp.GrantID = apiResp.GrantID
 			if apiResp.Grant != nil {
@@ -440,7 +433,7 @@ func newNamespaceCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "namespace",
 		Short: "Manage namespace databases",
-		Long: "Manage namespace databases (direct backend) or schemas (Postgres).\n",
+		Long:  "Manage namespace databases (direct backend) or schemas (Postgres).\n",
 	}
 	cmd.AddCommand(newNamespaceDeleteCmd())
 	return cmd
@@ -453,7 +446,7 @@ func newNamespaceDeleteCmd() *cobra.Command {
 		Long: "Remove a namespace database (SQLite) or schema (Postgres).\n\n" +
 			"Examples:\n" +
 			"  grantory namespace delete staging\n",
-		Args:  cobra.ExactArgs(1),
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			namespace := args[0]
 			if err := server.ValidateNamespaceName(namespace); err != nil {

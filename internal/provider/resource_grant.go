@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"errors"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -48,7 +47,7 @@ func resourceGrantCreate(ctx context.Context, d *schema.ResourceData, meta any) 
 		}
 	}
 
-	created, err := client.createGrant(ctx, apiGrantCreatePayload{
+	created, err := client.CreateGrant(ctx, apiGrantCreatePayload{
 		RequestID: d.Get("request_id").(string),
 		Payload:   grantPayload,
 	})
@@ -67,9 +66,9 @@ func resourceGrantRead(ctx context.Context, d *schema.ResourceData, meta any) di
 		return nil
 	}
 
-	grant, err := client.getGrant(ctx, grantID)
+	grant, err := client.GetGrant(ctx, grantID)
 	if err != nil {
-		if errors.Is(err, errResourceNotFound) {
+		if isNotFound(err) {
 			d.SetId("")
 			return nil
 		}
@@ -82,8 +81,8 @@ func resourceGrantRead(ctx context.Context, d *schema.ResourceData, meta any) di
 
 func resourceGrantDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	client := meta.(*grantoryClient)
-	if err := client.deleteGrant(ctx, d.Id()); err != nil {
-		if errors.Is(err, errResourceNotFound) {
+	if err := client.DeleteGrant(ctx, d.Id()); err != nil {
+		if isNotFound(err) {
 			d.SetId("")
 			return nil
 		}
@@ -99,8 +98,10 @@ func resourceGrantRefresh(ctx context.Context, d *schema.ResourceData, grant api
 	if err := d.Set("request_id", grant.RequestID); err != nil {
 		diags = append(diags, diag.FromErr(err)...)
 	}
-	if additional := setJSONStringAttribute(d, "payload", grant.Payload); additional != nil {
-		diags = append(diags, additional...)
+	if grant.Payload != nil {
+		if additional := setJSONStringAttribute(d, "payload", grant.Payload); additional != nil {
+			diags = append(diags, additional...)
+		}
 	}
 	return diags
 }

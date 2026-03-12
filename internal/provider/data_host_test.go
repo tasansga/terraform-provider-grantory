@@ -7,9 +7,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/stretchr/testify/assert"
+	clienttest "github.com/tasansga/terraform-provider-grantory/internal/api/client/testutil"
 )
 
 func TestDataHostSource(t *testing.T) {
@@ -19,10 +21,7 @@ func TestDataHostSource(t *testing.T) {
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
-	client := &grantoryClient{
-		baseURL:    mustParseURL(t, server.URL),
-		httpClient: server.Client(),
-	}
+	client := clienttest.New(t, server, "", "", "")
 
 	resource := dataHost()
 	data := schema.TestResourceDataRaw(t, resource.Schema, map[string]any{
@@ -51,11 +50,12 @@ func newHostDataSourceTestHandler() http.HandlerFunc {
 			return
 		}
 
+		createdAt := time.Date(2024, 2, 2, 0, 0, 0, 0, time.UTC)
 		response := apiHost{
 			ID:        hostID,
 			UniqueKey: "unique:host",
 			Labels:    map[string]string{"env": "prod"},
-			CreatedAt: "2024-02-02T00:00:00Z",
+			CreatedAt: createdAt,
 		}
 
 		w.Header().Set("Content-Type", "application/json")

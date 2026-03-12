@@ -1,0 +1,127 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: grantoryrequests.grantory.ansgar.tasler.net
+spec:
+  group: grantory.ansgar.tasler.net
+  scope: Namespaced
+  names:
+    plural: grantoryrequests
+    singular: grantoryrequest
+    kind: GrantoryRequest
+    shortNames:
+      - greq
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      additionalPrinterColumns:
+        - name: ID
+          type: string
+          jsonPath: .status.id
+        - name: Host
+          type: string
+          jsonPath: .spec.hostID
+        - name: HasGrant
+          type: boolean
+          jsonPath: .status.hasGrant
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              properties:
+                hostID:
+                  type: string
+                  description: Grantory host ID that owns the request.
+                hostRef:
+                  type: object
+                  description: Reference to a GrantoryHost resource.
+                  properties:
+                    name:
+                      type: string
+                    namespace:
+                      type: string
+                uniqueKey:
+                  type: string
+                  description: Optional unique key used to enforce request uniqueness in Grantory.
+                requestSchemaDefinitionID:
+                  type: string
+                  description: Optional schema definition used to validate request payloads.
+                grantSchemaDefinitionID:
+                  type: string
+                  description: Optional schema definition used to validate grant payloads.
+                grantOutputKind:
+                  type: string
+                  description: Optional output kind for grant payload materialization (Secret or ConfigMap).
+                  enum:
+                    - secret
+                    - configmap
+                grantOutputName:
+                  type: string
+                  description: Optional name for the output Secret/ConfigMap (defaults to the request name).
+                grantOutputKeys:
+                  type: object
+                  additionalProperties:
+                    type: string
+                  description: Optional mapping of JSON pointers to keys in the output Secret/ConfigMap.
+                payload:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                  description: JSON payload describing the request.
+                labels:
+                  type: object
+                  additionalProperties:
+                    type: string
+                  description: Optional labels to attach to the request.
+                deleteOnRemoval:
+                  type: boolean
+                  default: false
+                  description: Delete the Grantory request when this resource is deleted.
+            status:
+              type: object
+              properties:
+                id:
+                  type: string
+                  description: The Grantory request ID managed by the controller.
+                hasGrant:
+                  type: boolean
+                grantID:
+                  type: string
+                grantPayload:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                observedGeneration:
+                  type: integer
+                  format: int64
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - type
+                      - status
+                      - lastTransitionTime
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                      observedGeneration:
+                        type: integer
+                        format: int64
+                      lastTransitionTime:
+                        type: string
+                        format: date-time

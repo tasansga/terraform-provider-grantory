@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"errors"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -45,9 +44,9 @@ func dataHostRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Di
 		}}
 	}
 
-	host, err := client.getHost(ctx, hostID)
+	host, err := client.GetHost(ctx, hostID)
 	if err != nil {
-		if errors.Is(err, errResourceNotFound) {
+		if isNotFound(err) {
 			d.SetId("")
 			return nil
 		}

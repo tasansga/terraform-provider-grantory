@@ -79,7 +79,7 @@ func dataRequestsRead(ctx context.Context, d *schema.ResourceData, meta any) dia
 		opts.HasGrant = &value
 	}
 
-	requests, err := client.listRequests(ctx, opts)
+	requests, err := client.ListRequests(ctx, opts)
 	if err != nil {
 		return diag.FromErr(err)
 	}
