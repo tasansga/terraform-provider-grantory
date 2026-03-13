@@ -49,6 +49,7 @@ func NewRootCommand() *cobra.Command {
 		newVersionCmd(),
 		newNamespaceCmd(),
 		newListCmd(),
+		newCreateCmd(),
 		newInspectCmd(),
 		newDeleteCmd(),
 		newMutateCmd(),

@@ -57,6 +57,8 @@ provider "grantory" {
 
 ## Kubernetes workflow
 
+**EXPERIMENTAL FEATURE**
+
 Grantory can also be driven from Kubernetes using CRDs plus the built-in controller. App teams declare `GrantoryRequest` / `GrantoryRegister` custom resources, and the controller syncs them to a Grantory server instance. Grant handlers still run outside the cluster (or in-cluster) and issue grants via the API.
 
 The CRDs live in `k8s/crds/` and the controller runs via `grantory controller`. It uses the same server configuration flags as the CLI and also supports `GRANTORY_CONTROLLER_*` env vars for server URL and credentials.

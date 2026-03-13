@@ -140,6 +140,48 @@ func newListCmd() *cobra.Command {
 	}
 }
 
+func newCreateCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "create <resource_type>",
+		Short: "Create a request, register, or grant",
+		Long: "Create requests, registers, or grants using JSON payload files.\n\n" +
+			"Examples:\n" +
+			"  grantory create requests --host-id <host-id> --payload-file request.json\n" +
+			"  grantory create registers --host-id <host-id> --payload-file register.json\n" +
+			"  grantory create grants --request-id <request-id> --payload-file grant.json\n",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resType, err := parseResourceType(args[0])
+			if err != nil {
+				return err
+			}
+
+			switch resType {
+			case resourceTypeRequests:
+				return createRequest(cmd)
+			case resourceTypeRegisters:
+				return createRegister(cmd)
+			case resourceTypeGrants:
+				return createGrant(cmd)
+			default:
+				return fmt.Errorf("create does not support resource type: %s", resType)
+			}
+		},
+	}
+
+	cmd.Flags().String("host-id", "", "host identifier for the request")
+	cmd.Flags().String("request-id", "", "request identifier for the grant")
+	cmd.Flags().String("request-schema-id", "", "request schema definition identifier (requests only)")
+	cmd.Flags().String("grant-schema-id", "", "grant schema definition identifier (requests only)")
+	cmd.Flags().String("register-schema-id", "", "schema definition identifier (registers only)")
+	cmd.Flags().String("unique-key", "", "unique key (requests/registers only)")
+	cmd.Flags().String("payload-file", "", "path to a JSON file containing the payload")
+	cmd.Flags().String("labels", "", "JSON object that replaces labels (requests only)")
+	cmd.Flags().String("labels-file", "", "path to a JSON file that replaces labels (requests only)")
+
+	return cmd
+}
+
 func newInspectCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "inspect <resource_type> <id>",
@@ -175,6 +217,163 @@ func newInspectCmd() *cobra.Command {
 			})
 		},
 	}
+}
+
+func createRequest(cmd *cobra.Command) error {
+	hostID, err := cmd.Flags().GetString("host-id")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(hostID) == "" {
+		return errors.New("--host-id is required for requests")
+	}
+
+	payloadFile, err := cmd.Flags().GetString("payload-file")
+	if err != nil {
+		return err
+	}
+	payload, err := loadJSONMapFromFile(payloadFile)
+	if err != nil {
+		return err
+	}
+
+	requestSchemaID, err := cmd.Flags().GetString("request-schema-id")
+	if err != nil {
+		return err
+	}
+	grantSchemaID, err := cmd.Flags().GetString("grant-schema-id")
+	if err != nil {
+		return err
+	}
+	uniqueKey, err := cmd.Flags().GetString("unique-key")
+	if err != nil {
+		return err
+	}
+	labelsFlag, err := cmd.Flags().GetString("labels")
+	if err != nil {
+		return err
+	}
+	labelsFile, err := cmd.Flags().GetString("labels-file")
+	if err != nil {
+		return err
+	}
+	if labelsFlag != "" && labelsFile != "" {
+		return errors.New("only one of --labels or --labels-file may be provided")
+	}
+
+	var labels map[string]string
+	if labelsFlag != "" || labelsFile != "" {
+		labels, err = resolveLabels(cmd, labelsFlag, labelsFile)
+		if err != nil {
+			return err
+		}
+	}
+
+	return runWithBackend(cmd, func(ctx context.Context, backend cliBackend) error {
+		created, err := backend.CreateRequest(ctx, storage.Request{
+			HostID:                    strings.TrimSpace(hostID),
+			RequestSchemaDefinitionID: strings.TrimSpace(requestSchemaID),
+			GrantSchemaDefinitionID:   strings.TrimSpace(grantSchemaID),
+			UniqueKey:                 strings.TrimSpace(uniqueKey),
+			Payload:                   payload,
+			Labels:                    labels,
+		})
+		if err != nil {
+			return err
+		}
+		return outputJSON(cmd, created)
+	})
+}
+
+func createRegister(cmd *cobra.Command) error {
+	hostID, err := cmd.Flags().GetString("host-id")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(hostID) == "" {
+		return errors.New("--host-id is required for registers")
+	}
+
+	payloadFile, err := cmd.Flags().GetString("payload-file")
+	if err != nil {
+		return err
+	}
+	payload, err := loadJSONMapFromFile(payloadFile)
+	if err != nil {
+		return err
+	}
+
+	schemaID, err := cmd.Flags().GetString("register-schema-id")
+	if err != nil {
+		return err
+	}
+	uniqueKey, err := cmd.Flags().GetString("unique-key")
+	if err != nil {
+		return err
+	}
+	labelsFlag, err := cmd.Flags().GetString("labels")
+	if err != nil {
+		return err
+	}
+	labelsFile, err := cmd.Flags().GetString("labels-file")
+	if err != nil {
+		return err
+	}
+	if labelsFlag != "" && labelsFile != "" {
+		return errors.New("only one of --labels or --labels-file may be provided")
+	}
+
+	var labels map[string]string
+	if labelsFlag != "" || labelsFile != "" {
+		labels, err = resolveLabels(cmd, labelsFlag, labelsFile)
+		if err != nil {
+			return err
+		}
+	}
+
+	return runWithBackend(cmd, func(ctx context.Context, backend cliBackend) error {
+		created, err := backend.CreateRegister(ctx, storage.Register{
+			HostID:             strings.TrimSpace(hostID),
+			SchemaDefinitionID: strings.TrimSpace(schemaID),
+			UniqueKey:          strings.TrimSpace(uniqueKey),
+			Payload:            payload,
+			Labels:             labels,
+		})
+		if err != nil {
+			return err
+		}
+		return outputJSON(cmd, created)
+	})
+}
+
+func createGrant(cmd *cobra.Command) error {
+	requestID, err := cmd.Flags().GetString("request-id")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(requestID) == "" {
+		return errors.New("--request-id is required for grants")
+	}
+
+	payloadFile, err := cmd.Flags().GetString("payload-file")
+	if err != nil {
+		return err
+	}
+	payload, err := loadJSONMapFromFile(payloadFile)
+	if err != nil {
+		return err
+	}
+
+	return runWithBackend(cmd, func(ctx context.Context, backend cliBackend) error {
+		created, err := backend.CreateGrant(ctx, storage.Grant{
+			RequestID: strings.TrimSpace(requestID),
+			Payload:   payload,
+		})
+		if err != nil {
+			return err
+		}
+		return outputJSON(cmd, created)
+	})
 }
 
 func newDeleteCmd() *cobra.Command {
@@ -417,6 +616,34 @@ func loadLabelsFromSource(cmd *cobra.Command, source string) (map[string]string,
 		return nil, errors.New("labels payload is empty")
 	}
 	return parseLabels(string(data))
+}
+
+func loadJSONMapFromFile(path string) (map[string]any, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, nil
+	}
+	if path == "-" {
+		return nil, errors.New("payload must be provided via a file path, not stdin")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open payload file: %w", err)
+	}
+	data, err := io.ReadAll(file)
+	if cerr := file.Close(); cerr != nil && err == nil {
+		return nil, fmt.Errorf("close payload file: %w", cerr)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read payload: %w", err)
+	}
+	if len(data) == 0 {
+		return nil, errors.New("payload file is empty")
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, fmt.Errorf("parse payload: %w", err)
+	}
+	return payload, nil
 }
 
 func outputJSON(cmd *cobra.Command, value any) error {

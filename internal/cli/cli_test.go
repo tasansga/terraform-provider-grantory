@@ -559,6 +559,266 @@ func TestInspectRequestWithGrant(t *testing.T) {
 	assert.Equal(t, "alice", payload["user"], "grant_payload user should match")
 }
 
+func TestCreateRequestCommand(t *testing.T) {
+	t.Parallel()
+
+	var hostID string
+	var requestSchemaID string
+	var grantSchemaID string
+	dataDir := prepareTestDataDir(t, func(ctx context.Context, store storage.Store) {
+		host, err := store.CreateHost(ctx, storage.Host{})
+		assert.NoError(t, err, "create host failed")
+		hostID = host.ID
+		requestSchema, err := store.CreateSchemaDefinition(ctx, storage.SchemaDefinition{
+			Schema: json.RawMessage(`{"type":"object"}`),
+		})
+		assert.NoError(t, err, "create request schema failed")
+		requestSchemaID = requestSchema.ID
+		grantSchema, err := store.CreateSchemaDefinition(ctx, storage.SchemaDefinition{
+			Schema: json.RawMessage(`{"type":"object"}`),
+		})
+		assert.NoError(t, err, "create grant schema failed")
+		grantSchemaID = grantSchema.ID
+	})
+
+	tempDir := t.TempDir()
+	payloadPath := filepath.Join(tempDir, "payload.json")
+	labelsPath := filepath.Join(tempDir, "labels.json")
+	assert.NoError(t, os.WriteFile(payloadPath, []byte(`{"payme":"alot"}`), 0o600))
+	assert.NoError(t, os.WriteFile(labelsPath, []byte(`{"env":"dev"}`), 0o600))
+
+	output := runCLI(t,
+		"--database", dataDir,
+		"create", "requests",
+		"--host-id", hostID,
+		"--payload-file", payloadPath,
+		"--labels-file", labelsPath,
+		"--request-schema-id", requestSchemaID,
+		"--grant-schema-id", grantSchemaID,
+		"--unique-key", "unique-1",
+	)
+
+	var response map[string]any
+	assert.NoError(t, json.Unmarshal([]byte(output), &response))
+	reqID, _ := response["id"].(string)
+	assert.NotEmpty(t, reqID, "request id should be set")
+
+	store := openStoreForTesting(t, dataDir)
+	defer closeStore(t, store)
+	created, err := store.GetRequest(context.Background(), reqID)
+	assert.NoError(t, err)
+	assert.Equal(t, hostID, created.HostID)
+	assert.Equal(t, requestSchemaID, created.RequestSchemaDefinitionID)
+	assert.Equal(t, grantSchemaID, created.GrantSchemaDefinitionID)
+	assert.Equal(t, "unique-1", created.UniqueKey)
+	assert.Equal(t, "dev", created.Labels["env"])
+	assert.Equal(t, "alot", created.Payload["payme"])
+}
+
+func TestCreateGrantCommand(t *testing.T) {
+	t.Parallel()
+
+	var requestID string
+	dataDir := prepareTestDataDir(t, func(ctx context.Context, store storage.Store) {
+		host, err := store.CreateHost(ctx, storage.Host{})
+		assert.NoError(t, err, "create host failed")
+		req, err := store.CreateRequest(ctx, storage.Request{HostID: host.ID})
+		assert.NoError(t, err, "create request failed")
+		requestID = req.ID
+	})
+
+	tempDir := t.TempDir()
+	payloadPath := filepath.Join(tempDir, "grant.json")
+	assert.NoError(t, os.WriteFile(payloadPath, []byte(`{"token":"abc"}`), 0o600))
+
+	output := runCLI(t,
+		"--database", dataDir,
+		"create", "grants",
+		"--request-id", requestID,
+		"--payload-file", payloadPath,
+	)
+
+	var response map[string]any
+	assert.NoError(t, json.Unmarshal([]byte(output), &response))
+	grantID, _ := response["id"].(string)
+	assert.NotEmpty(t, grantID, "grant id should be set")
+
+	store := openStoreForTesting(t, dataDir)
+	defer closeStore(t, store)
+	created, err := store.GetGrant(context.Background(), grantID)
+	assert.NoError(t, err)
+	assert.Equal(t, requestID, created.RequestID)
+	assert.Equal(t, "abc", created.Payload["token"])
+}
+
+func TestCreateRegisterCommand(t *testing.T) {
+	t.Parallel()
+
+	var hostID string
+	var schemaID string
+	dataDir := prepareTestDataDir(t, func(ctx context.Context, store storage.Store) {
+		host, err := store.CreateHost(ctx, storage.Host{})
+		assert.NoError(t, err, "create host failed")
+		hostID = host.ID
+		schema, err := store.CreateSchemaDefinition(ctx, storage.SchemaDefinition{
+			Schema: json.RawMessage(`{"type":"object"}`),
+		})
+		assert.NoError(t, err, "create schema failed")
+		schemaID = schema.ID
+	})
+
+	tempDir := t.TempDir()
+	payloadPath := filepath.Join(tempDir, "register.json")
+	labelsPath := filepath.Join(tempDir, "labels.json")
+	assert.NoError(t, os.WriteFile(payloadPath, []byte(`{"source":"inttest"}`), 0o600))
+	assert.NoError(t, os.WriteFile(labelsPath, []byte(`{"env":"dev"}`), 0o600))
+
+	output := runCLI(t,
+		"--database", dataDir,
+		"create", "registers",
+		"--host-id", hostID,
+		"--payload-file", payloadPath,
+		"--labels-file", labelsPath,
+		"--register-schema-id", schemaID,
+		"--unique-key", "reg-unique",
+	)
+
+	var response map[string]any
+	assert.NoError(t, json.Unmarshal([]byte(output), &response))
+	regID, _ := response["id"].(string)
+	assert.NotEmpty(t, regID, "register id should be set")
+
+	store := openStoreForTesting(t, dataDir)
+	defer closeStore(t, store)
+	created, err := store.GetRegister(context.Background(), regID)
+	assert.NoError(t, err)
+	assert.Equal(t, hostID, created.HostID)
+	assert.Equal(t, schemaID, created.SchemaDefinitionID)
+	assert.Equal(t, "reg-unique", created.UniqueKey)
+	assert.Equal(t, "dev", created.Labels["env"])
+	assert.Equal(t, "inttest", created.Payload["source"])
+}
+
+func TestCreateRequestCommandAPIMode(t *testing.T) {
+	t.Parallel()
+
+	payloadFile := filepath.Join(t.TempDir(), "payload.json")
+	assert.NoError(t, os.WriteFile(payloadFile, []byte(`{"payme":"alot"}`), 0o600))
+	labelsFile := filepath.Join(t.TempDir(), "labels.json")
+	assert.NoError(t, os.WriteFile(labelsFile, []byte(`{"env":"api"}`), 0o600))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/requests" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		var payload map[string]any
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		assert.Equal(t, "host-1", payload["host_id"])
+		assert.Equal(t, "req-schema", payload["request_schema_definition_id"])
+		assert.Equal(t, "grant-schema", payload["grant_schema_definition_id"])
+		assert.Equal(t, "unique-1", payload["unique_key"])
+		assert.Equal(t, map[string]any{"payme": "alot"}, payload["payload"])
+		assert.Equal(t, map[string]any{"env": "api"}, payload["labels"])
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":      "req-1",
+			"host_id": "host-1",
+		})
+	}))
+	defer server.Close()
+
+	cmd := NewRootCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{
+		"--backend", "api",
+		"--server-url", server.URL,
+		"create", "requests",
+		"--host-id", "host-1",
+		"--payload-file", payloadFile,
+		"--labels-file", labelsFile,
+		"--request-schema-id", "req-schema",
+		"--grant-schema-id", "grant-schema",
+		"--unique-key", "unique-1",
+	})
+	assert.NoError(t, cmd.Execute(), "create request api should succeed")
+}
+
+func TestCreateRegisterCommandAPIMode(t *testing.T) {
+	t.Parallel()
+
+	payloadFile := filepath.Join(t.TempDir(), "register.json")
+	assert.NoError(t, os.WriteFile(payloadFile, []byte(`{"source":"api"}`), 0o600))
+	labelsFile := filepath.Join(t.TempDir(), "labels.json")
+	assert.NoError(t, os.WriteFile(labelsFile, []byte(`{"env":"api"}`), 0o600))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/registers" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		var payload map[string]any
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		assert.Equal(t, "host-1", payload["host_id"])
+		assert.Equal(t, "schema-1", payload["schema_definition_id"])
+		assert.Equal(t, "unique-1", payload["unique_key"])
+		assert.Equal(t, map[string]any{"source": "api"}, payload["payload"])
+		assert.Equal(t, map[string]any{"env": "api"}, payload["labels"])
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":      "reg-1",
+			"host_id": "host-1",
+		})
+	}))
+	defer server.Close()
+
+	cmd := NewRootCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{
+		"--backend", "api",
+		"--server-url", server.URL,
+		"create", "registers",
+		"--host-id", "host-1",
+		"--payload-file", payloadFile,
+		"--labels-file", labelsFile,
+		"--register-schema-id", "schema-1",
+		"--unique-key", "unique-1",
+	})
+	assert.NoError(t, cmd.Execute(), "create register api should succeed")
+}
+
+func TestCreateGrantCommandAPIMode(t *testing.T) {
+	t.Parallel()
+
+	payloadFile := filepath.Join(t.TempDir(), "grant.json")
+	assert.NoError(t, os.WriteFile(payloadFile, []byte(`{"token":"abc"}`), 0o600))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/grants" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		var payload map[string]any
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		assert.Equal(t, "req-1", payload["request_id"])
+		assert.Equal(t, map[string]any{"token": "abc"}, payload["payload"])
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":         "grant-1",
+			"request_id": "req-1",
+		})
+	}))
+	defer server.Close()
+
+	cmd := NewRootCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{
+		"--backend", "api",
+		"--server-url", server.URL,
+		"create", "grants",
+		"--request-id", "req-1",
+		"--payload-file", payloadFile,
+	})
+	assert.NoError(t, cmd.Execute(), "create grant api should succeed")
+}
+
 func TestDeleteHostsCommand(t *testing.T) {
 	t.Parallel()
 

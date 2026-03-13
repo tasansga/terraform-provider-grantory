@@ -21,6 +21,9 @@ type cliBackend interface {
 	GetRequest(context.Context, string) (storage.Request, error)
 	GetRegister(context.Context, string) (storage.Register, error)
 	GetGrant(context.Context, string) (storage.Grant, error)
+	CreateRequest(context.Context, storage.Request) (storage.Request, error)
+	CreateRegister(context.Context, storage.Register) (storage.Register, error)
+	CreateGrant(context.Context, storage.Grant) (storage.Grant, error)
 	DeleteHost(context.Context, string) error
 	DeleteRequest(context.Context, string) error
 	DeleteRegister(context.Context, string) error
@@ -160,6 +163,18 @@ func (d *directBackend) GetRegister(ctx context.Context, id string) (storage.Reg
 //go:noinline
 func (d *directBackend) GetGrant(ctx context.Context, id string) (storage.Grant, error) {
 	return d.store.GetGrant(ctx, id)
+}
+
+func (d *directBackend) CreateRequest(ctx context.Context, req storage.Request) (storage.Request, error) {
+	return d.store.CreateRequest(ctx, req)
+}
+
+func (d *directBackend) CreateRegister(ctx context.Context, reg storage.Register) (storage.Register, error) {
+	return d.store.CreateRegister(ctx, reg)
+}
+
+func (d *directBackend) CreateGrant(ctx context.Context, grant storage.Grant) (storage.Grant, error) {
+	return d.store.CreateGrant(ctx, grant)
 }
 
 func (d *directBackend) DeleteHost(ctx context.Context, id string) error {
@@ -310,6 +325,46 @@ func (a *apiBackend) GetGrant(ctx context.Context, id string) (storage.Grant, er
 		return storage.Grant{}, err
 	}
 	return grantToStorage(grant), nil
+}
+
+func (a *apiBackend) CreateRequest(ctx context.Context, req storage.Request) (storage.Request, error) {
+	created, err := a.client.CreateRequest(ctx, apiclient.RequestCreatePayload{
+		HostID:                    req.HostID,
+		RequestSchemaDefinitionID: req.RequestSchemaDefinitionID,
+		GrantSchemaDefinitionID:   req.GrantSchemaDefinitionID,
+		UniqueKey:                 req.UniqueKey,
+		Payload:                   req.Payload,
+		Labels:                    req.Labels,
+	})
+	if err != nil {
+		return storage.Request{}, err
+	}
+	return requestToStorage(created), nil
+}
+
+func (a *apiBackend) CreateRegister(ctx context.Context, reg storage.Register) (storage.Register, error) {
+	created, err := a.client.CreateRegister(ctx, apiclient.RegisterCreatePayload{
+		HostID:             reg.HostID,
+		SchemaDefinitionID: reg.SchemaDefinitionID,
+		UniqueKey:          reg.UniqueKey,
+		Payload:            reg.Payload,
+		Labels:             reg.Labels,
+	})
+	if err != nil {
+		return storage.Register{}, err
+	}
+	return registerToStorage(created), nil
+}
+
+func (a *apiBackend) CreateGrant(ctx context.Context, grant storage.Grant) (storage.Grant, error) {
+	created, err := a.client.CreateGrant(ctx, apiclient.GrantCreatePayload{
+		RequestID: grant.RequestID,
+		Payload:   grant.Payload,
+	})
+	if err != nil {
+		return storage.Grant{}, err
+	}
+	return grantToStorage(created), nil
 }
 
 //go:noinline
