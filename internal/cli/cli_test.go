@@ -699,6 +699,69 @@ func TestCreateRegisterCommand(t *testing.T) {
 	assert.Equal(t, "inttest", created.Payload["source"])
 }
 
+func TestCreateSchemaDefinitionCommand(t *testing.T) {
+	t.Parallel()
+
+	dataDir := prepareTestDataDir(t, nil)
+
+	tempDir := t.TempDir()
+	schemaPath := filepath.Join(tempDir, "schema.json")
+	labelsPath := filepath.Join(tempDir, "labels.json")
+	assert.NoError(t, os.WriteFile(schemaPath, []byte(`{"type":"object","properties":{"name":{"type":"string"}}}`), 0o600))
+	assert.NoError(t, os.WriteFile(labelsPath, []byte(`{"family":"invoice"}`), 0o600))
+
+	output := runCLI(t,
+		"--database", dataDir,
+		"create", "schema-definitions",
+		"--schema-file", schemaPath,
+		"--labels-file", labelsPath,
+		"--unique-key", "invoice.v1",
+	)
+
+	var response map[string]any
+	assert.NoError(t, json.Unmarshal([]byte(output), &response))
+	defID, _ := response["id"].(string)
+	assert.NotEmpty(t, defID, "schema definition id should be set")
+
+	store := openStoreForTesting(t, dataDir)
+	defer closeStore(t, store)
+	created, err := store.GetSchemaDefinition(context.Background(), defID)
+	assert.NoError(t, err)
+	assert.Equal(t, "invoice.v1", created.UniqueKey)
+	assert.Equal(t, "invoice", created.Labels["family"])
+	assert.JSONEq(t, `{"type":"object","properties":{"name":{"type":"string"}}}`, string(created.Schema))
+}
+
+func TestMutateSchemaDefinitionLabelsCommand(t *testing.T) {
+	t.Parallel()
+
+	var defID string
+	dataDir := prepareTestDataDir(t, func(ctx context.Context, store storage.Store) {
+		created, err := store.CreateSchemaDefinition(ctx, storage.SchemaDefinition{
+			Schema: json.RawMessage(`{"type":"object"}`),
+			Labels: map[string]string{"family": "invoice"},
+		})
+		assert.NoError(t, err, "failed to create schema definition for CLI test")
+		defID = created.ID
+	})
+
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{
+		"--database", dataDir,
+		"mutate", "schema-definitions", defID,
+		"--labels", `{"family":"updated"}`,
+	})
+	err := cmd.Execute()
+	assert.NoError(t, err, "mutate schema definition labels command failed")
+
+	store := openStoreForTesting(t, dataDir)
+	defer closeStore(t, store)
+
+	def, err := store.GetSchemaDefinition(context.Background(), defID)
+	assert.NoError(t, err, "GetSchemaDefinition() error")
+	assert.Equal(t, "updated", def.Labels["family"], "schema definition labels after mutate via CLI")
+}
+
 func TestCreateRequestCommandAPIMode(t *testing.T) {
 	t.Parallel()
 
@@ -819,6 +882,46 @@ func TestCreateGrantCommandAPIMode(t *testing.T) {
 	assert.NoError(t, cmd.Execute(), "create grant api should succeed")
 }
 
+func TestCreateSchemaDefinitionCommandAPIMode(t *testing.T) {
+	t.Parallel()
+
+	schemaFile := filepath.Join(t.TempDir(), "schema.json")
+	assert.NoError(t, os.WriteFile(schemaFile, []byte(`{"type":"object","required":["name"]}`), 0o600))
+	labelsFile := filepath.Join(t.TempDir(), "labels.json")
+	assert.NoError(t, os.WriteFile(labelsFile, []byte(`{"family":"invoice"}`), 0o600))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/schema-definitions" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		var payload map[string]any
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		assert.Equal(t, "invoice.v1", payload["unique_key"])
+		assert.Equal(t, map[string]any{"family": "invoice"}, payload["labels"])
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":         "schema-1",
+			"unique_key": "invoice.v1",
+			"schema":     map[string]any{"type": "object", "required": []string{"name"}},
+			"labels":     map[string]any{"family": "invoice"},
+		})
+	}))
+	defer server.Close()
+
+	cmd := NewRootCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{
+		"--backend", "api",
+		"--server-url", server.URL,
+		"create", "schema-definitions",
+		"--schema-file", schemaFile,
+		"--labels-file", labelsFile,
+		"--unique-key", "invoice.v1",
+	})
+	assert.NoError(t, cmd.Execute(), "create schema definition api should succeed")
+}
+
 func TestDeleteHostsCommand(t *testing.T) {
 	t.Parallel()
 
@@ -901,6 +1004,10 @@ func TestDirectBackendMethods(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create grant: %v", err)
 	}
+	def, err := store.CreateSchemaDefinition(ctx, storage.SchemaDefinition{Schema: json.RawMessage(`{"type":"object"}`)})
+	if err != nil {
+		t.Fatalf("create schema definition: %v", err)
+	}
 
 	backend := newDirectBackend(store)
 
@@ -916,6 +1023,9 @@ func TestDirectBackendMethods(t *testing.T) {
 	if _, err := backend.ListGrants(ctx); err != nil {
 		t.Fatalf("list grants: %v", err)
 	}
+	if _, err := backend.ListSchemaDefinitions(ctx); err != nil {
+		t.Fatalf("list schema definitions: %v", err)
+	}
 	if _, err := backend.GetHost(ctx, host.ID); err != nil {
 		t.Fatalf("get host: %v", err)
 	}
@@ -927,6 +1037,9 @@ func TestDirectBackendMethods(t *testing.T) {
 	}
 	if _, err := backend.GetGrant(ctx, grant.ID); err != nil {
 		t.Fatalf("get grant: %v", err)
+	}
+	if _, err := backend.GetSchemaDefinition(ctx, def.ID); err != nil {
+		t.Fatalf("get schema definition: %v", err)
 	}
 	if err := backend.UpdateHostLabels(ctx, host.ID, map[string]string{"env": "updated"}); err != nil {
 		t.Fatalf("update labels: %v", err)
@@ -952,6 +1065,7 @@ func TestAPIBackendMethods(t *testing.T) {
 	request := storage.Request{ID: "req-1", HostID: host.ID}
 	register := storage.Register{ID: "reg-1", HostID: host.ID}
 	grant := storage.Grant{ID: "grant-1", RequestID: request.ID}
+	def := storage.SchemaDefinition{ID: "schema-1", Schema: json.RawMessage(`{"type":"object"}`)}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if auth := r.Header.Get("Authorization"); auth != "Bearer tok" {
@@ -980,6 +1094,10 @@ func TestAPIBackendMethods(t *testing.T) {
 			if err := json.NewEncoder(w).Encode([]storage.Grant{grant}); err != nil {
 				t.Errorf("encode grants: %v", err)
 			}
+		case r.URL.Path == "/schema-definitions" && r.Method == http.MethodGet:
+			if err := json.NewEncoder(w).Encode([]storage.SchemaDefinition{def}); err != nil {
+				t.Errorf("encode schema definitions: %v", err)
+			}
 		case r.URL.Path == "/hosts/"+host.ID && r.Method == http.MethodGet:
 			if err := json.NewEncoder(w).Encode(host); err != nil {
 				t.Errorf("encode host: %v", err)
@@ -996,6 +1114,23 @@ func TestAPIBackendMethods(t *testing.T) {
 			if err := json.NewEncoder(w).Encode(grant); err != nil {
 				t.Errorf("encode grant: %v", err)
 			}
+		case r.URL.Path == "/schema-definitions/"+def.ID && r.Method == http.MethodGet:
+			if err := json.NewEncoder(w).Encode(def); err != nil {
+				t.Errorf("encode schema definition: %v", err)
+			}
+		case r.URL.Path == "/schema-definitions" && r.Method == http.MethodPost:
+			if _, err := io.ReadAll(r.Body); err != nil {
+				t.Errorf("read schema definitions body: %v", err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(def); err != nil {
+				t.Errorf("encode created schema definition: %v", err)
+			}
+		case strings.HasPrefix(r.URL.Path, "/schema-definitions/") && strings.HasSuffix(r.URL.Path, "/labels") && r.Method == http.MethodPatch:
+			if _, err := io.ReadAll(r.Body); err != nil {
+				t.Errorf("read schema labels body: %v", err)
+			}
+			w.WriteHeader(http.StatusOK)
 		case strings.HasPrefix(r.URL.Path, "/hosts/") && strings.HasSuffix(r.URL.Path, "/labels") && r.Method == http.MethodPatch:
 			if _, err := io.ReadAll(r.Body); err != nil {
 				t.Errorf("read host labels body: %v", err)
@@ -1008,6 +1143,8 @@ func TestAPIBackendMethods(t *testing.T) {
 		case strings.HasPrefix(r.URL.Path, "/registers/") && r.Method == http.MethodDelete:
 			w.WriteHeader(http.StatusNoContent)
 		case strings.HasPrefix(r.URL.Path, "/grants/") && r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+		case strings.HasPrefix(r.URL.Path, "/schema-definitions/") && r.Method == http.MethodDelete:
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			http.Error(w, "not found", http.StatusNotFound)
@@ -1033,6 +1170,9 @@ func TestAPIBackendMethods(t *testing.T) {
 	if _, err := backend.ListGrants(ctx); err != nil {
 		t.Fatalf("api list grants: %v", err)
 	}
+	if _, err := backend.ListSchemaDefinitions(ctx); err != nil {
+		t.Fatalf("api list schema definitions: %v", err)
+	}
 	if _, err := backend.GetHost(ctx, host.ID); err != nil {
 		t.Fatalf("api get host: %v", err)
 	}
@@ -1044,6 +1184,12 @@ func TestAPIBackendMethods(t *testing.T) {
 	}
 	if _, err := backend.GetGrant(ctx, grant.ID); err != nil {
 		t.Fatalf("api get grant: %v", err)
+	}
+	if _, err := backend.GetSchemaDefinition(ctx, def.ID); err != nil {
+		t.Fatalf("api get schema definition: %v", err)
+	}
+	if _, err := backend.CreateSchemaDefinition(ctx, def); err != nil {
+		t.Fatalf("api create schema definition: %v", err)
 	}
 	if err := backend.UpdateHostLabels(ctx, host.ID, map[string]string{"env": "api-val"}); err != nil {
 		t.Fatalf("api update labels: %v", err)
@@ -1059,6 +1205,12 @@ func TestAPIBackendMethods(t *testing.T) {
 	}
 	if err := backend.DeleteHost(ctx, host.ID); err != nil {
 		t.Fatalf("api delete host: %v", err)
+	}
+	if err := backend.UpdateSchemaDefinitionLabels(ctx, def.ID, map[string]string{"family": "api-val"}); err != nil {
+		t.Fatalf("api update schema definition labels: %v", err)
+	}
+	if err := backend.DeleteSchemaDefinition(ctx, def.ID); err != nil {
+		t.Fatalf("api delete schema definition: %v", err)
 	}
 }
 
@@ -1083,13 +1235,17 @@ func TestListCommandsForAllResources(t *testing.T) {
 			if err := json.NewEncoder(w).Encode([]storage.Grant{{ID: "list-grant"}}); err != nil {
 				t.Errorf("encode grants response: %v", err)
 			}
+		case "/schema-definitions":
+			if err := json.NewEncoder(w).Encode([]storage.SchemaDefinition{{ID: "list-schema"}}); err != nil {
+				t.Errorf("encode schema definitions response: %v", err)
+			}
 		default:
 			http.Error(w, "not found", http.StatusNotFound)
 		}
 	}))
 	defer server.Close()
 
-	for _, resource := range []string{"hosts", "requests", "registers", "grants"} {
+	for _, resource := range []string{"hosts", "requests", "registers", "grants", "schema-definitions"} {
 		cmd := NewRootCommand()
 		cmd.SetOut(io.Discard)
 		cmd.SetArgs([]string{"--backend", "api", "--server-url", server.URL, "list", resource})
@@ -1114,13 +1270,15 @@ func TestDeleteCommandsForAllResources(t *testing.T) {
 			w.WriteHeader(http.StatusNoContent)
 		case strings.HasPrefix(r.URL.Path, "/grants/"):
 			w.WriteHeader(http.StatusNoContent)
+		case strings.HasPrefix(r.URL.Path, "/schema-definitions/"):
+			w.WriteHeader(http.StatusNoContent)
 		default:
 			http.Error(w, "not found", http.StatusNotFound)
 		}
 	}))
 	defer server.Close()
 
-	for _, resource := range []string{"hosts", "requests", "registers", "grants"} {
+	for _, resource := range []string{"hosts", "requests", "registers", "grants", "schema-definitions"} {
 		cmd := NewRootCommand()
 		cmd.SetOut(io.Discard)
 		cmd.SetArgs([]string{"--backend", "api", "--server-url", server.URL, "delete", resource, "id"})

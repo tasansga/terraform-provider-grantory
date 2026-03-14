@@ -20,4 +20,6 @@ Use this data source to filter Grantory records inside a Terraform/OpenTofu plan
 ### Read-Only
 
 - `id` (String) The ID of this resource.
+- `labels` (Map of String) Labels attached to the schema definition.
 - `schema` (String) JSON Schema definition payload.
+- `unique_key` (String) Unique key used to enforce schema definition uniqueness within a namespace.

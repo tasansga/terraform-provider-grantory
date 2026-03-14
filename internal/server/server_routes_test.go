@@ -351,6 +351,7 @@ func TestSchemaDefinitionsValidation(t *testing.T) {
 	headers := map[string]string{}
 
 	validSchema := map[string]any{
+		"unique_key": "invoice.v1",
 		"schema": map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -359,6 +360,10 @@ func TestSchemaDefinitionsValidation(t *testing.T) {
 			},
 			"required": []string{"name"},
 		},
+		"labels": map[string]string{
+			"family":  "invoice",
+			"version": "1",
+		},
 	}
 
 	res := sendTestRequest(t, app, http.MethodPost, "/schema-definitions", headers, validSchema)
@@ -366,6 +371,8 @@ func TestSchemaDefinitionsValidation(t *testing.T) {
 	created := decodeJSON[storage.SchemaDefinition](t, res)
 	assert.NotEmpty(t, created.ID, "schema definition should have ID")
 	assert.NotEmpty(t, created.Schema, "schema definition should include schema")
+	assert.Equal(t, "invoice.v1", created.UniqueKey, "schema definition should persist unique key")
+	assert.Equal(t, map[string]string{"family": "invoice", "version": "1"}, created.Labels, "schema definition should persist labels")
 
 	invalidSchema := map[string]any{
 		"schema": map[string]any{
@@ -381,7 +388,18 @@ func TestSchemaDefinitionsValidation(t *testing.T) {
 	list := decodeJSON[[]storage.SchemaDefinition](t, res)
 	if assert.Len(t, list, 1, "expected one schema definition") {
 		assert.Equal(t, created.ID, list[0].ID, "listed schema should match created")
+		assert.Equal(t, "invoice.v1", list[0].UniqueKey, "listed schema should include unique key")
+		assert.Equal(t, map[string]string{"family": "invoice", "version": "1"}, list[0].Labels, "listed schema should include labels")
 	}
+
+	updateLabels := map[string]any{"labels": map[string]string{"family": "invoice", "version": "2"}}
+	res = sendTestRequest(t, app, http.MethodPatch, fmt.Sprintf("/schema-definitions/%s/labels", created.ID), headers, updateLabels)
+	assert.Equal(t, http.StatusOK, res.StatusCode, "update schema definition labels status")
+	updated := decodeJSON[storage.SchemaDefinition](t, res)
+	assert.Equal(t, map[string]string{"family": "invoice", "version": "2"}, updated.Labels, "updated labels should persist")
+
+	res = sendTestRequest(t, app, http.MethodPost, "/schema-definitions", headers, validSchema)
+	assert.Equal(t, http.StatusConflict, res.StatusCode, "duplicate schema definition unique key should fail")
 }
 
 func TestRequestSchemaValidation(t *testing.T) {

@@ -214,6 +214,7 @@ func registerSchemaDefinitionRoutes(app fiber.Router) {
 	group.Get("/", handler.list)
 	group.Post("/", handler.create)
 	group.Get("/:id", handler.get)
+	group.Patch("/:id/labels", handler.updateLabels)
 	group.Delete("/:id", handler.delete)
 }
 
@@ -241,7 +242,13 @@ type requestUpdatePayload struct {
 type schemaDefinitionHandler struct{}
 
 type schemaDefinitionCreatePayload struct {
-	Schema json.RawMessage `json:"schema"`
+	UniqueKey string            `json:"unique_key"`
+	Schema    json.RawMessage   `json:"schema"`
+	Labels    map[string]string `json:"labels"`
+}
+
+type schemaDefinitionLabelsPayload struct {
+	Labels map[string]string `json:"labels"`
 }
 
 func (h requestHandler) create(c *fiber.Ctx) error {
@@ -779,6 +786,8 @@ func (h schemaDefinitionHandler) create(c *fiber.Ctx) error {
 
 	logRequestEntry(c, "schemaDefinitionHandler.create", map[string]any{
 		"schema_bytes": len(payload.Schema),
+		"unique_key":   payload.UniqueKey,
+		"labels":       payload.Labels,
 	})
 
 	store, namespace, err := resolveNamespaceStore(c)
@@ -787,13 +796,17 @@ func (h schemaDefinitionHandler) create(c *fiber.Ctx) error {
 	}
 
 	def := storage.SchemaDefinition{
-		Schema: payload.Schema,
+		UniqueKey: payload.UniqueKey,
+		Schema:    payload.Schema,
+		Labels:    payload.Labels,
 	}
 	created, err := store.CreateSchemaDefinition(c.Context(), def)
 	if err != nil {
 		switch {
 		case errors.Is(err, storage.ErrSchemaDefinitionAlreadyExists):
 			return fiber.NewError(fiber.StatusConflict, "schema definition already exists")
+		case errors.Is(err, storage.ErrSchemaDefinitionUniqueKeyConflict):
+			return fiber.NewError(fiber.StatusConflict, "schema definition unique key already exists")
 		default:
 			logrus.WithError(err).WithField("namespace", namespace).Error("create schema definition")
 			return fiber.NewError(fiber.StatusInternalServerError, "unable to persist schema definition")
@@ -869,6 +882,42 @@ func (h schemaDefinitionHandler) delete(c *fiber.Ctx) error {
 	}
 
 	return c.SendStatus(fiber.StatusNoContent)
+}
+
+func (h schemaDefinitionHandler) updateLabels(c *fiber.Ctx) error {
+	var payload schemaDefinitionLabelsPayload
+	if err := c.BodyParser(&payload); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, err.Error())
+	}
+	if payload.Labels == nil {
+		return fiber.NewError(fiber.StatusBadRequest, "labels is required")
+	}
+
+	defID := c.Params("id")
+	logRequestEntry(c, "schemaDefinitionHandler.updateLabels", map[string]any{
+		"schema_definition_id": defID,
+		"labels":               payload.Labels,
+	})
+
+	store, namespace, err := resolveNamespaceStore(c)
+	if err != nil {
+		return err
+	}
+
+	if err := store.UpdateSchemaDefinitionLabels(c.Context(), defID, payload.Labels); err != nil {
+		if errors.Is(err, storage.ErrSchemaDefinitionNotFound) {
+			return fiber.NewError(fiber.StatusNotFound, "schema definition not found")
+		}
+		logrus.WithError(err).WithField("namespace", namespace).Error("update schema definition labels")
+		return fiber.NewError(fiber.StatusInternalServerError, "unable to update schema definition")
+	}
+
+	updated, err := store.GetSchemaDefinition(c.Context(), defID)
+	if err != nil {
+		logrus.WithError(err).WithField("namespace", namespace).Error("fetch schema definition after labels update")
+		return fiber.NewError(fiber.StatusInternalServerError, "unable to return schema definition")
+	}
+	return c.JSON(updated)
 }
 
 func registerGrantRoutes(app fiber.Router) {

@@ -302,6 +302,14 @@ func (c *Client) DeleteSchemaDefinition(ctx context.Context, id string) error {
 	return c.doJSON(ctx, http.MethodDelete, fmt.Sprintf("/schema-definitions/%s", id), nil, nil)
 }
 
+func (c *Client) UpdateSchemaDefinitionLabels(ctx context.Context, id string, labels map[string]string) (SchemaDefinition, error) {
+	var def SchemaDefinition
+	if err := c.doJSON(ctx, http.MethodPatch, fmt.Sprintf("/schema-definitions/%s/labels", id), LabelsPayload{Labels: normalizeLabels(labels)}, &def); err != nil {
+		return SchemaDefinition{}, err
+	}
+	return def, nil
+}
+
 func (c *Client) doJSON(ctx context.Context, method, endpoint string, reqBody any, respBody any) error {
 	if c == nil {
 		return fmt.Errorf("grantory client not configured")

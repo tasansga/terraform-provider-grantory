@@ -66,9 +66,21 @@ func TestPostgresStoreCRUDAndFilters(t *testing.T) {
 	assert.NotEmpty(t, hosts)
 
 	def, err := store.CreateSchemaDefinition(ctx, SchemaDefinition{
-		Schema: json.RawMessage(`{"type":"object"}`),
+		UniqueKey: "schema-invoice-v1",
+		Schema:    json.RawMessage(`{"type":"object"}`),
+		Labels:    map[string]string{"family": "invoice", "version": "1"},
 	})
 	require.NoError(t, err)
+	assert.Equal(t, "schema-invoice-v1", def.UniqueKey)
+
+	loadedDef, err := store.GetSchemaDefinition(ctx, def.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "schema-invoice-v1", loadedDef.UniqueKey)
+	assert.Equal(t, map[string]string{"family": "invoice", "version": "1"}, loadedDef.Labels)
+	require.NoError(t, store.UpdateSchemaDefinitionLabels(ctx, def.ID, map[string]string{"family": "invoice", "version": "2"}))
+	loadedDef, err = store.GetSchemaDefinition(ctx, def.ID)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"family": "invoice", "version": "2"}, loadedDef.Labels)
 
 	req, err := store.CreateRequest(ctx, Request{
 		HostID:                    host.ID,
@@ -153,6 +165,18 @@ func TestPostgresUniqueKeyConflicts(t *testing.T) {
 		UniqueKey: "register-unique",
 	})
 	assert.ErrorIs(t, err, ErrRegisterUniqueKeyConflict)
+
+	_, err = store.CreateSchemaDefinition(ctx, SchemaDefinition{
+		UniqueKey: "schema-unique",
+		Schema:    json.RawMessage(`{"type":"object"}`),
+	})
+	require.NoError(t, err)
+
+	_, err = store.CreateSchemaDefinition(ctx, SchemaDefinition{
+		UniqueKey: "schema-unique",
+		Schema:    json.RawMessage(`{"type":"object"}`),
+	})
+	assert.ErrorIs(t, err, ErrSchemaDefinitionUniqueKeyConflict)
 }
 
 func TestPostgresDeleteSchemaDefinitionNullsReferences(t *testing.T) {

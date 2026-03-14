@@ -1498,6 +1498,7 @@ func TestEnsureTablesReturnErrorWhenContextCanceled(t *testing.T) {
 		{"request_labels", sqliteStore.ensureRequestLabelsTable},
 		{"register_labels", sqliteStore.ensureRegisterLabelsTable},
 		{"grant_labels", sqliteStore.ensureGrantLabelsTable},
+		{"schema_definition_labels", sqliteStore.ensureSchemaDefinitionLabelsTable},
 	}
 
 	for _, tc := range tests {
@@ -1634,6 +1635,40 @@ func TestSQLiteDeleteSchemaDefinitionNullsRequestReference(t *testing.T) {
 	err = store.DB().QueryRowContext(ctx, `SELECT request_schema_definition_id FROM requests WHERE id = ?`, req.ID).Scan(&after)
 	require.NoError(t, err)
 	require.False(t, after.Valid, "request_schema_definition_id should be NULL after delete")
+}
+
+func TestSQLiteSchemaDefinitionUniqueKeyConflictAndLabels(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := New(ctx, ":memory:")
+	require.NoError(t, err)
+	defer closeStore(t, store)
+	require.NoError(t, store.Migrate(ctx))
+
+	created, err := store.CreateSchemaDefinition(ctx, SchemaDefinition{
+		UniqueKey: "invoice.v1",
+		Schema:    json.RawMessage(`{"type":"object"}`),
+		Labels:    map[string]string{"family": "invoice", "version": "1"},
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, created.ID)
+
+	loaded, err := store.GetSchemaDefinition(ctx, created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "invoice.v1", loaded.UniqueKey)
+	assert.Equal(t, map[string]string{"family": "invoice", "version": "1"}, loaded.Labels)
+
+	_, err = store.CreateSchemaDefinition(ctx, SchemaDefinition{
+		UniqueKey: "invoice.v1",
+		Schema:    json.RawMessage(`{"type":"object"}`),
+	})
+	assert.ErrorIs(t, err, ErrSchemaDefinitionUniqueKeyConflict, "expected unique key conflict")
+
+	require.NoError(t, store.UpdateSchemaDefinitionLabels(ctx, created.ID, map[string]string{"family": "invoice", "version": "2"}))
+	updated, err := store.GetSchemaDefinition(ctx, created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"family": "invoice", "version": "2"}, updated.Labels)
 }
 
 func TestNewFailsWhenForeignKeyEnableContextCanceled(t *testing.T) {
@@ -1807,6 +1842,7 @@ func TestStorageOperationsErrorWhenDBClosed(t *testing.T) {
 	assert.Error(t, store.UpdateHostLabels(ctx, host.ID, map[string]string{"env": "x"}))
 	assert.Error(t, store.UpdateRequestLabels(ctx, req.ID, map[string]string{"env": "x"}))
 	assert.Error(t, store.UpdateRegisterLabels(ctx, reg.ID, map[string]string{"env": "x"}))
+	assert.Error(t, store.UpdateSchemaDefinitionLabels(ctx, "missing", map[string]string{"env": "x"}))
 
 	assert.Error(t, store.DeleteHost(ctx, host.ID))
 	assert.Error(t, store.DeleteRequest(ctx, req.ID))

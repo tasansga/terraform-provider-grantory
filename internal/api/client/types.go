@@ -47,9 +47,11 @@ type Grant struct {
 }
 
 type SchemaDefinition struct {
-	ID        string          `json:"id"`
-	Schema    json.RawMessage `json:"schema"`
-	CreatedAt time.Time       `json:"created_at"`
+	ID        string            `json:"id"`
+	UniqueKey string            `json:"unique_key,omitempty"`
+	Schema    json.RawMessage   `json:"schema"`
+	Labels    map[string]string `json:"labels,omitempty"`
+	CreatedAt time.Time         `json:"created_at"`
 }
 
 type HostCreatePayload struct {
@@ -89,7 +91,9 @@ type GrantCreatePayload struct {
 }
 
 type SchemaDefinitionCreatePayload struct {
-	Schema json.RawMessage `json:"schema"`
+	UniqueKey string            `json:"unique_key,omitempty"`
+	Schema    json.RawMessage   `json:"schema"`
+	Labels    map[string]string `json:"labels,omitempty"`
 }
 
 type LabelsPayload struct {

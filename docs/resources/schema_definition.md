@@ -17,6 +17,11 @@ Manage the lifecycle of the `grantory_schema_definition` resource.
 
 - `schema` (String) JSON Schema definition payload.
 
+### Optional
+
+- `labels` (Map of String) Optional labels that tag the schema definition.
+- `unique_key` (String) Optional unique key used to enforce schema definition uniqueness within a namespace.
+
 ### Read-Only
 
 - `id` (String) The ID of this resource.

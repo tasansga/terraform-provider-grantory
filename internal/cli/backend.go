@@ -17,20 +17,25 @@ type cliBackend interface {
 	ListRequests(context.Context, *storage.RequestListFilters) ([]storage.Request, error)
 	ListRegisters(context.Context, *storage.RegisterListFilters) ([]storage.Register, error)
 	ListGrants(context.Context) ([]storage.Grant, error)
+	ListSchemaDefinitions(context.Context) ([]storage.SchemaDefinition, error)
 	GetHost(context.Context, string) (storage.Host, error)
 	GetRequest(context.Context, string) (storage.Request, error)
 	GetRegister(context.Context, string) (storage.Register, error)
 	GetGrant(context.Context, string) (storage.Grant, error)
+	GetSchemaDefinition(context.Context, string) (storage.SchemaDefinition, error)
 	CreateRequest(context.Context, storage.Request) (storage.Request, error)
 	CreateRegister(context.Context, storage.Register) (storage.Register, error)
 	CreateGrant(context.Context, storage.Grant) (storage.Grant, error)
+	CreateSchemaDefinition(context.Context, storage.SchemaDefinition) (storage.SchemaDefinition, error)
 	DeleteHost(context.Context, string) error
 	DeleteRequest(context.Context, string) error
 	DeleteRegister(context.Context, string) error
 	DeleteGrant(context.Context, string) error
+	DeleteSchemaDefinition(context.Context, string) error
 	UpdateHostLabels(context.Context, string, map[string]string) error
 	UpdateRequestLabels(context.Context, string, map[string]string) error
 	UpdateRegisterLabels(context.Context, string, map[string]string) error
+	UpdateSchemaDefinitionLabels(context.Context, string, map[string]string) error
 }
 
 type backendConfig struct {
@@ -146,6 +151,10 @@ func (d *directBackend) ListGrants(ctx context.Context) ([]storage.Grant, error)
 	return d.store.ListGrants(ctx)
 }
 
+func (d *directBackend) ListSchemaDefinitions(ctx context.Context) ([]storage.SchemaDefinition, error) {
+	return d.store.ListSchemaDefinitions(ctx)
+}
+
 func (d *directBackend) GetHost(ctx context.Context, id string) (storage.Host, error) {
 	return d.store.GetHost(ctx, id)
 }
@@ -165,6 +174,10 @@ func (d *directBackend) GetGrant(ctx context.Context, id string) (storage.Grant,
 	return d.store.GetGrant(ctx, id)
 }
 
+func (d *directBackend) GetSchemaDefinition(ctx context.Context, id string) (storage.SchemaDefinition, error) {
+	return d.store.GetSchemaDefinition(ctx, id)
+}
+
 func (d *directBackend) CreateRequest(ctx context.Context, req storage.Request) (storage.Request, error) {
 	return d.store.CreateRequest(ctx, req)
 }
@@ -175,6 +188,10 @@ func (d *directBackend) CreateRegister(ctx context.Context, reg storage.Register
 
 func (d *directBackend) CreateGrant(ctx context.Context, grant storage.Grant) (storage.Grant, error) {
 	return d.store.CreateGrant(ctx, grant)
+}
+
+func (d *directBackend) CreateSchemaDefinition(ctx context.Context, def storage.SchemaDefinition) (storage.SchemaDefinition, error) {
+	return d.store.CreateSchemaDefinition(ctx, def)
 }
 
 func (d *directBackend) DeleteHost(ctx context.Context, id string) error {
@@ -196,6 +213,10 @@ func (d *directBackend) DeleteGrant(ctx context.Context, id string) error {
 	return d.store.DeleteGrant(ctx, id)
 }
 
+func (d *directBackend) DeleteSchemaDefinition(ctx context.Context, id string) error {
+	return d.store.DeleteSchemaDefinition(ctx, id)
+}
+
 func (d *directBackend) UpdateHostLabels(ctx context.Context, id string, labels map[string]string) error {
 	return d.store.UpdateHostLabels(ctx, id, labels)
 }
@@ -206,6 +227,10 @@ func (d *directBackend) UpdateRequestLabels(ctx context.Context, id string, labe
 
 func (d *directBackend) UpdateRegisterLabels(ctx context.Context, id string, labels map[string]string) error {
 	return d.store.UpdateRegisterLabels(ctx, id, labels)
+}
+
+func (d *directBackend) UpdateSchemaDefinitionLabels(ctx context.Context, id string, labels map[string]string) error {
+	return d.store.UpdateSchemaDefinitionLabels(ctx, id, labels)
 }
 
 func newAPIBackend(namespace, rawURL, token, user, password string) (cliBackend, error) {
@@ -291,6 +316,18 @@ func (a *apiBackend) ListGrants(ctx context.Context) ([]storage.Grant, error) {
 	return out, nil
 }
 
+func (a *apiBackend) ListSchemaDefinitions(ctx context.Context) ([]storage.SchemaDefinition, error) {
+	defs, err := a.client.ListSchemaDefinitions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]storage.SchemaDefinition, 0, len(defs))
+	for _, def := range defs {
+		out = append(out, schemaDefinitionToStorage(def))
+	}
+	return out, nil
+}
+
 //go:noinline
 func (a *apiBackend) GetHost(ctx context.Context, id string) (storage.Host, error) {
 	host, err := a.client.GetHost(ctx, id)
@@ -325,6 +362,14 @@ func (a *apiBackend) GetGrant(ctx context.Context, id string) (storage.Grant, er
 		return storage.Grant{}, err
 	}
 	return grantToStorage(grant), nil
+}
+
+func (a *apiBackend) GetSchemaDefinition(ctx context.Context, id string) (storage.SchemaDefinition, error) {
+	def, err := a.client.GetSchemaDefinition(ctx, id)
+	if err != nil {
+		return storage.SchemaDefinition{}, err
+	}
+	return schemaDefinitionToStorage(def), nil
 }
 
 func (a *apiBackend) CreateRequest(ctx context.Context, req storage.Request) (storage.Request, error) {
@@ -367,6 +412,18 @@ func (a *apiBackend) CreateGrant(ctx context.Context, grant storage.Grant) (stor
 	return grantToStorage(created), nil
 }
 
+func (a *apiBackend) CreateSchemaDefinition(ctx context.Context, def storage.SchemaDefinition) (storage.SchemaDefinition, error) {
+	created, err := a.client.CreateSchemaDefinition(ctx, apiclient.SchemaDefinitionCreatePayload{
+		UniqueKey: def.UniqueKey,
+		Schema:    def.Schema,
+		Labels:    def.Labels,
+	})
+	if err != nil {
+		return storage.SchemaDefinition{}, err
+	}
+	return schemaDefinitionToStorage(created), nil
+}
+
 //go:noinline
 func (a *apiBackend) DeleteHost(ctx context.Context, id string) error {
 	return a.client.DeleteHost(ctx, id)
@@ -387,6 +444,10 @@ func (a *apiBackend) DeleteGrant(ctx context.Context, id string) error {
 	return a.client.DeleteGrant(ctx, id)
 }
 
+func (a *apiBackend) DeleteSchemaDefinition(ctx context.Context, id string) error {
+	return a.client.DeleteSchemaDefinition(ctx, id)
+}
+
 //go:noinline
 func (a *apiBackend) UpdateHostLabels(ctx context.Context, id string, labels map[string]string) error {
 	_, err := a.client.UpdateHostLabels(ctx, id, labels)
@@ -400,6 +461,11 @@ func (a *apiBackend) UpdateRequestLabels(ctx context.Context, id string, labels 
 
 func (a *apiBackend) UpdateRegisterLabels(ctx context.Context, id string, labels map[string]string) error {
 	_, err := a.client.UpdateRegisterLabels(ctx, id, labels)
+	return err
+}
+
+func (a *apiBackend) UpdateSchemaDefinitionLabels(ctx context.Context, id string, labels map[string]string) error {
+	_, err := a.client.UpdateSchemaDefinitionLabels(ctx, id, labels)
 	return err
 }
 
@@ -447,5 +513,15 @@ func grantToStorage(grant apiclient.Grant) storage.Grant {
 		Payload:   grant.Payload,
 		CreatedAt: grant.CreatedAt,
 		UpdatedAt: grant.UpdatedAt,
+	}
+}
+
+func schemaDefinitionToStorage(def apiclient.SchemaDefinition) storage.SchemaDefinition {
+	return storage.SchemaDefinition{
+		ID:        def.ID,
+		UniqueKey: def.UniqueKey,
+		Schema:    def.Schema,
+		Labels:    def.Labels,
+		CreatedAt: def.CreatedAt,
 	}
 }

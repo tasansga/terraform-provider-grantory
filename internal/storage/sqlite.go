@@ -132,6 +132,7 @@ CREATE TABLE IF NOT EXISTS requests (
 	schemaDefinitionsTableStatement = `
 CREATE TABLE IF NOT EXISTS schema_definitions (
 	id TEXT PRIMARY KEY,
+	unique_key TEXT,
 	schema TEXT,
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 )`
@@ -197,12 +198,23 @@ CREATE TABLE IF NOT EXISTS grant_labels (
 	CHECK(length(key) <= 256),
 	CHECK(length(value) <= 256)
 )`
+	schemaDefinitionLabelsTableStatement = `
+CREATE TABLE IF NOT EXISTS schema_definition_labels (
+	schema_definition_id TEXT NOT NULL,
+	key TEXT NOT NULL,
+	value TEXT NOT NULL,
+	PRIMARY KEY (schema_definition_id, key),
+	FOREIGN KEY(schema_definition_id) REFERENCES schema_definitions(id) ON DELETE CASCADE,
+	CHECK(length(key) <= 256),
+	CHECK(length(value) <= 256)
+)`
 )
 const (
-	hostLabelsTable     = "host_labels"
-	requestLabelsTable  = "request_labels"
-	registerLabelsTable = "register_labels"
-	grantLabelsTable    = "grant_labels"
+	hostLabelsTable             = "host_labels"
+	requestLabelsTable          = "request_labels"
+	registerLabelsTable         = "register_labels"
+	grantLabelsTable            = "grant_labels"
+	schemaDefinitionLabelsTable = "schema_definition_labels"
 )
 const maxLabelLength = 256
 
@@ -266,6 +278,7 @@ func (s *sqliteStore) Migrate(ctx context.Context) error {
 		{"request labels", s.ensureRequestLabelsTable},
 		{"register labels", s.ensureRegisterLabelsTable},
 		{"grant labels", s.ensureGrantLabelsTable},
+		{"schema definition labels", s.ensureSchemaDefinitionLabelsTable},
 	}
 
 	for _, task := range tasks {
@@ -320,6 +333,12 @@ func (s *sqliteStore) ensureRequestsTable(ctx context.Context, tx *sql.Tx) error
 func (s *sqliteStore) ensureSchemaDefinitionsTable(ctx context.Context, tx *sql.Tx) error {
 	if _, err := tx.ExecContext(ctx, schemaDefinitionsTableStatement); err != nil {
 		return fmt.Errorf("create schema definitions table: %w", err)
+	}
+	if err := ensureSQLiteColumn(ctx, tx, "schema_definitions", "unique_key", "TEXT"); err != nil {
+		return fmt.Errorf("add schema_definitions unique_key column: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS schema_definitions_unique_key_idx ON schema_definitions(unique_key) WHERE unique_key IS NOT NULL`); err != nil {
+		return fmt.Errorf("create schema_definitions unique_key index: %w", err)
 	}
 	if err := ensureSQLiteColumn(ctx, tx, "schema_definitions", "schema", "TEXT"); err != nil {
 		return fmt.Errorf("add schema_definitions schema column: %w", err)
@@ -377,6 +396,13 @@ func (s *sqliteStore) ensureRegisterLabelsTable(ctx context.Context, tx *sql.Tx)
 func (s *sqliteStore) ensureGrantLabelsTable(ctx context.Context, tx *sql.Tx) error {
 	if _, err := tx.ExecContext(ctx, grantLabelsTableStatement); err != nil {
 		return fmt.Errorf("create grant labels table: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteStore) ensureSchemaDefinitionLabelsTable(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, schemaDefinitionLabelsTableStatement); err != nil {
+		return fmt.Errorf("create schema definition labels table: %w", err)
 	}
 	return nil
 }
@@ -1393,6 +1419,8 @@ func (s *sqliteStore) CreateSchemaDefinition(ctx context.Context, def SchemaDefi
 
 	s.logDBOperation("schema_definitions", "create", logrus.Fields{
 		"schema_definition_id": def.ID,
+		"unique_key":           def.UniqueKey,
+		"labels":               def.Labels,
 	})
 
 	schemaValue, err := encodeJSON(def.Schema)
@@ -1400,14 +1428,30 @@ func (s *sqliteStore) CreateSchemaDefinition(ctx context.Context, def SchemaDefi
 		return SchemaDefinition{}, fmt.Errorf("encode schema: %w", err)
 	}
 
-	if _, err := s.db.ExecContext(ctx, `
-INSERT INTO schema_definitions (id, schema)
-VALUES (?, ?)
-`, def.ID, schemaValue); err != nil {
-		if isUniqueConstraintError(err) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return SchemaDefinition{}, fmt.Errorf("begin schema definition transaction: %w", err)
+	}
+	defer rollbackTx(tx, "rollback schema definition transaction")
+
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO schema_definitions (id, unique_key, schema)
+VALUES (?, ?, ?)
+`, def.ID, nullableText(def.UniqueKey), schemaValue); err != nil {
+		switch {
+		case isUniqueSchemaDefinitionKeyConstraintError(err):
+			return SchemaDefinition{}, fmt.Errorf("%w: %w", ErrSchemaDefinitionUniqueKeyConflict, err)
+		case isUniqueConstraintError(err):
 			return SchemaDefinition{}, fmt.Errorf("%w: %w", ErrSchemaDefinitionAlreadyExists, err)
+		default:
+			return SchemaDefinition{}, fmt.Errorf("insert schema definition: %w", err)
 		}
-		return SchemaDefinition{}, fmt.Errorf("insert schema definition: %w", err)
+	}
+	if err := insertLabels(ctx, tx, schemaDefinitionLabelsTable, "schema_definition_id", def.ID, def.Labels); err != nil {
+		return SchemaDefinition{}, fmt.Errorf("insert schema definition labels: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return SchemaDefinition{}, fmt.Errorf("commit schema definition transaction: %w", err)
 	}
 
 	return def, nil
@@ -1424,11 +1468,19 @@ func (s *sqliteStore) GetSchemaDefinition(ctx context.Context, id string) (Schem
 	})
 
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, schema, created_at
+SELECT id, unique_key, schema, created_at
 FROM schema_definitions
 WHERE id = ?
 `, id)
-	return scanSchemaDefinition(row)
+	def, err := scanSchemaDefinition(row)
+	if err != nil {
+		return SchemaDefinition{}, err
+	}
+	def.Labels, err = s.loadLabels(ctx, schemaDefinitionLabelsTable, "schema_definition_id", def.ID)
+	if err != nil {
+		return SchemaDefinition{}, fmt.Errorf("load schema definition labels: %w", err)
+	}
+	return def, nil
 }
 
 // ListSchemaDefinitions returns stored schema definitions ordered by creation time.
@@ -1440,7 +1492,7 @@ func (s *sqliteStore) ListSchemaDefinitions(ctx context.Context) ([]SchemaDefini
 	s.logDBOperation("schema_definitions", "list", nil)
 
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, schema, created_at
+SELECT id, unique_key, schema, created_at
 FROM schema_definitions
 ORDER BY created_at ASC
 `)
@@ -1459,6 +1511,12 @@ ORDER BY created_at ASC
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("scan schema definitions: %w", err)
+	}
+	for i := range defs {
+		defs[i].Labels, err = s.loadLabels(ctx, schemaDefinitionLabelsTable, "schema_definition_id", defs[i].ID)
+		if err != nil {
+			return nil, fmt.Errorf("load schema definition labels: %w", err)
+		}
 	}
 	return defs, nil
 }
@@ -1514,6 +1572,36 @@ WHERE schema_definition_id = ?
 		return fmt.Errorf("commit schema definition delete transaction: %w", err)
 	}
 
+	return nil
+}
+
+// UpdateSchemaDefinitionLabels replaces the labels stored for a schema definition.
+func (s *sqliteStore) UpdateSchemaDefinitionLabels(ctx context.Context, id string, labels map[string]string) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("store not initialized")
+	}
+
+	s.logDBOperation("schema_definitions", "update_labels", logrus.Fields{
+		"schema_definition_id": id,
+		"labels":               labels,
+	})
+
+	if _, err := s.GetSchemaDefinition(ctx, id); err != nil {
+		return err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin schema definition labels transaction: %w", err)
+	}
+	defer rollbackTx(tx, "rollback schema definition labels transaction")
+
+	if err := replaceLabels(ctx, tx, schemaDefinitionLabelsTable, "schema_definition_id", id, labels); err != nil {
+		return fmt.Errorf("replace schema definition labels: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit schema definition labels transaction: %w", err)
+	}
 	return nil
 }
 
@@ -1598,15 +1686,19 @@ func scanRequest(scanner rowScanner) (Request, error) {
 func scanSchemaDefinition(scanner rowScanner) (SchemaDefinition, error) {
 	var (
 		def       SchemaDefinition
+		uniqueKey sql.NullString
 		schemaVal sql.NullString
 		createdAt any
 	)
 
-	if err := scanner.Scan(&def.ID, &schemaVal, &createdAt); err != nil {
+	if err := scanner.Scan(&def.ID, &uniqueKey, &schemaVal, &createdAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return SchemaDefinition{}, ErrSchemaDefinitionNotFound
 		}
 		return SchemaDefinition{}, err
+	}
+	if uniqueKey.Valid {
+		def.UniqueKey = uniqueKey.String
 	}
 
 	var err error
@@ -1760,6 +1852,14 @@ func decodeRawJSON(value sql.NullString) (json.RawMessage, error) {
 		return nil, fmt.Errorf("invalid JSON payload")
 	}
 	return json.RawMessage([]byte(value.String)), nil
+}
+
+func nullableText(value string) any {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	return trimmed
 }
 
 func insertLabels(ctx context.Context, tx *sql.Tx, table, idColumn, id string, labels map[string]string) error {

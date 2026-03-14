@@ -138,6 +138,7 @@ func (s *postgresStore) Migrate(ctx context.Context) error {
 		{"request labels", s.ensureRequestLabelsTable},
 		{"register labels", s.ensureRegisterLabelsTable},
 		{"grant labels", s.ensureGrantLabelsTable},
+		{"schema definition labels", s.ensureSchemaDefinitionLabelsTable},
 	}
 
 	for _, task := range tasks {
@@ -255,11 +256,18 @@ func (s *postgresStore) ensureSchemaDefinitionsTable(ctx context.Context, tx *sq
 	stmt := fmt.Sprintf(`
 CREATE TABLE IF NOT EXISTS %s (
 	id TEXT PRIMARY KEY,
+	unique_key TEXT,
 	schema JSONB,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 )`, s.table("schema_definitions"))
 	if _, err := tx.ExecContext(ctx, stmt); err != nil {
 		return fmt.Errorf("create schema definitions table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS unique_key TEXT`, s.table("schema_definitions"))); err != nil {
+		return fmt.Errorf("add schema_definitions unique_key column: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`CREATE UNIQUE INDEX IF NOT EXISTS schema_definitions_unique_key_idx ON %s (unique_key) WHERE unique_key IS NOT NULL`, s.table("schema_definitions"))); err != nil {
+		return fmt.Errorf("create schema_definitions unique_key index: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS schema JSONB`, s.table("schema_definitions"))); err != nil {
 		return fmt.Errorf("add schema_definitions schema column: %w", err)
@@ -400,6 +408,23 @@ CREATE TABLE IF NOT EXISTS %s (
 )`, s.table("grant_labels"), s.table("grants"), maxLabelLength, maxLabelLength)
 	if _, err := tx.ExecContext(ctx, stmt); err != nil {
 		return fmt.Errorf("create grant labels table: %w", err)
+	}
+	return nil
+}
+
+func (s *postgresStore) ensureSchemaDefinitionLabelsTable(ctx context.Context, tx *sql.Tx) error {
+	stmt := fmt.Sprintf(`
+CREATE TABLE IF NOT EXISTS %s (
+	schema_definition_id TEXT NOT NULL,
+	key TEXT NOT NULL,
+	value TEXT NOT NULL,
+	PRIMARY KEY (schema_definition_id, key),
+	FOREIGN KEY(schema_definition_id) REFERENCES %s(id) ON DELETE CASCADE,
+	CHECK(length(key) <= %d),
+	CHECK(length(value) <= %d)
+)`, s.table("schema_definition_labels"), s.table("schema_definitions"), maxLabelLength, maxLabelLength)
+	if _, err := tx.ExecContext(ctx, stmt); err != nil {
+		return fmt.Errorf("create schema definition labels table: %w", err)
 	}
 	return nil
 }
@@ -1269,6 +1294,8 @@ func (s *postgresStore) CreateSchemaDefinition(ctx context.Context, def SchemaDe
 
 	s.logDBOperation("schema_definitions", "create", logrus.Fields{
 		"schema_definition_id": def.ID,
+		"unique_key":           def.UniqueKey,
+		"labels":               def.Labels,
 	})
 
 	schemaValue, err := encodeJSON(def.Schema)
@@ -1276,12 +1303,28 @@ func (s *postgresStore) CreateSchemaDefinition(ctx context.Context, def SchemaDe
 		return SchemaDefinition{}, fmt.Errorf("encode schema: %w", err)
 	}
 
-	stmt := fmt.Sprintf(`INSERT INTO %s (id, schema) VALUES ($1, $2)`, s.table("schema_definitions"))
-	if _, err := s.db.ExecContext(ctx, stmt, def.ID, schemaValue); err != nil {
-		if isUniqueConstraintError(err) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return SchemaDefinition{}, fmt.Errorf("begin schema definition transaction: %w", err)
+	}
+	defer rollbackTx(tx, "rollback schema definition transaction")
+
+	stmt := fmt.Sprintf(`INSERT INTO %s (id, unique_key, schema) VALUES ($1, $2, $3)`, s.table("schema_definitions"))
+	if _, err := tx.ExecContext(ctx, stmt, def.ID, nullableText(def.UniqueKey), schemaValue); err != nil {
+		switch {
+		case isUniqueSchemaDefinitionKeyConstraintError(err):
+			return SchemaDefinition{}, fmt.Errorf("%w: %w", ErrSchemaDefinitionUniqueKeyConflict, err)
+		case isUniqueConstraintError(err):
 			return SchemaDefinition{}, fmt.Errorf("%w: %w", ErrSchemaDefinitionAlreadyExists, err)
+		default:
+			return SchemaDefinition{}, fmt.Errorf("insert schema definition: %w", err)
 		}
-		return SchemaDefinition{}, fmt.Errorf("insert schema definition: %w", err)
+	}
+	if err := insertLabelsPostgres(ctx, tx, s.table("schema_definition_labels"), "schema_definition_id", def.ID, def.Labels); err != nil {
+		return SchemaDefinition{}, fmt.Errorf("insert schema definition labels: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return SchemaDefinition{}, fmt.Errorf("commit schema definition transaction: %w", err)
 	}
 
 	return def, nil
@@ -1298,11 +1341,19 @@ func (s *postgresStore) GetSchemaDefinition(ctx context.Context, id string) (Sch
 	})
 
 	stmt := fmt.Sprintf(`
-SELECT id, schema, created_at
+SELECT id, unique_key, schema, created_at
 FROM %s
 WHERE id = $1`, s.table("schema_definitions"))
 	row := s.db.QueryRowContext(ctx, stmt, id)
-	return scanSchemaDefinition(row)
+	def, err := scanSchemaDefinition(row)
+	if err != nil {
+		return SchemaDefinition{}, err
+	}
+	def.Labels, err = s.loadLabels(ctx, s.table("schema_definition_labels"), "schema_definition_id", def.ID)
+	if err != nil {
+		return SchemaDefinition{}, fmt.Errorf("load schema definition labels: %w", err)
+	}
+	return def, nil
 }
 
 // ListSchemaDefinitions returns stored schema definitions ordered by creation time.
@@ -1314,7 +1365,7 @@ func (s *postgresStore) ListSchemaDefinitions(ctx context.Context) ([]SchemaDefi
 	s.logDBOperation("schema_definitions", "list", nil)
 
 	stmt := fmt.Sprintf(`
-SELECT id, schema, created_at
+SELECT id, unique_key, schema, created_at
 FROM %s
 ORDER BY created_at ASC`, s.table("schema_definitions"))
 	rows, err := s.db.QueryContext(ctx, stmt)
@@ -1333,6 +1384,12 @@ ORDER BY created_at ASC`, s.table("schema_definitions"))
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("scan schema definitions: %w", err)
+	}
+	for i := range defs {
+		defs[i].Labels, err = s.loadLabels(ctx, s.table("schema_definition_labels"), "schema_definition_id", defs[i].ID)
+		if err != nil {
+			return nil, fmt.Errorf("load schema definition labels: %w", err)
+		}
 	}
 	return defs, nil
 }
@@ -1361,6 +1418,37 @@ func (s *postgresStore) DeleteSchemaDefinition(ctx context.Context, id string) e
 		return ErrSchemaDefinitionNotFound
 	}
 
+	return nil
+}
+
+// UpdateSchemaDefinitionLabels replaces the labels stored for a schema definition.
+func (s *postgresStore) UpdateSchemaDefinitionLabels(ctx context.Context, id string, labels map[string]string) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("store not initialized")
+	}
+
+	s.logDBOperation("schema_definitions", "update_labels", logrus.Fields{
+		"schema_definition_id": id,
+		"labels":               labels,
+	})
+
+	if _, err := s.GetSchemaDefinition(ctx, id); err != nil {
+		return err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin schema definition labels transaction: %w", err)
+	}
+	defer rollbackTx(tx, "rollback schema definition labels transaction")
+
+	if err := replaceLabelsPostgres(ctx, tx, s.table("schema_definition_labels"), "schema_definition_id", id, labels); err != nil {
+		return fmt.Errorf("replace schema definition labels: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit schema definition labels update: %w", err)
+	}
 	return nil
 }
 
@@ -1605,4 +1693,15 @@ func isUniqueHostKeyConstraintError(err error) bool {
 		return pgErr.ConstraintName == "hosts_unique_key_idx"
 	}
 	return strings.Contains(err.Error(), "hosts.unique_key")
+}
+
+func isUniqueSchemaDefinitionKeyConstraintError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.ConstraintName == "schema_definitions_unique_key_idx"
+	}
+	return strings.Contains(err.Error(), "schema_definitions.unique_key")
 }

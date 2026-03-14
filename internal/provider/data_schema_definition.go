@@ -15,10 +15,24 @@ func dataSchemaDefinition() *schema.Resource {
 				Required:    true,
 				Description: "Identifier of the schema definition to fetch.",
 			},
+			"unique_key": {
+				Type:        schema.TypeString,
+				Computed:    true,
+				Description: "Unique key used to enforce schema definition uniqueness within a namespace.",
+			},
 			"schema": {
 				Type:        schema.TypeString,
 				Computed:    true,
 				Description: "JSON Schema definition payload.",
+			},
+			"labels": {
+				Type:        schema.TypeMap,
+				Computed:    true,
+				Optional:    true,
+				Description: "Labels attached to the schema definition.",
+				Elem: &schema.Schema{
+					Type: schema.TypeString,
+				},
 			},
 		},
 		ReadContext: dataSchemaDefinitionRead,
@@ -45,7 +59,13 @@ func dataSchemaDefinitionRead(ctx context.Context, d *schema.ResourceData, meta 
 	}
 
 	d.SetId(def.ID)
+	if err := d.Set("unique_key", def.UniqueKey); err != nil {
+		return diag.FromErr(err)
+	}
 	if err := d.Set("schema", string(def.Schema)); err != nil {
+		return diag.FromErr(err)
+	}
+	if err := d.Set("labels", flattenStringMap(def.Labels)); err != nil {
 		return diag.FromErr(err)
 	}
 	return nil

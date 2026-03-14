@@ -45,6 +45,7 @@ type Store interface {
 	CreateSchemaDefinition(ctx context.Context, def SchemaDefinition) (SchemaDefinition, error)
 	GetSchemaDefinition(ctx context.Context, id string) (SchemaDefinition, error)
 	ListSchemaDefinitions(ctx context.Context) ([]SchemaDefinition, error)
+	UpdateSchemaDefinitionLabels(ctx context.Context, id string, labels map[string]string) error
 	DeleteSchemaDefinition(ctx context.Context, id string) error
 }
 
@@ -106,9 +107,11 @@ type Grant struct {
 
 // SchemaDefinition stores request and grant JSON schema payloads.
 type SchemaDefinition struct {
-	ID        string          `json:"id"`
-	Schema    json.RawMessage `json:"schema"`
-	CreatedAt time.Time       `json:"created_at"`
+	ID        string            `json:"id"`
+	UniqueKey string            `json:"unique_key,omitempty"`
+	Schema    json.RawMessage   `json:"schema"`
+	Labels    map[string]string `json:"labels,omitempty"`
+	CreatedAt time.Time         `json:"created_at"`
 }
 
 var (
@@ -138,6 +141,8 @@ var (
 	ErrSchemaDefinitionNotFound = errors.New("schema definition not found")
 	// ErrSchemaDefinitionAlreadyExists is returned when a schema definition with the given ID exists.
 	ErrSchemaDefinitionAlreadyExists = errors.New("schema definition already exists")
+	// ErrSchemaDefinitionUniqueKeyConflict is returned when a schema definition with the same unique key exists.
+	ErrSchemaDefinitionUniqueKeyConflict = errors.New("schema definition unique key already exists")
 	// ErrReferencedHostNotFound is returned when a request/register refers to a host that does not exist.
 	ErrReferencedHostNotFound    = errors.New("referenced host not found")
 	ErrReferencedRequestNotFound = errors.New("referenced request not found")

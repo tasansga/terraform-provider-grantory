@@ -10,15 +10,30 @@ import (
 func resourceSchemaDefinition() *schema.Resource {
 	return &schema.Resource{
 		Schema: map[string]*schema.Schema{
+			"unique_key": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				ForceNew:    true,
+				Description: "Optional unique key used to enforce schema definition uniqueness within a namespace.",
+			},
 			"schema": {
 				Type:        schema.TypeString,
 				Required:    true,
 				ForceNew:    true,
 				Description: "JSON Schema definition payload.",
 			},
+			"labels": {
+				Type:        schema.TypeMap,
+				Optional:    true,
+				Description: "Optional labels that tag the schema definition.",
+				Elem: &schema.Schema{
+					Type: schema.TypeString,
+				},
+			},
 		},
 		CreateContext: resourceSchemaDefinitionCreate,
 		ReadContext:   resourceSchemaDefinitionRead,
+		UpdateContext: resourceSchemaDefinitionUpdate,
 		DeleteContext: resourceSchemaDefinitionDelete,
 	}
 }
@@ -42,7 +57,9 @@ func resourceSchemaDefinitionCreate(ctx context.Context, d *schema.ResourceData,
 	}
 
 	created, err := client.CreateSchemaDefinition(ctx, apiSchemaDefinitionCreatePayload{
-		Schema: schemaValue,
+		UniqueKey: d.Get("unique_key").(string),
+		Schema:    schemaValue,
+		Labels:    expandStringMap(extractMap(d.Get("labels"))),
 	})
 	if err != nil {
 		return diag.FromErr(err)
@@ -91,9 +108,31 @@ func resourceSchemaDefinitionDelete(ctx context.Context, d *schema.ResourceData,
 	return nil
 }
 
-func resourceSchemaDefinitionRefresh(d *schema.ResourceData, def apiSchemaDefinition) diag.Diagnostics {
-	if err := d.Set("schema", string(def.Schema)); err != nil {
+func resourceSchemaDefinitionUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	client := meta.(*grantoryClient)
+	if !d.HasChange("labels") {
+		return nil
+	}
+
+	updated, err := client.UpdateSchemaDefinitionLabels(ctx, d.Id(), expandStringMap(extractMap(d.Get("labels"))))
+	if err != nil {
 		return diag.FromErr(err)
 	}
-	return nil
+
+	d.SetId(updated.ID)
+	return resourceSchemaDefinitionRefresh(d, updated)
+}
+
+func resourceSchemaDefinitionRefresh(d *schema.ResourceData, def apiSchemaDefinition) diag.Diagnostics {
+	var diags diag.Diagnostics
+	if err := d.Set("unique_key", def.UniqueKey); err != nil {
+		diags = append(diags, diag.FromErr(err)...)
+	}
+	if err := d.Set("schema", string(def.Schema)); err != nil {
+		diags = append(diags, diag.FromErr(err)...)
+	}
+	if err := d.Set("labels", flattenStringMap(def.Labels)); err != nil {
+		diags = append(diags, diag.FromErr(err)...)
+	}
+	return diags
 }

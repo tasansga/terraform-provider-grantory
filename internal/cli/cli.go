@@ -23,6 +23,7 @@ const (
 	resourceTypeRequests  resourceType = "requests"
 	resourceTypeGrants    resourceType = "grants"
 	resourceTypeRegisters resourceType = "registers"
+	resourceTypeSchemas   resourceType = "schema-definitions"
 )
 
 func loadConfig(cmd *cobra.Command) (config.Config, error) {
@@ -94,11 +95,12 @@ func runWithBackend(cmd *cobra.Command, action func(context.Context, cliBackend)
 func newListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list <resource_type>",
-		Short: "List hosts, requests, registers, or grants",
+		Short: "List hosts, requests, registers, grants, or schema definitions",
 		Long: "List resources and return JSON arrays of objects.\n\n" +
 			"Examples:\n" +
 			"  grantory list hosts\n" +
-			"  grantory list requests\n",
+			"  grantory list requests\n" +
+			"  grantory list schema-definitions\n",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resType, err := parseResourceType(args[0])
@@ -132,6 +134,12 @@ func newListCmd() *cobra.Command {
 						return err
 					}
 					return outputJSON(cmd, grants)
+				case resourceTypeSchemas:
+					defs, err := backend.ListSchemaDefinitions(ctx)
+					if err != nil {
+						return err
+					}
+					return outputJSON(cmd, defs)
 				default:
 					return fmt.Errorf("unsupported resource type: %s", resType)
 				}
@@ -143,12 +151,13 @@ func newListCmd() *cobra.Command {
 func newCreateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create <resource_type>",
-		Short: "Create a request, register, or grant",
-		Long: "Create requests, registers, or grants using JSON payload files.\n\n" +
+		Short: "Create a request, register, grant, or schema definition",
+		Long: "Create requests, registers, grants, or schema definitions using JSON files.\n\n" +
 			"Examples:\n" +
 			"  grantory create requests --host-id <host-id> --payload-file request.json\n" +
 			"  grantory create registers --host-id <host-id> --payload-file register.json\n" +
-			"  grantory create grants --request-id <request-id> --payload-file grant.json\n",
+			"  grantory create grants --request-id <request-id> --payload-file grant.json\n" +
+			"  grantory create schema-definitions --schema-file schema.json --unique-key invoice.v1\n",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resType, err := parseResourceType(args[0])
@@ -163,6 +172,8 @@ func newCreateCmd() *cobra.Command {
 				return createRegister(cmd)
 			case resourceTypeGrants:
 				return createGrant(cmd)
+			case resourceTypeSchemas:
+				return createSchemaDefinition(cmd)
 			default:
 				return fmt.Errorf("create does not support resource type: %s", resType)
 			}
@@ -176,8 +187,9 @@ func newCreateCmd() *cobra.Command {
 	cmd.Flags().String("register-schema-id", "", "schema definition identifier (registers only)")
 	cmd.Flags().String("unique-key", "", "unique key (requests/registers only)")
 	cmd.Flags().String("payload-file", "", "path to a JSON file containing the payload")
-	cmd.Flags().String("labels", "", "JSON object that replaces labels (requests only)")
-	cmd.Flags().String("labels-file", "", "path to a JSON file that replaces labels (requests only)")
+	cmd.Flags().String("schema-file", "", "path to a JSON file containing a JSON schema (schema-definitions only)")
+	cmd.Flags().String("labels", "", "JSON object that sets labels (requests/registers/schema-definitions)")
+	cmd.Flags().String("labels-file", "", "path to a JSON file that sets labels (requests/registers/schema-definitions)")
 
 	return cmd
 }
@@ -185,7 +197,7 @@ func newCreateCmd() *cobra.Command {
 func newInspectCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "inspect <resource_type> <id>",
-		Short: "Show a single host, request, register, or grant",
+		Short: "Show a single host, request, register, grant, or schema definition",
 		Long: "Show a single resource as JSON.\n\n" +
 			"For requests, the response also includes the applied grant ID and payload if present.\n\n" +
 			"Examples:\n" +
@@ -376,10 +388,56 @@ func createGrant(cmd *cobra.Command) error {
 	})
 }
 
+func createSchemaDefinition(cmd *cobra.Command) error {
+	schemaFile, err := cmd.Flags().GetString("schema-file")
+	if err != nil {
+		return err
+	}
+	schemaValue, err := loadRawJSONFromFile(schemaFile)
+	if err != nil {
+		return err
+	}
+	uniqueKey, err := cmd.Flags().GetString("unique-key")
+	if err != nil {
+		return err
+	}
+	labelsFlag, err := cmd.Flags().GetString("labels")
+	if err != nil {
+		return err
+	}
+	labelsFile, err := cmd.Flags().GetString("labels-file")
+	if err != nil {
+		return err
+	}
+	if labelsFlag != "" && labelsFile != "" {
+		return errors.New("only one of --labels or --labels-file may be provided")
+	}
+
+	var labels map[string]string
+	if labelsFlag != "" || labelsFile != "" {
+		labels, err = resolveLabels(cmd, labelsFlag, labelsFile)
+		if err != nil {
+			return err
+		}
+	}
+
+	return runWithBackend(cmd, func(ctx context.Context, backend cliBackend) error {
+		created, err := backend.CreateSchemaDefinition(ctx, storage.SchemaDefinition{
+			UniqueKey: strings.TrimSpace(uniqueKey),
+			Schema:    schemaValue,
+			Labels:    labels,
+		})
+		if err != nil {
+			return err
+		}
+		return outputJSON(cmd, created)
+	})
+}
+
 func newDeleteCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "delete <resource_type> <id>",
-		Short: "Delete a host, request, register, or grant",
+		Short: "Delete a host, request, register, grant, or schema definition",
 		Long: "Delete a single resource by ID.\n\n" +
 			"Examples:\n" +
 			"  grantory delete requests <request-id>\n",
@@ -409,6 +467,10 @@ func newDeleteCmd() *cobra.Command {
 					if err := backend.DeleteGrant(ctx, id); err != nil {
 						return err
 					}
+				case resourceTypeSchemas:
+					if err := backend.DeleteSchemaDefinition(ctx, id); err != nil {
+						return err
+					}
 				default:
 					return fmt.Errorf("unsupported resource type: %s", resType)
 				}
@@ -421,11 +483,12 @@ func newDeleteCmd() *cobra.Command {
 func newMutateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "mutate <resource_type> <id>",
-		Short: "Mutate host, request, or register labels",
-		Long: "Replace labels for a host, request, or register using JSON.\n\n" +
+		Short: "Mutate host, request, register, or schema definition labels",
+		Long: "Replace labels for a host, request, register, or schema definition using JSON.\n\n" +
 			"Examples:\n" +
 			"  grantory mutate hosts <host-id> --labels '{\"env\":\"prod\"}'\n" +
-			"  grantory mutate requests <request-id> --labels-file labels.json\n",
+			"  grantory mutate requests <request-id> --labels-file labels.json\n" +
+			"  grantory mutate schema-definitions <id> --labels '{\"family\":\"invoice\"}'\n",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resType, err := parseResourceType(args[0])
@@ -468,6 +531,10 @@ func newMutateCmd() *cobra.Command {
 					if err := backend.UpdateRegisterLabels(ctx, id, labels); err != nil {
 						return err
 					}
+				case resourceTypeSchemas:
+					if err := backend.UpdateSchemaDefinitionLabels(ctx, id, labels); err != nil {
+						return err
+					}
 				default:
 					return fmt.Errorf("mutate does not support resource type: %s", resType)
 				}
@@ -498,6 +565,8 @@ func parseResourceType(value string) (resourceType, error) {
 		return resourceTypeRegisters, nil
 	case "grant", "grants":
 		return resourceTypeGrants, nil
+	case "schema-definition", "schema-definitions", "schema_definition", "schema_definitions":
+		return resourceTypeSchemas, nil
 	default:
 		return "", fmt.Errorf("unknown resource type %q", value)
 	}
@@ -513,6 +582,8 @@ func fetchResource(ctx context.Context, backend cliBackend, resType resourceType
 		return backend.GetRegister(ctx, id)
 	case resourceTypeGrants:
 		return backend.GetGrant(ctx, id)
+	case resourceTypeSchemas:
+		return backend.GetSchemaDefinition(ctx, id)
 	default:
 		return nil, fmt.Errorf("unsupported resource type: %s", resType)
 	}
@@ -644,6 +715,33 @@ func loadJSONMapFromFile(path string) (map[string]any, error) {
 		return nil, fmt.Errorf("parse payload: %w", err)
 	}
 	return payload, nil
+}
+
+func loadRawJSONFromFile(path string) (json.RawMessage, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, errors.New("--schema-file is required for schema-definitions")
+	}
+	if path == "-" {
+		return nil, errors.New("schema must be provided via a file path, not stdin")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open schema file: %w", err)
+	}
+	data, err := io.ReadAll(file)
+	if cerr := file.Close(); cerr != nil && err == nil {
+		return nil, fmt.Errorf("close schema file: %w", cerr)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read schema: %w", err)
+	}
+	if len(data) == 0 {
+		return nil, errors.New("schema file is empty")
+	}
+	if !json.Valid(data) {
+		return nil, errors.New("schema file contains invalid JSON")
+	}
+	return json.RawMessage(data), nil
 }
 
 func outputJSON(cmd *cobra.Command, value any) error {
