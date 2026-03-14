@@ -93,7 +93,7 @@ func runWithBackend(cmd *cobra.Command, action func(context.Context, cliBackend)
 }
 
 func newListCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "list <resource_type>",
 		Short: "List hosts, requests, registers, grants, or schema definitions",
 		Long: "List resources and return JSON arrays of objects.\n\n" +
@@ -107,37 +107,86 @@ func newListCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			labelFilters, err := parseLabelFiltersFlag(cmd, "label")
+			if err != nil {
+				return err
+			}
+			hostLabelFilters, err := parseLabelFiltersFlag(cmd, "host-label")
+			if err != nil {
+				return err
+			}
 
 			return runWithBackend(cmd, func(ctx context.Context, backend cliBackend) error {
 				switch resType {
 				case resourceTypeHosts:
+					if len(hostLabelFilters) > 0 {
+						return errors.New("--host-label is not supported for hosts")
+					}
 					hosts, err := backend.ListHosts(ctx)
 					if err != nil {
 						return err
 					}
+					if len(labelFilters) > 0 {
+						filtered := make([]storage.Host, 0, len(hosts))
+						for _, host := range hosts {
+							if matchesLabelFilters(host.Labels, labelFilters) {
+								filtered = append(filtered, host)
+							}
+						}
+						hosts = filtered
+					}
 					return outputJSON(cmd, hosts)
 				case resourceTypeRequests:
-					requests, err := backend.ListRequests(ctx, nil)
+					var filters *storage.RequestListFilters
+					if len(labelFilters) > 0 || len(hostLabelFilters) > 0 {
+						filters = &storage.RequestListFilters{
+							Labels:     labelFilters,
+							HostLabels: hostLabelFilters,
+						}
+					}
+					requests, err := backend.ListRequests(ctx, filters)
 					if err != nil {
 						return err
 					}
 					return outputJSON(cmd, requests)
 				case resourceTypeRegisters:
-					registers, err := backend.ListRegisters(ctx, nil)
+					var filters *storage.RegisterListFilters
+					if len(labelFilters) > 0 || len(hostLabelFilters) > 0 {
+						filters = &storage.RegisterListFilters{
+							Labels:     labelFilters,
+							HostLabels: hostLabelFilters,
+						}
+					}
+					registers, err := backend.ListRegisters(ctx, filters)
 					if err != nil {
 						return err
 					}
 					return outputJSON(cmd, registers)
 				case resourceTypeGrants:
+					if len(labelFilters) > 0 || len(hostLabelFilters) > 0 {
+						return errors.New("label filters are not supported for grants")
+					}
 					grants, err := backend.ListGrants(ctx)
 					if err != nil {
 						return err
 					}
 					return outputJSON(cmd, grants)
 				case resourceTypeSchemas:
+					if len(hostLabelFilters) > 0 {
+						return errors.New("--host-label is not supported for schema-definitions")
+					}
 					defs, err := backend.ListSchemaDefinitions(ctx)
 					if err != nil {
 						return err
+					}
+					if len(labelFilters) > 0 {
+						filtered := make([]storage.SchemaDefinition, 0, len(defs))
+						for _, def := range defs {
+							if matchesLabelFilters(def.Labels, labelFilters) {
+								filtered = append(filtered, def)
+							}
+						}
+						defs = filtered
 					}
 					return outputJSON(cmd, defs)
 				default:
@@ -146,6 +195,9 @@ func newListCmd() *cobra.Command {
 			})
 		},
 	}
+	cmd.Flags().StringArray("label", nil, "label filter in key=value form; can be repeated")
+	cmd.Flags().StringArray("host-label", nil, "host label filter in key=value form (requests/registers only); can be repeated")
+	return cmd
 }
 
 func newCreateCmd() *cobra.Command {
@@ -195,7 +247,7 @@ func newCreateCmd() *cobra.Command {
 }
 
 func newInspectCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "inspect <resource_type> <id>",
 		Short: "Show a single host, request, register, grant, or schema definition",
 		Long: "Show a single resource as JSON.\n\n" +
@@ -204,24 +256,45 @@ func newInspectCmd() *cobra.Command {
 			"  grantory inspect hosts <host-id>\n" +
 			"  grantory inspect requests <request-id>\n" +
 			"  grantory inspect requests <request-id> | jq '.grant_id, .grant_payload'\n",
-		Args: cobra.ExactArgs(2),
+		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resType, err := parseResourceType(args[0])
 			if err != nil {
 				return err
 			}
-			id := args[1]
+			uniqueKey, err := cmd.Flags().GetString("unique-key")
+			if err != nil {
+				return err
+			}
+			var id string
+			if len(args) == 2 {
+				id = args[1]
+			}
+			if strings.TrimSpace(uniqueKey) != "" && strings.TrimSpace(id) != "" {
+				return errors.New("provide either <id> or --unique-key, not both")
+			}
+			if strings.TrimSpace(uniqueKey) == "" && strings.TrimSpace(id) == "" {
+				return errors.New("either <id> or --unique-key is required")
+			}
 
 			return runWithBackend(cmd, func(ctx context.Context, backend cliBackend) error {
+				targetID := id
+				if strings.TrimSpace(uniqueKey) != "" {
+					foundID, err := lookupIDByUniqueKey(ctx, backend, resType, strings.TrimSpace(uniqueKey))
+					if err != nil {
+						return err
+					}
+					targetID = foundID
+				}
 				if resType == resourceTypeRequests {
-					response, err := fetchRequestInspectResponse(ctx, backend, id)
+					response, err := fetchRequestInspectResponse(ctx, backend, targetID)
 					if err != nil {
 						return err
 					}
 					return outputJSON(cmd, response)
 				}
 
-				resource, err := fetchResource(ctx, backend, resType, id)
+				resource, err := fetchResource(ctx, backend, resType, targetID)
 				if err != nil {
 					return err
 				}
@@ -229,6 +302,8 @@ func newInspectCmd() *cobra.Command {
 			})
 		},
 	}
+	cmd.Flags().String("unique-key", "", "lookup by unique key instead of resource ID (hosts/requests/registers/schema-definitions)")
+	return cmd
 }
 
 func createRequest(cmd *cobra.Command) error {
@@ -742,6 +817,93 @@ func loadRawJSONFromFile(path string) (json.RawMessage, error) {
 		return nil, errors.New("schema file contains invalid JSON")
 	}
 	return json.RawMessage(data), nil
+}
+
+func parseLabelFiltersFlag(cmd *cobra.Command, name string) (map[string]string, error) {
+	values, err := cmd.Flags().GetStringArray(name)
+	if err != nil {
+		return nil, err
+	}
+	if len(values) == 0 {
+		return nil, nil
+	}
+	filters := make(map[string]string, len(values))
+	for _, raw := range values {
+		key, value, ok := strings.Cut(raw, "=")
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if !ok || key == "" || value == "" {
+			return nil, fmt.Errorf("invalid --%s value %q (expected key=value)", name, raw)
+		}
+		filters[key] = value
+	}
+	return filters, nil
+}
+
+func matchesLabelFilters(labels map[string]string, filters map[string]string) bool {
+	if len(filters) == 0 {
+		return true
+	}
+	if len(labels) == 0 {
+		return false
+	}
+	for key, expected := range filters {
+		if labels[key] != expected {
+			return false
+		}
+	}
+	return true
+}
+
+func lookupIDByUniqueKey(ctx context.Context, backend cliBackend, resType resourceType, uniqueKey string) (string, error) {
+	switch resType {
+	case resourceTypeHosts:
+		hosts, err := backend.ListHosts(ctx)
+		if err != nil {
+			return "", err
+		}
+		for _, host := range hosts {
+			if host.UniqueKey == uniqueKey {
+				return host.ID, nil
+			}
+		}
+		return "", fmt.Errorf("host with unique key %q not found", uniqueKey)
+	case resourceTypeRequests:
+		reqs, err := backend.ListRequests(ctx, nil)
+		if err != nil {
+			return "", err
+		}
+		for _, req := range reqs {
+			if req.UniqueKey == uniqueKey {
+				return req.ID, nil
+			}
+		}
+		return "", fmt.Errorf("request with unique key %q not found", uniqueKey)
+	case resourceTypeRegisters:
+		registers, err := backend.ListRegisters(ctx, nil)
+		if err != nil {
+			return "", err
+		}
+		for _, reg := range registers {
+			if reg.UniqueKey == uniqueKey {
+				return reg.ID, nil
+			}
+		}
+		return "", fmt.Errorf("register with unique key %q not found", uniqueKey)
+	case resourceTypeSchemas:
+		defs, err := backend.ListSchemaDefinitions(ctx)
+		if err != nil {
+			return "", err
+		}
+		for _, def := range defs {
+			if def.UniqueKey == uniqueKey {
+				return def.ID, nil
+			}
+		}
+		return "", fmt.Errorf("schema definition with unique key %q not found", uniqueKey)
+	default:
+		return "", fmt.Errorf("unique key lookup is not supported for resource type: %s", resType)
+	}
 }
 
 func outputJSON(cmd *cobra.Command, value any) error {

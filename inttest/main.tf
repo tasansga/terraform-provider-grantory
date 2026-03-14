@@ -172,6 +172,7 @@ data "grantory_grants" "grants" {
   depends_on = [
     grantory_grant.with_payload,
     grantory_grant.without_payload,
+    grantory_grant.with_schema,
   ]
 }
 
@@ -180,11 +181,12 @@ output "data_grantory_grants" {
 }
 
 data "grantory_grant" "details" {
-  count    = 2
-  grant_id = [grantory_grant.with_payload.id, grantory_grant.without_payload.id][count.index]
+  count    = 3
+  grant_id = [grantory_grant.with_payload.id, grantory_grant.without_payload.id, grantory_grant.with_schema.id][count.index]
   depends_on = [
     grantory_grant.with_payload,
     grantory_grant.without_payload,
+    grantory_grant.with_schema,
   ]
 }
 

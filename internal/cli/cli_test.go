@@ -52,6 +52,74 @@ func TestListHostsCommand(t *testing.T) {
 	assert.NoError(t, err, "list hosts command failed")
 }
 
+func TestListRequestsWithLabelFilter(t *testing.T) {
+	t.Parallel()
+
+	dataDir := prepareTestDataDir(t, func(ctx context.Context, store storage.Store) {
+		host, err := store.CreateHost(ctx, storage.Host{Labels: map[string]string{"tier": "prod"}})
+		assert.NoError(t, err)
+		_, err = store.CreateRequest(ctx, storage.Request{
+			HostID: host.ID,
+			Labels: map[string]string{"env": "prod"},
+		})
+		assert.NoError(t, err)
+		_, err = store.CreateRequest(ctx, storage.Request{
+			HostID: host.ID,
+			Labels: map[string]string{"env": "dev"},
+		})
+		assert.NoError(t, err)
+	})
+
+	output := runCLI(t, "--database", dataDir, "list", "requests", "--label", "env=prod")
+	var requests []map[string]any
+	assert.NoError(t, json.Unmarshal([]byte(output), &requests))
+	assert.Len(t, requests, 1, "expected filtered request list")
+}
+
+func TestListRequestsWithHostLabelFilter(t *testing.T) {
+	t.Parallel()
+
+	dataDir := prepareTestDataDir(t, func(ctx context.Context, store storage.Store) {
+		hostA, err := store.CreateHost(ctx, storage.Host{Labels: map[string]string{"env": "prod"}})
+		assert.NoError(t, err)
+		hostB, err := store.CreateHost(ctx, storage.Host{Labels: map[string]string{"env": "dev"}})
+		assert.NoError(t, err)
+		_, err = store.CreateRequest(ctx, storage.Request{HostID: hostA.ID})
+		assert.NoError(t, err)
+		_, err = store.CreateRequest(ctx, storage.Request{HostID: hostB.ID})
+		assert.NoError(t, err)
+	})
+
+	output := runCLI(t, "--database", dataDir, "list", "requests", "--host-label", "env=prod")
+	var requests []map[string]any
+	assert.NoError(t, json.Unmarshal([]byte(output), &requests))
+	assert.Len(t, requests, 1, "expected host-label filtered request list")
+}
+
+func TestListSchemaDefinitionsWithLabelFilter(t *testing.T) {
+	t.Parallel()
+
+	dataDir := prepareTestDataDir(t, func(ctx context.Context, store storage.Store) {
+		_, err := store.CreateSchemaDefinition(ctx, storage.SchemaDefinition{
+			UniqueKey: "invoice.v1",
+			Schema:    json.RawMessage(`{"type":"object"}`),
+			Labels:    map[string]string{"family": "invoice"},
+		})
+		assert.NoError(t, err)
+		_, err = store.CreateSchemaDefinition(ctx, storage.SchemaDefinition{
+			UniqueKey: "user.v1",
+			Schema:    json.RawMessage(`{"type":"object"}`),
+			Labels:    map[string]string{"family": "user"},
+		})
+		assert.NoError(t, err)
+	})
+
+	output := runCLI(t, "--database", dataDir, "list", "schema-definitions", "--label", "family=invoice")
+	var defs []map[string]any
+	assert.NoError(t, json.Unmarshal([]byte(output), &defs))
+	assert.Len(t, defs, 1, "expected filtered schema definition list")
+}
+
 func TestMutateHostLabelsCommand(t *testing.T) {
 	t.Parallel()
 
@@ -506,6 +574,48 @@ func TestInspectHostsCommand(t *testing.T) {
 	assert.NoError(t, cmd.Execute(), "inspect hosts command should succeed")
 }
 
+func TestInspectByUniqueKeyHost(t *testing.T) {
+	t.Parallel()
+
+	dataDir := prepareTestDataDir(t, func(ctx context.Context, store storage.Store) {
+		_, err := store.CreateHost(ctx, storage.Host{UniqueKey: "host-uk"})
+		assert.NoError(t, err, "create host failed")
+	})
+
+	output := runCLI(t, "--database", dataDir, "inspect", "hosts", "--unique-key", "host-uk")
+
+	var response map[string]any
+	assert.NoError(t, json.Unmarshal([]byte(output), &response))
+	assert.Equal(t, "host-uk", response["unique_key"])
+}
+
+func TestInspectByUniqueKeySchemaDefinition(t *testing.T) {
+	t.Parallel()
+
+	dataDir := prepareTestDataDir(t, func(ctx context.Context, store storage.Store) {
+		_, err := store.CreateSchemaDefinition(ctx, storage.SchemaDefinition{
+			UniqueKey: "invoice.v1",
+			Schema:    json.RawMessage(`{"type":"object"}`),
+		})
+		assert.NoError(t, err, "create schema definition failed")
+	})
+
+	output := runCLI(t, "--database", dataDir, "inspect", "schema-definitions", "--unique-key", "invoice.v1")
+
+	var response map[string]any
+	assert.NoError(t, json.Unmarshal([]byte(output), &response))
+	assert.Equal(t, "invoice.v1", response["unique_key"])
+}
+
+func TestInspectUniqueKeyAndIDMutuallyExclusive(t *testing.T) {
+	t.Parallel()
+
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"inspect", "hosts", "id-1", "--unique-key", "host-uk"})
+	err := cmd.Execute()
+	assert.ErrorContains(t, err, "either <id> or --unique-key")
+}
+
 func TestInspectRequestWithoutGrant(t *testing.T) {
 	t.Parallel()
 
@@ -804,6 +914,67 @@ func TestCreateRequestCommandAPIMode(t *testing.T) {
 		"--unique-key", "unique-1",
 	})
 	assert.NoError(t, cmd.Execute(), "create request api should succeed")
+}
+
+func TestListRequestsCommandAPIModeWithLabelFilter(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/requests" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		assert.Equal(t, "env=prod", r.URL.Query().Get("label"))
+		assert.Equal(t, "tier=prod", r.URL.Query().Get("host_label"))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode([]storage.Request{{ID: "req-1"}})
+	}))
+	defer server.Close()
+
+	cmd := NewRootCommand()
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{
+		"--backend", "api",
+		"--server-url", server.URL,
+		"list", "requests",
+		"--label", "env=prod",
+		"--host-label", "tier=prod",
+	})
+	assert.NoError(t, cmd.Execute(), "list requests api with filters should succeed")
+}
+
+func TestInspectByUniqueKeyAPIMode(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/schema-definitions":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"id": "schema-1", "unique_key": "invoice.v1", "schema": map[string]any{"type": "object"}},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/schema-definitions/schema-1":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":         "schema-1",
+				"unique_key": "invoice.v1",
+				"schema":     map[string]any{"type": "object"},
+			})
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	cmd := NewRootCommand()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{
+		"--backend", "api",
+		"--server-url", server.URL,
+		"inspect", "schema-definitions",
+		"--unique-key", "invoice.v1",
+	})
+	assert.NoError(t, cmd.Execute(), "inspect schema by unique key in api mode should succeed")
+	assert.Contains(t, out.String(), `"unique_key": "invoice.v1"`)
 }
 
 func TestCreateRegisterCommandAPIMode(t *testing.T) {
