@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	clienttest "github.com/tasansga/terraform-provider-grantory/internal/api/client/testutil"
+	clienttest "github.com/tasansga/terraform-provider-grantory/api/client/testutil"
 )
 
 func TestGrantoryClientSetsAuthorizationHeader(t *testing.T) {

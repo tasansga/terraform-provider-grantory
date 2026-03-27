@@ -10,7 +10,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 
-	apiclient "github.com/tasansga/terraform-provider-grantory/internal/api/client"
+	apiclient "github.com/tasansga/terraform-provider-grantory/api/client"
 )
 
 func isNotFound(err error) bool {

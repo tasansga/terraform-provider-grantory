@@ -16,7 +16,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	clienttest "github.com/tasansga/terraform-provider-grantory/internal/api/client/testutil"
+	clienttest "github.com/tasansga/terraform-provider-grantory/api/client/testutil"
 	"github.com/tasansga/terraform-provider-grantory/internal/k8s/api/v1alpha1"
 )
 

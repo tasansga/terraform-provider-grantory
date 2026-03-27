@@ -14,7 +14,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 
 	"github.com/tasansga/terraform-provider-grantory/internal/api"
-	apiclient "github.com/tasansga/terraform-provider-grantory/internal/api/client"
+	apiclient "github.com/tasansga/terraform-provider-grantory/api/client"
 )
 
 const (

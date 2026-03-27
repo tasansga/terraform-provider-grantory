@@ -4,7 +4,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/tasansga/terraform-provider-grantory/internal/api/client"
+	"github.com/tasansga/terraform-provider-grantory/api/client"
 )
 
 func New(t *testing.T, server *httptest.Server, token, user, password string) *client.Client {

@@ -8,7 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	apiclient "github.com/tasansga/terraform-provider-grantory/internal/api/client"
+	apiclient "github.com/tasansga/terraform-provider-grantory/api/client"
 	"github.com/tasansga/terraform-provider-grantory/internal/storage"
 )
 

@@ -8,6 +8,7 @@ Links:
 - [Homepage](https://github.com/tasansga/terraform-provider-grantory)
 - [OpenTofu registry](https://search.opentofu.org/provider/tasansga/grantory/latest)
 - [terraform registry](https://registry.terraform.io/providers/tasansga/grantory/latest)
+- [Go API client docs (pkg.go.dev)](https://pkg.go.dev/github.com/tasansga/terraform-provider-grantory/api/client)
 
 ## Concepts
 
@@ -93,6 +94,24 @@ Set `DATABASE`, `HTTP_BIND`, `HTTPS_BIND`, `TLS_CERT`, `TLS_KEY`, and `LOG_LEVEL
 ## CLI
 
 While Grantory is a terraform-focused tool, there's also a CLI for administrative purposes. The CLI can talk to SQLite directly (`--backend direct`, the default) or route every operation through the HTTP API (`--backend api`). Check `grantory --help` for details.
+
+## Go API client library
+
+This repository exposes a public Go client package for the Grantory HTTP API:
+
+```go
+import "github.com/tasansga/terraform-provider-grantory/api/client"
+```
+
+Minimal setup:
+
+```go
+c, err := client.New(client.Options{
+  BaseURL: "https://grantory.example.internal",
+})
+```
+
+Authentication is optional in Grantory itself. Set `Token` (Bearer) or `User` + `Password` only when your reverse proxy or gateway enforces it.
 
 
 ## Authentication and namespaces

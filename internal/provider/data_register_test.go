@@ -13,7 +13,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/stretchr/testify/assert"
-	clienttest "github.com/tasansga/terraform-provider-grantory/internal/api/client/testutil"
+	clienttest "github.com/tasansga/terraform-provider-grantory/api/client/testutil"
 )
 
 func TestDataRegisterSource(t *testing.T) {

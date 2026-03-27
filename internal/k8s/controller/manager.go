@@ -10,7 +10,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	apiclient "github.com/tasansga/terraform-provider-grantory/internal/api/client"
+	apiclient "github.com/tasansga/terraform-provider-grantory/api/client"
 	"github.com/tasansga/terraform-provider-grantory/internal/k8s/api/v1alpha1"
 )
 

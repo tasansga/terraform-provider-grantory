@@ -11,7 +11,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	apiclient "github.com/tasansga/terraform-provider-grantory/internal/api/client"
+	apiclient "github.com/tasansga/terraform-provider-grantory/api/client"
 	"github.com/tasansga/terraform-provider-grantory/internal/k8s/api/v1alpha1"
 )
 

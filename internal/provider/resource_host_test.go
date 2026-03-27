@@ -12,7 +12,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/stretchr/testify/assert"
-	clienttest "github.com/tasansga/terraform-provider-grantory/internal/api/client/testutil"
+	clienttest "github.com/tasansga/terraform-provider-grantory/api/client/testutil"
 )
 
 var testHostCreatedAt = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)

@@ -1,6 +1,6 @@
 package provider
 
-import apiclient "github.com/tasansga/terraform-provider-grantory/internal/api/client"
+import apiclient "github.com/tasansga/terraform-provider-grantory/api/client"
 
 type grantoryClient = apiclient.Client
 type apiHost = apiclient.Host

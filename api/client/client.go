@@ -13,15 +13,26 @@ import (
 	"strings"
 )
 
+// Options configures a Client.
 type Options struct {
-	BaseURL    string
-	Token      string
-	User       string
-	Password   string
-	Namespace  string
+	// BaseURL is the Grantory server base URL, for example
+	// "https://grantory.example.internal".
+	BaseURL string
+	// Token configures Bearer authentication.
+	// Leave empty when auth is not enforced by an upstream proxy.
+	Token string
+	// User configures Basic authentication username.
+	User string
+	// Password configures Basic authentication password.
+	Password string
+	// Namespace is sent as the REMOTE_USER request header.
+	Namespace string
+	// HTTPClient overrides the client used for HTTP calls.
+	// When nil, http.DefaultClient is used.
 	HTTPClient *http.Client
 }
 
+// Client provides typed methods for Grantory HTTP API resources.
 type Client struct {
 	baseURL    *url.URL
 	httpClient *http.Client
@@ -31,9 +42,12 @@ type Client struct {
 	namespace  string
 }
 
+// APIError is returned for non-2xx HTTP responses.
 type APIError struct {
+	// StatusCode is the HTTP response status.
 	StatusCode int
-	Message    string
+	// Message is the response error message.
+	Message string
 }
 
 func (e *APIError) Error() string {
@@ -43,11 +57,17 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("grantory api error (status %d): %s", e.StatusCode, e.Message)
 }
 
+// IsNotFound reports whether err is an APIError with HTTP 404 status.
 func IsNotFound(err error) bool {
 	var apiErr *APIError
 	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound
 }
 
+// New constructs a Client from Options.
+//
+// Exactly one auth mode may be set: either Token (Bearer) or User+Password
+// (Basic). Authentication is optional when the Grantory endpoint does not
+// enforce auth.
 func New(opts Options) (*Client, error) {
 	if strings.TrimSpace(opts.BaseURL) == "" {
 		return nil, fmt.Errorf("server URL is required")
@@ -64,6 +84,17 @@ func New(opts Options) (*Client, error) {
 		return nil, fmt.Errorf("server host is required")
 	}
 
+	token := strings.TrimSpace(opts.Token)
+	user := strings.TrimSpace(opts.User)
+	password := opts.Password
+	namespace := strings.TrimSpace(opts.Namespace)
+	if token != "" && (user != "" || password != "") {
+		return nil, fmt.Errorf("token/Bearer auth cannot be combined with user/password")
+	}
+	if (user != "") != (password != "") {
+		return nil, fmt.Errorf("both user and password must be provided together for basic auth")
+	}
+
 	client := opts.HTTPClient
 	if client == nil {
 		client = http.DefaultClient
@@ -72,13 +103,14 @@ func New(opts Options) (*Client, error) {
 	return &Client{
 		baseURL:    u,
 		httpClient: client,
-		token:      strings.TrimSpace(opts.Token),
-		user:       opts.User,
-		password:   opts.Password,
-		namespace:  opts.Namespace,
+		token:      token,
+		user:       user,
+		password:   password,
+		namespace:  namespace,
 	}, nil
 }
 
+// BaseURL returns a copy of the configured base URL.
 func (c *Client) BaseURL() *url.URL {
 	if c == nil || c.baseURL == nil {
 		return nil
@@ -87,6 +119,7 @@ func (c *Client) BaseURL() *url.URL {
 	return &copy
 }
 
+// BaseAddress returns the base URL as string.
 func (c *Client) BaseAddress() string {
 	if c == nil || c.baseURL == nil {
 		return ""
@@ -94,6 +127,7 @@ func (c *Client) BaseAddress() string {
 	return c.baseURL.String()
 }
 
+// HTTPClient returns the HTTP client used for requests.
 func (c *Client) HTTPClient() *http.Client {
 	if c == nil {
 		return nil
@@ -101,6 +135,7 @@ func (c *Client) HTTPClient() *http.Client {
 	return c.httpClient
 }
 
+// CreateHost creates a host resource.
 func (c *Client) CreateHost(ctx context.Context, payload HostCreatePayload) (Host, error) {
 	var host Host
 	if err := c.doJSON(ctx, http.MethodPost, "/hosts", payload, &host); err != nil {
@@ -109,6 +144,7 @@ func (c *Client) CreateHost(ctx context.Context, payload HostCreatePayload) (Hos
 	return host, nil
 }
 
+// GetHost fetches a host by ID.
 func (c *Client) GetHost(ctx context.Context, id string) (Host, error) {
 	var host Host
 	if err := c.doJSON(ctx, http.MethodGet, fmt.Sprintf("/hosts/%s", id), nil, &host); err != nil {
@@ -117,6 +153,7 @@ func (c *Client) GetHost(ctx context.Context, id string) (Host, error) {
 	return host, nil
 }
 
+// ListHosts lists all hosts visible in the selected namespace.
 func (c *Client) ListHosts(ctx context.Context) ([]Host, error) {
 	var hosts []Host
 	if err := c.doJSON(ctx, http.MethodGet, "/hosts", nil, &hosts); err != nil {
@@ -125,6 +162,7 @@ func (c *Client) ListHosts(ctx context.Context) ([]Host, error) {
 	return hosts, nil
 }
 
+// UpdateHostLabels updates labels for an existing host.
 func (c *Client) UpdateHostLabels(ctx context.Context, id string, labels map[string]string) (Host, error) {
 	var host Host
 	if err := c.doJSON(ctx, http.MethodPatch, fmt.Sprintf("/hosts/%s/labels", id), LabelsPayload{Labels: normalizeLabels(labels)}, &host); err != nil {
@@ -133,10 +171,12 @@ func (c *Client) UpdateHostLabels(ctx context.Context, id string, labels map[str
 	return host, nil
 }
 
+// DeleteHost deletes a host by ID.
 func (c *Client) DeleteHost(ctx context.Context, id string) error {
 	return c.doJSON(ctx, http.MethodDelete, fmt.Sprintf("/hosts/%s", id), nil, nil)
 }
 
+// CreateRequest creates a request resource.
 func (c *Client) CreateRequest(ctx context.Context, payload RequestCreatePayload) (Request, error) {
 	var resp Request
 	if err := c.doJSON(ctx, http.MethodPost, "/requests", payload, &resp); err != nil {
@@ -145,6 +185,7 @@ func (c *Client) CreateRequest(ctx context.Context, payload RequestCreatePayload
 	return resp, nil
 }
 
+// GetRequest fetches a request by ID.
 func (c *Client) GetRequest(ctx context.Context, id string) (Request, error) {
 	var resp Request
 	if err := c.doJSON(ctx, http.MethodGet, fmt.Sprintf("/requests/%s", id), nil, &resp); err != nil {
@@ -153,6 +194,7 @@ func (c *Client) GetRequest(ctx context.Context, id string) (Request, error) {
 	return resp, nil
 }
 
+// ListRequests lists requests filtered by the provided options.
 func (c *Client) ListRequests(ctx context.Context, opts RequestListOptions) ([]Request, error) {
 	params := url.Values{}
 	for key, value := range opts.Labels {
@@ -177,6 +219,7 @@ func (c *Client) ListRequests(ctx context.Context, opts RequestListOptions) ([]R
 	return resp, nil
 }
 
+// UpdateRequest updates mutable request fields.
 func (c *Client) UpdateRequest(ctx context.Context, id string, payload RequestUpdatePayload) (Request, error) {
 	var resp Request
 	if err := c.doJSON(ctx, http.MethodPatch, fmt.Sprintf("/requests/%s", id), payload, &resp); err != nil {
@@ -185,14 +228,17 @@ func (c *Client) UpdateRequest(ctx context.Context, id string, payload RequestUp
 	return resp, nil
 }
 
+// UpdateRequestLabels updates request labels.
 func (c *Client) UpdateRequestLabels(ctx context.Context, id string, labels map[string]string) (Request, error) {
 	return c.UpdateRequest(ctx, id, RequestUpdatePayload{Labels: normalizeLabels(labels)})
 }
 
+// DeleteRequest deletes a request by ID.
 func (c *Client) DeleteRequest(ctx context.Context, id string) error {
 	return c.doJSON(ctx, http.MethodDelete, fmt.Sprintf("/requests/%s", id), nil, nil)
 }
 
+// CreateRegister creates a register resource.
 func (c *Client) CreateRegister(ctx context.Context, payload RegisterCreatePayload) (Register, error) {
 	var reg Register
 	if err := c.doJSON(ctx, http.MethodPost, "/registers", payload, &reg); err != nil {
@@ -201,6 +247,7 @@ func (c *Client) CreateRegister(ctx context.Context, payload RegisterCreatePaylo
 	return reg, nil
 }
 
+// GetRegister fetches a register by ID.
 func (c *Client) GetRegister(ctx context.Context, id string) (Register, error) {
 	var reg Register
 	if err := c.doJSON(ctx, http.MethodGet, fmt.Sprintf("/registers/%s", id), nil, &reg); err != nil {
@@ -209,6 +256,7 @@ func (c *Client) GetRegister(ctx context.Context, id string) (Register, error) {
 	return reg, nil
 }
 
+// ListRegisters lists registers filtered by the provided options.
 func (c *Client) ListRegisters(ctx context.Context, opts RegisterListOptions) ([]Register, error) {
 	params := url.Values{}
 	for key, value := range opts.Labels {
@@ -230,6 +278,7 @@ func (c *Client) ListRegisters(ctx context.Context, opts RegisterListOptions) ([
 	return resp, nil
 }
 
+// UpdateRegister updates mutable register fields.
 func (c *Client) UpdateRegister(ctx context.Context, id string, payload RegisterUpdatePayload) (Register, error) {
 	var reg Register
 	if err := c.doJSON(ctx, http.MethodPatch, fmt.Sprintf("/registers/%s", id), payload, &reg); err != nil {
@@ -238,14 +287,17 @@ func (c *Client) UpdateRegister(ctx context.Context, id string, payload Register
 	return reg, nil
 }
 
+// UpdateRegisterLabels updates register labels.
 func (c *Client) UpdateRegisterLabels(ctx context.Context, id string, labels map[string]string) (Register, error) {
 	return c.UpdateRegister(ctx, id, RegisterUpdatePayload{Labels: normalizeLabels(labels)})
 }
 
+// DeleteRegister deletes a register by ID.
 func (c *Client) DeleteRegister(ctx context.Context, id string) error {
 	return c.doJSON(ctx, http.MethodDelete, fmt.Sprintf("/registers/%s", id), nil, nil)
 }
 
+// CreateGrant creates a grant resource.
 func (c *Client) CreateGrant(ctx context.Context, payload GrantCreatePayload) (Grant, error) {
 	var grant Grant
 	if err := c.doJSON(ctx, http.MethodPost, "/grants", payload, &grant); err != nil {
@@ -254,6 +306,7 @@ func (c *Client) CreateGrant(ctx context.Context, payload GrantCreatePayload) (G
 	return grant, nil
 }
 
+// GetGrant fetches a grant by ID.
 func (c *Client) GetGrant(ctx context.Context, id string) (Grant, error) {
 	var grant Grant
 	if err := c.doJSON(ctx, http.MethodGet, fmt.Sprintf("/grants/%s", id), nil, &grant); err != nil {
@@ -262,6 +315,7 @@ func (c *Client) GetGrant(ctx context.Context, id string) (Grant, error) {
 	return grant, nil
 }
 
+// ListGrants lists all grants visible in the selected namespace.
 func (c *Client) ListGrants(ctx context.Context) ([]Grant, error) {
 	var grants []Grant
 	if err := c.doJSON(ctx, http.MethodGet, "/grants", nil, &grants); err != nil {
@@ -270,10 +324,12 @@ func (c *Client) ListGrants(ctx context.Context) ([]Grant, error) {
 	return grants, nil
 }
 
+// DeleteGrant deletes a grant by ID.
 func (c *Client) DeleteGrant(ctx context.Context, id string) error {
 	return c.doJSON(ctx, http.MethodDelete, fmt.Sprintf("/grants/%s", id), nil, nil)
 }
 
+// CreateSchemaDefinition creates a schema definition resource.
 func (c *Client) CreateSchemaDefinition(ctx context.Context, payload SchemaDefinitionCreatePayload) (SchemaDefinition, error) {
 	var def SchemaDefinition
 	if err := c.doJSON(ctx, http.MethodPost, "/schema-definitions", payload, &def); err != nil {
@@ -282,6 +338,7 @@ func (c *Client) CreateSchemaDefinition(ctx context.Context, payload SchemaDefin
 	return def, nil
 }
 
+// GetSchemaDefinition fetches a schema definition by ID.
 func (c *Client) GetSchemaDefinition(ctx context.Context, id string) (SchemaDefinition, error) {
 	var def SchemaDefinition
 	if err := c.doJSON(ctx, http.MethodGet, fmt.Sprintf("/schema-definitions/%s", id), nil, &def); err != nil {
@@ -290,6 +347,7 @@ func (c *Client) GetSchemaDefinition(ctx context.Context, id string) (SchemaDefi
 	return def, nil
 }
 
+// ListSchemaDefinitions lists all schema definitions in the namespace.
 func (c *Client) ListSchemaDefinitions(ctx context.Context) ([]SchemaDefinition, error) {
 	var defs []SchemaDefinition
 	if err := c.doJSON(ctx, http.MethodGet, "/schema-definitions", nil, &defs); err != nil {
@@ -298,10 +356,12 @@ func (c *Client) ListSchemaDefinitions(ctx context.Context) ([]SchemaDefinition,
 	return defs, nil
 }
 
+// DeleteSchemaDefinition deletes a schema definition by ID.
 func (c *Client) DeleteSchemaDefinition(ctx context.Context, id string) error {
 	return c.doJSON(ctx, http.MethodDelete, fmt.Sprintf("/schema-definitions/%s", id), nil, nil)
 }
 
+// UpdateSchemaDefinitionLabels updates schema definition labels.
 func (c *Client) UpdateSchemaDefinitionLabels(ctx context.Context, id string, labels map[string]string) (SchemaDefinition, error) {
 	var def SchemaDefinition
 	if err := c.doJSON(ctx, http.MethodPatch, fmt.Sprintf("/schema-definitions/%s/labels", id), LabelsPayload{Labels: normalizeLabels(labels)}, &def); err != nil {
@@ -363,7 +423,10 @@ func (c *Client) doJSON(ctx context.Context, method, endpoint string, reqBody an
 	}
 
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		msg := strings.TrimSpace(string(data))
+		msg := parseAPIErrorMessage(data)
+		if msg == "" {
+			msg = http.StatusText(res.StatusCode)
+		}
 		return &APIError{StatusCode: res.StatusCode, Message: msg}
 	}
 
@@ -382,4 +445,26 @@ func normalizeLabels(labels map[string]string) map[string]string {
 		return map[string]string{}
 	}
 	return labels
+}
+
+func parseAPIErrorMessage(data []byte) string {
+	msg := strings.TrimSpace(string(data))
+	if msg == "" {
+		return ""
+	}
+
+	var body struct {
+		Message string `json:"message"`
+		Error   string `json:"error"`
+	}
+	if err := json.Unmarshal(data, &body); err != nil {
+		return msg
+	}
+	if strings.TrimSpace(body.Message) != "" {
+		return strings.TrimSpace(body.Message)
+	}
+	if strings.TrimSpace(body.Error) != "" {
+		return strings.TrimSpace(body.Error)
+	}
+	return msg
 }
