@@ -22,6 +22,10 @@ var (
 	indexTemplateSource string
 	//go:embed templates/register.html
 	registerTemplateSource string
+	//go:embed templates/request.html
+	requestTemplateSource string
+	//go:embed templates/grant.html
+	grantTemplateSource string
 	//go:embed static/water.min.css
 	waterCSS []byte
 
@@ -32,6 +36,13 @@ var (
 		"labelSummary": labelSummary,
 		"prettyJSON":   prettyJSON,
 	}).Parse(registerTemplateSource))
+	requestTemplate = template.Must(template.New("request").Funcs(template.FuncMap{
+		"labelSummary": labelSummary,
+		"prettyJSON":   prettyJSON,
+	}).Parse(requestTemplateSource))
+	grantTemplate = template.Must(template.New("grant").Funcs(template.FuncMap{
+		"prettyJSON": prettyJSON,
+	}).Parse(grantTemplateSource))
 )
 
 type indexPageData struct {
@@ -51,6 +62,18 @@ type registerPageData struct {
 	Namespace string
 	Register  storage.Register
 	Events    []storage.RegisterEvent
+}
+
+type requestPageData struct {
+	Namespace string
+	Request   storage.Request
+	Grant     *storage.Grant
+}
+
+type grantPageData struct {
+	Namespace string
+	Grant     storage.Grant
+	Request   storage.Request
 }
 
 func (s *Server) handleIndex(c *fiber.Ctx) error {
@@ -164,6 +187,100 @@ func (s *Server) handleRegisterPage(c *fiber.Ctx) error {
 	if err := registerTemplate.Execute(&buf, data); err != nil {
 		logrus.WithError(err).WithField("namespace", namespace).Error("render register page")
 		return fiber.NewError(http.StatusInternalServerError, "unable to render register page")
+	}
+
+	c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
+	return c.Status(http.StatusOK).Send(buf.Bytes())
+}
+
+func (s *Server) handleRequestPage(c *fiber.Ctx) error {
+	logRequestEntry(c, "Server.handleRequestPage", nil)
+
+	store, namespace, err := resolveNamespaceStore(c)
+	if err != nil {
+		return err
+	}
+
+	requestID := strings.TrimSpace(c.Query("id"))
+	if requestID == "" {
+		return fiber.NewError(http.StatusBadRequest, "id query parameter is required")
+	}
+
+	req, err := store.GetRequest(c.Context(), requestID)
+	if err != nil {
+		if errors.Is(err, storage.ErrRequestNotFound) {
+			return fiber.NewError(http.StatusNotFound, "request not found")
+		}
+		logrus.WithError(err).WithField("namespace", namespace).WithField("request_id", requestID).Error("load request for detail page")
+		return fiber.NewError(http.StatusInternalServerError, "unable to load request")
+	}
+
+	var grantPtr *storage.Grant
+	if grant, found, err := store.GetGrantForRequest(c.Context(), requestID); err != nil {
+		logrus.WithError(err).WithField("namespace", namespace).WithField("request_id", requestID).Error("load grant for request detail page")
+		return fiber.NewError(http.StatusInternalServerError, "unable to load request grant")
+	} else if found {
+		grantCopy := grant
+		grantPtr = &grantCopy
+	}
+
+	data := requestPageData{
+		Namespace: namespace,
+		Request:   req,
+		Grant:     grantPtr,
+	}
+
+	var buf bytes.Buffer
+	if err := requestTemplate.Execute(&buf, data); err != nil {
+		logrus.WithError(err).WithField("namespace", namespace).Error("render request page")
+		return fiber.NewError(http.StatusInternalServerError, "unable to render request page")
+	}
+
+	c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
+	return c.Status(http.StatusOK).Send(buf.Bytes())
+}
+
+func (s *Server) handleGrantPage(c *fiber.Ctx) error {
+	logRequestEntry(c, "Server.handleGrantPage", nil)
+
+	store, namespace, err := resolveNamespaceStore(c)
+	if err != nil {
+		return err
+	}
+
+	grantID := strings.TrimSpace(c.Query("id"))
+	if grantID == "" {
+		return fiber.NewError(http.StatusBadRequest, "id query parameter is required")
+	}
+
+	grant, err := store.GetGrant(c.Context(), grantID)
+	if err != nil {
+		if errors.Is(err, storage.ErrGrantNotFound) {
+			return fiber.NewError(http.StatusNotFound, "grant not found")
+		}
+		logrus.WithError(err).WithField("namespace", namespace).WithField("grant_id", grantID).Error("load grant for detail page")
+		return fiber.NewError(http.StatusInternalServerError, "unable to load grant")
+	}
+
+	req, err := store.GetRequest(c.Context(), grant.RequestID)
+	if err != nil {
+		if errors.Is(err, storage.ErrRequestNotFound) {
+			return fiber.NewError(http.StatusNotFound, "request not found")
+		}
+		logrus.WithError(err).WithField("namespace", namespace).WithField("request_id", grant.RequestID).Error("load request for grant detail page")
+		return fiber.NewError(http.StatusInternalServerError, "unable to load grant request")
+	}
+
+	data := grantPageData{
+		Namespace: namespace,
+		Grant:     grant,
+		Request:   req,
+	}
+
+	var buf bytes.Buffer
+	if err := grantTemplate.Execute(&buf, data); err != nil {
+		logrus.WithError(err).WithField("namespace", namespace).Error("render grant page")
+		return fiber.NewError(http.StatusInternalServerError, "unable to render grant page")
 	}
 
 	c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)

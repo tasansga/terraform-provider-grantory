@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>
+            Grantory Request{{if ne .Namespace "_def"}} - Namespace
+            {{.Namespace}}{{end}}
+        </title>
+        <link rel="stylesheet" href="/static/water.min.css" />
+    </head>
+    <body>
+        <main>
+            <header>
+                <h1>Request Detail</h1>
+                <p><a href="/index.html">Back to index</a></p>
+            </header>
+
+            <section>
+                <h2>Metadata</h2>
+                <table class="striped">
+                    <tbody>
+                        <tr><th>Request ID</th><td>{{.Request.ID}}</td></tr>
+                        <tr><th>Host ID</th><td><a href="/index.html#host-{{.Request.HostID}}">{{.Request.HostID}}</a></td></tr>
+                        <tr><th>Request Schema ID</th><td>{{if .Request.RequestSchemaDefinitionID}}{{.Request.RequestSchemaDefinitionID}}{{else}}—{{end}}</td></tr>
+                        <tr><th>Grant Schema ID</th><td>{{if .Request.GrantSchemaDefinitionID}}{{.Request.GrantSchemaDefinitionID}}{{else}}—{{end}}</td></tr>
+                        <tr><th>Unique Key</th><td>{{if .Request.UniqueKey}}{{.Request.UniqueKey}}{{else}}—{{end}}</td></tr>
+                        <tr><th>Has Grant</th><td>{{.Request.HasGrant}}</td></tr>
+                        <tr><th>Labels</th><td>{{labelSummary .Request.Labels}}</td></tr>
+                        <tr><th>Created At</th><td>{{.Request.CreatedAt}}</td></tr>
+                        <tr><th>Updated At</th><td>{{.Request.UpdatedAt}}</td></tr>
+                        <tr>
+                            <th>Grant</th>
+                            <td>
+                                {{if .Grant}}
+                                <a href="/grant.html?id={{.Grant.ID}}">{{.Grant.ID}}</a>
+                                {{else}}
+                                —
+                                {{end}}
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <section>
+                <h2>Payload</h2>
+                <pre><code>{{prettyJSON .Request.Payload}}</code></pre>
+            </section>
+        </main>
+    </body>
+</html>

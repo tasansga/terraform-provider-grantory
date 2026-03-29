@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>
+            Grantory Grant{{if ne .Namespace "_def"}} - Namespace
+            {{.Namespace}}{{end}}
+        </title>
+        <link rel="stylesheet" href="/static/water.min.css" />
+    </head>
+    <body>
+        <main>
+            <header>
+                <h1>Grant Detail</h1>
+                <p><a href="/index.html">Back to index</a></p>
+            </header>
+
+            <section>
+                <h2>Metadata</h2>
+                <table class="striped">
+                    <tbody>
+                        <tr><th>Grant ID</th><td>{{.Grant.ID}}</td></tr>
+                        <tr>
+                            <th>Request ID</th>
+                            <td><a href="/request.html?id={{.Request.ID}}">{{.Request.ID}}</a></td>
+                        </tr>
+                        <tr><th>Created At</th><td>{{.Grant.CreatedAt}}</td></tr>
+                        <tr><th>Updated At</th><td>{{.Grant.UpdatedAt}}</td></tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <section>
+                <h2>Grant Payload</h2>
+                <pre><code>{{prettyJSON .Grant.Payload}}</code></pre>
+            </section>
+
+            <section>
+                <h2>Request Payload</h2>
+                <pre><code>{{prettyJSON .Request.Payload}}</code></pre>
+            </section>
+        </main>
+    </body>
+</html>

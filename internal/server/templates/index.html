@@ -94,7 +94,11 @@
                     <tbody>
                         {{range .Requests}}
                         <tr id="request-{{.ID}}">
-                            <td>{{.ID}}</td>
+                            <td>
+                                <a href="/request.html?id={{.ID}}"
+                                    >{{.ID}}</a
+                                >
+                            </td>
                             <td>
                                 <a href="#host-{{.HostID}}">{{.HostID}}</a>
                             </td>
@@ -121,7 +125,11 @@
                     <tbody>
                         {{range .Grants}}
                         <tr id="grant-{{.ID}}">
-                            <td>{{.ID}}</td>
+                            <td>
+                                <a href="/grant.html?id={{.ID}}"
+                                    >{{.ID}}</a
+                                >
+                            </td>
                             <td>
                                 <a href="#request-{{.RequestID}}"
                                     >{{.RequestID}}</a

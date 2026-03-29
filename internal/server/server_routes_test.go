@@ -87,6 +87,8 @@ func newTestApp(t *testing.T) (*fiber.App, func()) {
 	api.Get("/metrics", srv.handleMetrics)
 	api.Get("/index.html", srv.handleIndex)
 	api.Get("/register.html", srv.handleRegisterPage)
+	api.Get("/request.html", srv.handleRequestPage)
+	api.Get("/grant.html", srv.handleGrantPage)
 
 	cleanup := func() {
 		if err := store.Close(); err != nil {
@@ -1024,6 +1026,61 @@ func TestRegisterDetailPageAndIndexLink(t *testing.T) {
 	assert.Contains(t, string(detailBody), "name")
 	assert.Contains(t, string(detailBody), "api")
 	assert.Contains(t, string(detailBody), "payload_updated")
+}
+
+func TestRequestAndGrantDetailPagesAndCrossLinks(t *testing.T) {
+	t.Parallel()
+
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+
+	headers := map[string]string{"REMOTE_USER": "request-grant-page"}
+	hostRes := sendTestRequest(t, app, http.MethodPost, "/hosts", headers, map[string]any{
+		"labels": map[string]string{"env": "test"},
+	})
+	require.Equal(t, http.StatusCreated, hostRes.StatusCode)
+	host := decodeJSON[storage.Host](t, hostRes)
+
+	requestRes := sendTestRequest(t, app, http.MethodPost, "/requests", headers, map[string]any{
+		"host_id":    host.ID,
+		"payload":    map[string]any{"kind": "db"},
+		"labels":     map[string]string{"team": "ops"},
+		"unique_key": "request:page:test",
+	})
+	require.Equal(t, http.StatusCreated, requestRes.StatusCode)
+	request := decodeJSON[storage.Request](t, requestRes)
+
+	grantRes := sendTestRequest(t, app, http.MethodPost, "/grants", headers, map[string]any{
+		"request_id": request.ID,
+		"payload":    map[string]any{"permit": true},
+	})
+	require.Equal(t, http.StatusCreated, grantRes.StatusCode)
+	grant := decodeJSON[storage.Grant](t, grantRes)
+
+	indexRes := sendTestRequest(t, app, http.MethodGet, "/index.html", headers, nil)
+	require.Equal(t, http.StatusOK, indexRes.StatusCode)
+	indexBody, err := io.ReadAll(indexRes.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(indexBody), fmt.Sprintf("/request.html?id=%s", request.ID))
+	assert.Contains(t, string(indexBody), fmt.Sprintf("/grant.html?id=%s", grant.ID))
+
+	requestDetailRes := sendTestRequest(t, app, http.MethodGet, fmt.Sprintf("/request.html?id=%s", request.ID), headers, nil)
+	require.Equal(t, http.StatusOK, requestDetailRes.StatusCode)
+	requestDetailBody, err := io.ReadAll(requestDetailRes.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(requestDetailBody), request.ID)
+	assert.Contains(t, string(requestDetailBody), "kind")
+	assert.Contains(t, string(requestDetailBody), "db")
+	assert.Contains(t, string(requestDetailBody), fmt.Sprintf("/grant.html?id=%s", grant.ID))
+
+	grantDetailRes := sendTestRequest(t, app, http.MethodGet, fmt.Sprintf("/grant.html?id=%s", grant.ID), headers, nil)
+	require.Equal(t, http.StatusOK, grantDetailRes.StatusCode)
+	grantDetailBody, err := io.ReadAll(grantDetailRes.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(grantDetailBody), grant.ID)
+	assert.Contains(t, string(grantDetailBody), "permit")
+	assert.Contains(t, string(grantDetailBody), "true")
+	assert.Contains(t, string(grantDetailBody), fmt.Sprintf("/request.html?id=%s", request.ID))
 }
 
 func TestRootRedirectsToIndex(t *testing.T) {

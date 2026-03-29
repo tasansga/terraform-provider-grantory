@@ -58,6 +58,8 @@ func (s *Server) Serve(ctx context.Context) error {
 	api.Get("/metrics", s.handleMetrics)
 	api.Get("/index.html", s.handleIndex)
 	api.Get("/register.html", s.handleRegisterPage)
+	api.Get("/request.html", s.handleRequestPage)
+	api.Get("/grant.html", s.handleGrantPage)
 
 	go func() {
 		<-ctx.Done()
