@@ -16,6 +16,7 @@ type Store interface {
 	CreateRequest(ctx context.Context, payload RequestCreatePayload) (Request, error)
 	GetRequest(ctx context.Context, id string) (Request, error)
 	ListRequests(ctx context.Context, opts RequestListOptions) ([]Request, error)
+	UpdateRequest(ctx context.Context, id string, payload RequestUpdatePayload) (Request, error)
 	UpdateRequestLabels(ctx context.Context, id string, labels map[string]string) (Request, error)
 	DeleteRequest(ctx context.Context, id string) error
 
@@ -30,6 +31,7 @@ type Store interface {
 	CreateGrant(ctx context.Context, payload GrantCreatePayload) (Grant, error)
 	GetGrant(ctx context.Context, id string) (Grant, error)
 	ListGrants(ctx context.Context) ([]Grant, error)
+	UpdateGrant(ctx context.Context, id string, payload GrantUpdatePayload) (Grant, error)
 	DeleteGrant(ctx context.Context, id string) error
 
 	CreateSchemaDefinition(ctx context.Context, payload SchemaDefinitionCreatePayload) (SchemaDefinition, error)

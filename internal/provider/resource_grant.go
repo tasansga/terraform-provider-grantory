@@ -31,6 +31,12 @@ func resourceGrant() *schema.Resource {
 
 func resourceGrantCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	client := meta.(*grantoryClient)
+	requestID := d.Get("request_id").(string)
+
+	req, err := client.GetRequest(ctx, requestID)
+	if err != nil {
+		return diag.FromErr(err)
+	}
 
 	var grantPayload map[string]any
 	if raw, ok := d.GetOk("payload"); ok {
@@ -48,8 +54,9 @@ func resourceGrantCreate(ctx context.Context, d *schema.ResourceData, meta any) 
 	}
 
 	created, err := client.CreateGrant(ctx, apiGrantCreatePayload{
-		RequestID: d.Get("request_id").(string),
-		Payload:   grantPayload,
+		RequestID:      requestID,
+		RequestVersion: req.Version,
+		Payload:        grantPayload,
 	})
 	if err != nil {
 		return diag.FromErr(err)

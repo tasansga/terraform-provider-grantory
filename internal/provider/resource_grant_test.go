@@ -110,13 +110,21 @@ func TestResourceGrantCreateWithoutPayload(t *testing.T) {
 func newGrantTestServer() *httptest.Server {
 	handler := &grantTestHandler{
 		grants: make(map[string]apiGrant),
+		requests: map[string]apiRequest{
+			"req-123": {
+				ID:      "req-123",
+				HostID:  "host-123",
+				Version: 1,
+			},
+		},
 	}
 	return httptest.NewServer(handler)
 }
 
 type grantTestHandler struct {
-	mu     sync.Mutex
-	grants map[string]apiGrant
+	mu       sync.Mutex
+	grants   map[string]apiGrant
+	requests map[string]apiRequest
 }
 
 func (h *grantTestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -125,6 +133,8 @@ func (h *grantTestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleCreate(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/grants/"):
 		h.handleGet(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/requests/"):
+		h.handleGetRequest(w, r)
 	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/grants/"):
 		h.handleDelete(w, r)
 	default:
@@ -142,13 +152,18 @@ func (h *grantTestHandler) handleCreate(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "missing required fields", http.StatusBadRequest)
 		return
 	}
+	if payload.RequestVersion <= 0 {
+		http.Error(w, "missing request_version", http.StatusBadRequest)
+		return
+	}
 
 	grant := apiGrant{
-		ID:        testGrantID,
-		RequestID: payload.RequestID,
-		Payload:   payload.Payload,
-		CreatedAt: testGrantCreatedAt,
-		UpdatedAt: testGrantUpdatedAt,
+		ID:             testGrantID,
+		RequestID:      payload.RequestID,
+		RequestVersion: payload.RequestVersion,
+		Payload:        payload.Payload,
+		CreatedAt:      testGrantCreatedAt,
+		UpdatedAt:      testGrantUpdatedAt,
 	}
 
 	h.mu.Lock()
@@ -192,4 +207,20 @@ func (h *grantTestHandler) handleDelete(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *grantTestHandler) handleGetRequest(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/requests/")
+
+	h.mu.Lock()
+	req, ok := h.requests[id]
+	h.mu.Unlock()
+
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(req)
 }

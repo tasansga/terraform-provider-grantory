@@ -25,6 +25,7 @@ type Store interface {
 	GetRequest(ctx context.Context, id string) (Request, error)
 	ListRequests(ctx context.Context, filters *RequestListFilters) ([]Request, error)
 	CountRequestsByGrantPresence(ctx context.Context) (map[string]int64, error)
+	UpdateRequest(ctx context.Context, id string, payload *map[string]any, labels *map[string]string) error
 	UpdateRequestLabels(ctx context.Context, id string, labels map[string]string) error
 	DeleteRequest(ctx context.Context, id string) error
 
@@ -40,6 +41,7 @@ type Store interface {
 	CreateGrant(ctx context.Context, grant Grant) (Grant, error)
 	GetGrant(ctx context.Context, id string) (Grant, error)
 	ListGrants(ctx context.Context) ([]Grant, error)
+	UpdateGrant(ctx context.Context, id string, payload map[string]any, requestVersion int) error
 	CountGrants(ctx context.Context) (map[string]int64, error)
 	GetGrantForRequest(ctx context.Context, requestID string) (Grant, bool, error)
 	DeleteGrant(ctx context.Context, id string) error
@@ -67,6 +69,8 @@ type Request struct {
 	GrantSchemaDefinitionID   string            `json:"grant_schema_definition_id,omitempty"`
 	UniqueKey                 string            `json:"unique_key,omitempty"`
 	Payload                   map[string]any    `json:"payload,omitempty"`
+	Mutable                   bool              `json:"mutable"`
+	Version                   int               `json:"version"`
 	Labels                    map[string]string `json:"labels,omitempty"`
 	HasGrant                  bool              `json:"has_grant"`
 	CreatedAt                 time.Time         `json:"created_at"`
@@ -112,11 +116,12 @@ type RegisterListFilters struct {
 
 // Grant models payloads returned for resource requests.
 type Grant struct {
-	ID        string         `json:"id"`
-	RequestID string         `json:"request_id"`
-	Payload   map[string]any `json:"payload,omitempty"`
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
+	ID             string         `json:"id"`
+	RequestID      string         `json:"request_id"`
+	Payload        map[string]any `json:"payload,omitempty"`
+	RequestVersion int            `json:"request_version"`
+	CreatedAt      time.Time      `json:"created_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
 }
 
 // SchemaDefinition stores request and grant JSON schema payloads.
@@ -145,8 +150,14 @@ var (
 	ErrRequestNotFound = errors.New("request not found")
 	// ErrRequestUniqueKeyConflict is returned when a request with the same unique key exists.
 	ErrRequestUniqueKeyConflict = errors.New("request unique key already exists")
+	// ErrRequestImmutable is returned when payload updates are attempted on immutable requests.
+	ErrRequestImmutable = errors.New("request is immutable")
 	// ErrGrantNotFound is returned when a grant cannot be located.
 	ErrGrantNotFound = errors.New("grant not found")
+	// ErrGrantAlreadyCurrent is returned when a grant already matches the request version.
+	ErrGrantAlreadyCurrent = errors.New("grant already current")
+	// ErrGrantRequestVersionConflict is returned when provided request version does not match current request version.
+	ErrGrantRequestVersionConflict = errors.New("request version conflict")
 	// ErrRegisterNotFound is returned when a register entry cannot be located.
 	ErrRegisterNotFound = errors.New("register not found")
 	// ErrRegisterUniqueKeyConflict is returned when a register with the same unique key exists.

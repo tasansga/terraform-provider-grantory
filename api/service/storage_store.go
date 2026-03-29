@@ -104,6 +104,7 @@ func (a storageStore) CreateRequest(ctx context.Context, payload RequestCreatePa
 		GrantSchemaDefinitionID:   payload.GrantSchemaDefinitionID,
 		UniqueKey:                 payload.UniqueKey,
 		Payload:                   payload.Payload,
+		Mutable:                   payload.Mutable,
 		Labels:                    payload.Labels,
 	})
 	if err != nil {
@@ -142,7 +143,11 @@ func (a storageStore) ListRequests(ctx context.Context, opts RequestListOptions)
 }
 
 func (a storageStore) UpdateRequestLabels(ctx context.Context, id string, labels map[string]string) (Request, error) {
-	if err := a.store.UpdateRequestLabels(ctx, id, labels); err != nil {
+	return a.UpdateRequest(ctx, id, RequestUpdatePayload{Labels: &labels})
+}
+
+func (a storageStore) UpdateRequest(ctx context.Context, id string, payload RequestUpdatePayload) (Request, error) {
+	if err := a.store.UpdateRequest(ctx, id, payload.Payload, payload.Labels); err != nil {
 		return Request{}, mapStorageError(err)
 	}
 	return a.GetRequest(ctx, id)
@@ -220,8 +225,9 @@ func (a storageStore) DeleteRegister(ctx context.Context, id string) error {
 
 func (a storageStore) CreateGrant(ctx context.Context, payload GrantCreatePayload) (Grant, error) {
 	grant, err := a.store.CreateGrant(ctx, storage.Grant{
-		RequestID: payload.RequestID,
-		Payload:   payload.Payload,
+		RequestID:      payload.RequestID,
+		RequestVersion: payload.RequestVersion,
+		Payload:        payload.Payload,
 	})
 	if err != nil {
 		return Grant{}, mapStorageError(err)
@@ -251,6 +257,13 @@ func (a storageStore) ListGrants(ctx context.Context) ([]Grant, error) {
 
 func (a storageStore) DeleteGrant(ctx context.Context, id string) error {
 	return mapStorageError(a.store.DeleteGrant(ctx, id))
+}
+
+func (a storageStore) UpdateGrant(ctx context.Context, id string, payload GrantUpdatePayload) (Grant, error) {
+	if err := a.store.UpdateGrant(ctx, id, payload.Payload, payload.RequestVersion); err != nil {
+		return Grant{}, mapStorageError(err)
+	}
+	return a.GetGrant(ctx, id)
 }
 
 func (a storageStore) CreateSchemaDefinition(ctx context.Context, payload SchemaDefinitionCreatePayload) (SchemaDefinition, error) {
@@ -307,10 +320,11 @@ func (a storageStore) requestWithGrant(ctx context.Context, req storage.Request)
 	}
 	out.GrantID = grant.ID
 	out.Grant = map[string]any{
-		"grant_id":   grant.ID,
-		"created_at": grant.CreatedAt.Format(time.RFC3339Nano),
-		"updated_at": grant.UpdatedAt.Format(time.RFC3339Nano),
-		"payload":    grant.Payload,
+		"grant_id":        grant.ID,
+		"request_version": grant.RequestVersion,
+		"created_at":      grant.CreatedAt.Format(time.RFC3339Nano),
+		"updated_at":      grant.UpdatedAt.Format(time.RFC3339Nano),
+		"payload":         grant.Payload,
 	}
 	return out, nil
 }
@@ -332,6 +346,8 @@ func requestFromStorage(req storage.Request) Request {
 		GrantSchemaDefinitionID:   req.GrantSchemaDefinitionID,
 		UniqueKey:                 req.UniqueKey,
 		Payload:                   req.Payload,
+		Mutable:                   req.Mutable,
+		Version:                   req.Version,
 		Labels:                    req.Labels,
 		HasGrant:                  req.HasGrant,
 		CreatedAt:                 req.CreatedAt,
@@ -368,11 +384,12 @@ func registerEventFromStorage(event storage.RegisterEvent) RegisterEvent {
 
 func grantFromStorage(grant storage.Grant) Grant {
 	return Grant{
-		ID:        grant.ID,
-		RequestID: grant.RequestID,
-		Payload:   grant.Payload,
-		CreatedAt: grant.CreatedAt,
-		UpdatedAt: grant.UpdatedAt,
+		ID:             grant.ID,
+		RequestID:      grant.RequestID,
+		RequestVersion: grant.RequestVersion,
+		Payload:        grant.Payload,
+		CreatedAt:      grant.CreatedAt,
+		UpdatedAt:      grant.UpdatedAt,
 	}
 }
 
@@ -402,10 +419,14 @@ func mapStorageError(err error) error {
 		return ErrRequestAlreadyExists
 	case errors.Is(err, storage.ErrRequestUniqueKeyConflict):
 		return ErrRequestUniqueKeyConflict
+	case errors.Is(err, storage.ErrRequestImmutable):
+		return ErrRequestImmutable
 	case errors.Is(err, storage.ErrGrantNotFound):
 		return ErrGrantNotFound
 	case errors.Is(err, storage.ErrGrantAlreadyExists):
 		return ErrGrantAlreadyExists
+	case errors.Is(err, storage.ErrGrantRequestVersionConflict):
+		return ErrGrantRequestVersionConflict
 	case errors.Is(err, storage.ErrRegisterNotFound):
 		return ErrRegisterNotFound
 	case errors.Is(err, storage.ErrRegisterAlreadyExists):

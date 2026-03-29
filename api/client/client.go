@@ -333,6 +333,15 @@ func (c *Client) ListGrants(ctx context.Context) ([]Grant, error) {
 	return grants, nil
 }
 
+// UpdateGrant updates the grant payload.
+func (c *Client) UpdateGrant(ctx context.Context, id string, payload GrantUpdatePayload) (Grant, error) {
+	var grant Grant
+	if err := c.doJSON(ctx, http.MethodPatch, fmt.Sprintf("/grants/%s", id), payload, &grant); err != nil {
+		return Grant{}, err
+	}
+	return grant, nil
+}
+
 // DeleteGrant deletes a grant by ID.
 func (c *Client) DeleteGrant(ctx context.Context, id string) error {
 	return c.doJSON(ctx, http.MethodDelete, fmt.Sprintf("/grants/%s", id), nil, nil)

@@ -67,8 +67,33 @@ func (s *Service) ListRequests(ctx context.Context, opts RequestListOptions) ([]
 	return s.store.ListRequests(ctx, opts)
 }
 
+func (s *Service) UpdateRequest(ctx context.Context, id string, payload RequestUpdatePayload) (Request, error) {
+	if payload.Payload == nil && payload.Labels == nil {
+		return Request{}, fmt.Errorf("payload and/or labels are required")
+	}
+	req, err := s.store.GetRequest(ctx, id)
+	if err != nil {
+		return Request{}, err
+	}
+	if payload.Payload != nil && !req.Mutable {
+		return Request{}, ErrRequestImmutable
+	}
+	if payload.Payload != nil {
+		if req.RequestSchemaDefinitionID != "" {
+			def, err := s.store.GetSchemaDefinition(ctx, req.RequestSchemaDefinitionID)
+			if err != nil {
+				return Request{}, err
+			}
+			if err := validateJSONInstance(def.Schema, *payload.Payload, "request payload", "schema"); err != nil {
+				return Request{}, err
+			}
+		}
+	}
+	return s.store.UpdateRequest(ctx, id, payload)
+}
+
 func (s *Service) UpdateRequestLabels(ctx context.Context, id string, labels map[string]string) (Request, error) {
-	return s.store.UpdateRequestLabels(ctx, id, labels)
+	return s.UpdateRequest(ctx, id, RequestUpdatePayload{Labels: &labels})
 }
 
 func (s *Service) DeleteRequest(ctx context.Context, id string) error {
@@ -137,6 +162,9 @@ func (s *Service) CreateGrant(ctx context.Context, payload GrantCreatePayload) (
 	if payload.RequestID == "" {
 		return Grant{}, fmt.Errorf("request_id is required")
 	}
+	if payload.RequestVersion <= 0 {
+		return Grant{}, fmt.Errorf("request_version is required")
+	}
 	req, err := s.store.GetRequest(ctx, payload.RequestID)
 	if err != nil {
 		return Grant{}, err
@@ -159,6 +187,36 @@ func (s *Service) GetGrant(ctx context.Context, id string) (Grant, error) {
 
 func (s *Service) ListGrants(ctx context.Context) ([]Grant, error) {
 	return s.store.ListGrants(ctx)
+}
+
+func (s *Service) UpdateGrant(ctx context.Context, id string, payload GrantUpdatePayload) (Grant, error) {
+	if payload.RequestVersion <= 0 {
+		return Grant{}, fmt.Errorf("request_version is required")
+	}
+	if payload.Payload == nil {
+		return Grant{}, fmt.Errorf("payload is required")
+	}
+	grant, err := s.store.GetGrant(ctx, id)
+	if err != nil {
+		return Grant{}, err
+	}
+	req, err := s.store.GetRequest(ctx, grant.RequestID)
+	if err != nil {
+		return Grant{}, err
+	}
+	if payload.RequestVersion != req.Version {
+		return Grant{}, ErrGrantRequestVersionConflict
+	}
+	if req.GrantSchemaDefinitionID != "" {
+		def, err := s.store.GetSchemaDefinition(ctx, req.GrantSchemaDefinitionID)
+		if err != nil {
+			return Grant{}, err
+		}
+		if err := validateJSONInstance(def.Schema, payload.Payload, "grant payload", "schema"); err != nil {
+			return Grant{}, err
+		}
+	}
+	return s.store.UpdateGrant(ctx, id, payload)
 }
 
 func (s *Service) DeleteGrant(ctx context.Context, id string) error {

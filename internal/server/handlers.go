@@ -214,11 +214,13 @@ type requestCreatePayload struct {
 	GrantSchemaDefinitionID   string            `json:"grant_schema_definition_id"`
 	UniqueKey                 string            `json:"unique_key"`
 	Payload                   map[string]any    `json:"payload"`
+	Mutable                   bool              `json:"mutable"`
 	Labels                    map[string]string `json:"labels"`
 }
 
 type requestUpdatePayload struct {
-	Labels *map[string]string `json:"labels"`
+	Payload *map[string]any    `json:"payload"`
+	Labels  *map[string]string `json:"labels"`
 }
 
 type schemaDefinitionHandler struct{}
@@ -248,6 +250,7 @@ func (h requestHandler) create(c *fiber.Ctx) error {
 		"grant_schema_definition_id":   payload.GrantSchemaDefinitionID,
 		"unique_key":                   payload.UniqueKey,
 		"payload":                      payload.Payload,
+		"mutable":                      payload.Mutable,
 		"labels":                       payload.Labels,
 	})
 
@@ -262,6 +265,7 @@ func (h requestHandler) create(c *fiber.Ctx) error {
 		GrantSchemaDefinitionID:   payload.GrantSchemaDefinitionID,
 		UniqueKey:                 payload.UniqueKey,
 		Payload:                   payload.Payload,
+		Mutable:                   payload.Mutable,
 		Labels:                    payload.Labels,
 	})
 	if err != nil {
@@ -427,24 +431,32 @@ func (h requestHandler) update(c *fiber.Ctx) error {
 	if err := c.BodyParser(&payload); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, err.Error())
 	}
-	if payload.Labels == nil {
-		return fiber.NewError(fiber.StatusBadRequest, "labels are required")
+	if payload.Payload == nil && payload.Labels == nil {
+		return fiber.NewError(fiber.StatusBadRequest, "payload and/or labels are required")
 	}
 
 	reqID := c.Params("id")
-	logRequestEntry(c, "requestHandler.update", map[string]any{"request_id": reqID, "labels": payload.Labels})
+	logRequestEntry(c, "requestHandler.update", map[string]any{"request_id": reqID, "payload": payload.Payload, "labels": payload.Labels})
 
 	svc, namespace, err := resolveNamespaceService(c)
 	if err != nil {
 		return err
 	}
 
-	updated, err := svc.UpdateRequestLabels(c.Context(), reqID, *payload.Labels)
+	updated, err := svc.UpdateRequest(c.Context(), reqID, apiservice.RequestUpdatePayload{
+		Payload: payload.Payload,
+		Labels:  payload.Labels,
+	})
 	if err != nil {
-		if errors.Is(err, apiservice.ErrRequestNotFound) {
+		switch {
+		case errors.Is(err, apiservice.ErrRequestNotFound):
 			return fiber.NewError(fiber.StatusNotFound, "request not found")
+		case errors.Is(err, apiservice.ErrRequestImmutable):
+			return fiber.NewError(fiber.StatusConflict, "request payload is immutable")
+		case isValidationError(err):
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
 		}
-		logrus.WithError(err).WithField("namespace", namespace).Error("update request labels")
+		logrus.WithError(err).WithField("namespace", namespace).Error("update request")
 		return fiber.NewError(fiber.StatusInternalServerError, "unable to update request")
 	}
 	return c.JSON(updated)
@@ -779,14 +791,21 @@ func registerGrantRoutes(app fiber.Router) {
 	group.Get("/", handler.list)
 	group.Post("/", handler.create)
 	group.Get("/:id", handler.get)
+	group.Patch("/:id", handler.update)
 	group.Delete("/:id", handler.delete)
 }
 
 type grantHandler struct{}
 
 type grantCreatePayload struct {
-	RequestID string         `json:"request_id"`
-	Payload   map[string]any `json:"payload"`
+	RequestID      string         `json:"request_id"`
+	RequestVersion int            `json:"request_version"`
+	Payload        map[string]any `json:"payload"`
+}
+
+type grantUpdatePayload struct {
+	RequestVersion int             `json:"request_version"`
+	Payload        *map[string]any `json:"payload"`
 }
 
 func (h grantHandler) create(c *fiber.Ctx) error {
@@ -797,15 +816,22 @@ func (h grantHandler) create(c *fiber.Ctx) error {
 	if payload.RequestID == "" {
 		return fiber.NewError(fiber.StatusBadRequest, "request_id is required")
 	}
+	if payload.RequestVersion <= 0 {
+		return fiber.NewError(fiber.StatusBadRequest, "request_version is required")
+	}
 
-	logRequestEntry(c, "grantHandler.create", map[string]any{"request_id": payload.RequestID})
+	logRequestEntry(c, "grantHandler.create", map[string]any{"request_id": payload.RequestID, "request_version": payload.RequestVersion})
 
 	svc, namespace, err := resolveNamespaceService(c)
 	if err != nil {
 		return err
 	}
 
-	grant, err := svc.CreateGrant(c.Context(), apiservice.GrantCreatePayload{RequestID: payload.RequestID, Payload: payload.Payload})
+	grant, err := svc.CreateGrant(c.Context(), apiservice.GrantCreatePayload{
+		RequestID:      payload.RequestID,
+		RequestVersion: payload.RequestVersion,
+		Payload:        payload.Payload,
+	})
 	if err != nil {
 		switch {
 		case errors.Is(err, apiservice.ErrGrantAlreadyExists):
@@ -814,6 +840,8 @@ func (h grantHandler) create(c *fiber.Ctx) error {
 			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("request %s not found", payload.RequestID))
 		case errors.Is(err, apiservice.ErrSchemaDefinitionNotFound):
 			return fiber.NewError(fiber.StatusBadRequest, "schema definition not found")
+		case errors.Is(err, apiservice.ErrGrantRequestVersionConflict):
+			return fiber.NewError(fiber.StatusConflict, "request version conflict")
 		case isValidationError(err):
 			return fiber.NewError(fiber.StatusBadRequest, err.Error())
 		default:
@@ -859,6 +887,46 @@ func (h grantHandler) get(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusInternalServerError, "unable to fetch grant")
 	}
 	return c.JSON(grant)
+}
+
+func (h grantHandler) update(c *fiber.Ctx) error {
+	var payload grantUpdatePayload
+	if err := c.BodyParser(&payload); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, err.Error())
+	}
+	if payload.Payload == nil {
+		return fiber.NewError(fiber.StatusBadRequest, "payload is required")
+	}
+	if payload.RequestVersion <= 0 {
+		return fiber.NewError(fiber.StatusBadRequest, "request_version is required")
+	}
+
+	grantID := c.Params("id")
+	logRequestEntry(c, "grantHandler.update", map[string]any{"grant_id": grantID, "request_version": payload.RequestVersion, "payload": payload.Payload})
+
+	svc, namespace, err := resolveNamespaceService(c)
+	if err != nil {
+		return err
+	}
+
+	updated, err := svc.UpdateGrant(c.Context(), grantID, apiservice.GrantUpdatePayload{
+		RequestVersion: payload.RequestVersion,
+		Payload:        *payload.Payload,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, apiservice.ErrGrantNotFound):
+			return fiber.NewError(fiber.StatusNotFound, "grant not found")
+		case errors.Is(err, apiservice.ErrGrantRequestVersionConflict):
+			return fiber.NewError(fiber.StatusConflict, "request version conflict")
+		case isValidationError(err):
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		}
+		logrus.WithError(err).WithField("namespace", namespace).Error("update grant")
+		return fiber.NewError(fiber.StatusInternalServerError, "unable to update grant")
+	}
+
+	return c.JSON(updated)
 }
 
 func (h grantHandler) delete(c *fiber.Ctx) error {

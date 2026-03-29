@@ -67,6 +67,7 @@ func (a serviceStoreAdapter) CreateRequest(ctx context.Context, payload apiservi
 		GrantSchemaDefinitionID:   payload.GrantSchemaDefinitionID,
 		UniqueKey:                 payload.UniqueKey,
 		Payload:                   payload.Payload,
+		Mutable:                   payload.Mutable,
 		Labels:                    payload.Labels,
 	})
 	if err != nil {
@@ -101,7 +102,11 @@ func (a serviceStoreAdapter) ListRequests(ctx context.Context, opts apiservice.R
 }
 
 func (a serviceStoreAdapter) UpdateRequestLabels(ctx context.Context, id string, labels map[string]string) (apiservice.Request, error) {
-	if err := a.store.UpdateRequestLabels(ctx, id, labels); err != nil {
+	return a.UpdateRequest(ctx, id, apiservice.RequestUpdatePayload{Labels: &labels})
+}
+
+func (a serviceStoreAdapter) UpdateRequest(ctx context.Context, id string, payload apiservice.RequestUpdatePayload) (apiservice.Request, error) {
+	if err := a.store.UpdateRequest(ctx, id, payload.Payload, payload.Labels); err != nil {
 		return apiservice.Request{}, mapStorageError(err)
 	}
 	return a.GetRequest(ctx, id)
@@ -175,7 +180,11 @@ func (a serviceStoreAdapter) DeleteRegister(ctx context.Context, id string) erro
 }
 
 func (a serviceStoreAdapter) CreateGrant(ctx context.Context, payload apiservice.GrantCreatePayload) (apiservice.Grant, error) {
-	grant, err := a.store.CreateGrant(ctx, storage.Grant{RequestID: payload.RequestID, Payload: payload.Payload})
+	grant, err := a.store.CreateGrant(ctx, storage.Grant{
+		RequestID:      payload.RequestID,
+		RequestVersion: payload.RequestVersion,
+		Payload:        payload.Payload,
+	})
 	if err != nil {
 		return apiservice.Grant{}, mapStorageError(err)
 	}
@@ -204,6 +213,13 @@ func (a serviceStoreAdapter) ListGrants(ctx context.Context) ([]apiservice.Grant
 
 func (a serviceStoreAdapter) DeleteGrant(ctx context.Context, id string) error {
 	return mapStorageError(a.store.DeleteGrant(ctx, id))
+}
+
+func (a serviceStoreAdapter) UpdateGrant(ctx context.Context, id string, payload apiservice.GrantUpdatePayload) (apiservice.Grant, error) {
+	if err := a.store.UpdateGrant(ctx, id, payload.Payload, payload.RequestVersion); err != nil {
+		return apiservice.Grant{}, mapStorageError(err)
+	}
+	return a.GetGrant(ctx, id)
 }
 
 func (a serviceStoreAdapter) CreateSchemaDefinition(ctx context.Context, payload apiservice.SchemaDefinitionCreatePayload) (apiservice.SchemaDefinition, error) {
@@ -256,10 +272,11 @@ func (a serviceStoreAdapter) requestWithGrant(ctx context.Context, req storage.R
 	}
 	out.GrantID = grant.ID
 	out.Grant = map[string]any{
-		"grant_id":   grant.ID,
-		"created_at": grant.CreatedAt.Format(time.RFC3339Nano),
-		"updated_at": grant.UpdatedAt.Format(time.RFC3339Nano),
-		"payload":    grant.Payload,
+		"grant_id":        grant.ID,
+		"request_version": grant.RequestVersion,
+		"created_at":      grant.CreatedAt.Format(time.RFC3339Nano),
+		"updated_at":      grant.UpdatedAt.Format(time.RFC3339Nano),
+		"payload":         grant.Payload,
 	}
 	return out, nil
 }
@@ -276,6 +293,8 @@ func requestFromStorage(req storage.Request) apiservice.Request {
 		GrantSchemaDefinitionID:   req.GrantSchemaDefinitionID,
 		UniqueKey:                 req.UniqueKey,
 		Payload:                   req.Payload,
+		Mutable:                   req.Mutable,
+		Version:                   req.Version,
 		Labels:                    req.Labels,
 		HasGrant:                  req.HasGrant,
 		CreatedAt:                 req.CreatedAt,
@@ -301,7 +320,7 @@ func registerEventFromStorage(event storage.RegisterEvent) apiservice.RegisterEv
 }
 
 func grantFromStorage(grant storage.Grant) apiservice.Grant {
-	return apiservice.Grant{ID: grant.ID, RequestID: grant.RequestID, Payload: grant.Payload, CreatedAt: grant.CreatedAt, UpdatedAt: grant.UpdatedAt}
+	return apiservice.Grant{ID: grant.ID, RequestID: grant.RequestID, RequestVersion: grant.RequestVersion, Payload: grant.Payload, CreatedAt: grant.CreatedAt, UpdatedAt: grant.UpdatedAt}
 }
 
 func schemaDefinitionFromStorage(def storage.SchemaDefinition) apiservice.SchemaDefinition {
@@ -324,10 +343,14 @@ func mapStorageError(err error) error {
 		return apiservice.ErrRequestAlreadyExists
 	case errors.Is(err, storage.ErrRequestUniqueKeyConflict):
 		return apiservice.ErrRequestUniqueKeyConflict
+	case errors.Is(err, storage.ErrRequestImmutable):
+		return apiservice.ErrRequestImmutable
 	case errors.Is(err, storage.ErrGrantNotFound):
 		return apiservice.ErrGrantNotFound
 	case errors.Is(err, storage.ErrGrantAlreadyExists):
 		return apiservice.ErrGrantAlreadyExists
+	case errors.Is(err, storage.ErrGrantRequestVersionConflict):
+		return apiservice.ErrGrantRequestVersionConflict
 	case errors.Is(err, storage.ErrRegisterNotFound):
 		return apiservice.ErrRegisterNotFound
 	case errors.Is(err, storage.ErrRegisterAlreadyExists):

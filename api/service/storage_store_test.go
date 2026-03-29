@@ -40,8 +40,9 @@ func TestNewSQLiteStoreAndServiceHappyPath(t *testing.T) {
 	}
 
 	grant, err := svc.CreateGrant(context.Background(), GrantCreatePayload{
-		RequestID: req.ID,
-		Payload:   map[string]any{"token": "abc"},
+		RequestID:      req.ID,
+		RequestVersion: req.Version,
+		Payload:        map[string]any{"token": "abc"},
 	})
 	if err != nil {
 		t.Fatalf("create grant: %v", err)

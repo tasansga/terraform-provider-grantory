@@ -231,6 +231,7 @@ func TestAPIEndpoints(t *testing.T) {
 
 	reqPayload := map[string]any{
 		"host_id": host.ID,
+		"mutable": true,
 		"payload": map[string]string{
 			"name": "db request",
 		},
@@ -260,14 +261,31 @@ func TestAPIEndpoints(t *testing.T) {
 	assert.Equal(t, "staging", updatedReqLabels.Labels["env"], "request labels should update")
 
 	grantPayload := map[string]any{
-		"request_id": reqID,
-		"payload":    map[string]string{"detail": "payload"},
+		"request_id":      reqID,
+		"request_version": 1,
+		"payload":         map[string]string{"detail": "payload"},
 	}
 	res = sendTestRequest(t, app, http.MethodPost, "/grants", headers, grantPayload)
 	assert.Equal(t, http.StatusCreated, res.StatusCode, "create grant status")
 	grant := decodeJSON[storage.Grant](t, res)
 	assert.Equal(t, reqID, grant.RequestID, "grant should reference request")
 	assert.NotEmpty(t, grant.ID, "grant should expose generated ID")
+	assert.EqualValues(t, 1, grant.RequestVersion, "grant should track request version")
+
+	reqPayloadUpdate := map[string]any{"payload": map[string]any{"name": "db request v2"}}
+	res = sendTestRequest(t, app, http.MethodPatch, fmt.Sprintf("/requests/%s", reqID), headers, reqPayloadUpdate)
+	assert.Equal(t, http.StatusOK, res.StatusCode, "update request payload status")
+	updatedReqPayload := decodeJSON[storage.Request](t, res)
+	assert.EqualValues(t, 2, updatedReqPayload.Version, "request version should increment on payload update")
+
+	grantUpdatePayload := map[string]any{
+		"request_version": 2,
+		"payload":         map[string]any{"detail": "payload-v2"},
+	}
+	res = sendTestRequest(t, app, http.MethodPatch, fmt.Sprintf("/grants/%s", grant.ID), headers, grantUpdatePayload)
+	assert.Equal(t, http.StatusOK, res.StatusCode, "update grant payload status")
+	updatedGrant := decodeJSON[storage.Grant](t, res)
+	assert.EqualValues(t, 2, updatedGrant.RequestVersion, "grant version should follow request version")
 
 	res = sendTestRequest(t, app, http.MethodGet, fmt.Sprintf("/requests/%s", reqID), headers, nil)
 	assert.Equal(t, http.StatusOK, res.StatusCode, "get request after grant")
@@ -503,7 +521,8 @@ func TestGrantSchemaValidation(t *testing.T) {
 	req := decodeJSON[storage.Request](t, res)
 
 	goodGrant := map[string]any{
-		"request_id": req.ID,
+		"request_id":      req.ID,
+		"request_version": req.Version,
 		"payload": map[string]any{
 			"detail": "ok",
 		},
@@ -512,7 +531,8 @@ func TestGrantSchemaValidation(t *testing.T) {
 	assert.Equal(t, http.StatusCreated, res.StatusCode, "grant should pass schema validation")
 
 	badGrant := map[string]any{
-		"request_id": req.ID,
+		"request_id":      req.ID,
+		"request_version": req.Version,
 		"payload": map[string]any{
 			"detail": 123,
 		},
@@ -582,8 +602,9 @@ func TestRequestGrantField(t *testing.T) {
 	assert.Nil(t, grantValue, "grant should be null before being applied")
 
 	grantPayload := map[string]any{
-		"request_id": reqID,
-		"payload":    map[string]string{"detail": "payload"},
+		"request_id":      reqID,
+		"request_version": 1,
+		"payload":         map[string]string{"detail": "payload"},
 	}
 	res = sendTestRequest(t, app, http.MethodPost, "/grants", headers, grantPayload)
 	assert.Equal(t, http.StatusCreated, res.StatusCode, "create grant status")
@@ -811,7 +832,13 @@ func TestGrantHandlerMissingFields(t *testing.T) {
 	res = sendTestRequest(t, app, http.MethodPost, "/grants", headers, map[string]any{
 		"request_id": "missing",
 	})
-	assert.Equal(t, http.StatusBadRequest, res.StatusCode, "grant handler should require payload")
+	assert.Equal(t, http.StatusBadRequest, res.StatusCode, "grant handler should require request_version")
+
+	res = sendTestRequest(t, app, http.MethodPost, "/grants", headers, map[string]any{
+		"request_id":      "missing",
+		"request_version": 1,
+	})
+	assert.Equal(t, http.StatusBadRequest, res.StatusCode, "grant handler should reject unknown request even when payload is omitted")
 }
 
 func TestHandlersRejectEmptyLabelUpdates(t *testing.T) {
@@ -878,6 +905,8 @@ func TestMissingResourcesReturnNotFound(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, res.StatusCode, "missing grant delete should 404")
 	res = sendTestRequest(t, app, http.MethodGet, "/grants/unknown", headers, nil)
 	assert.Equal(t, http.StatusNotFound, res.StatusCode, "missing grant get should 404")
+	res = sendTestRequest(t, app, http.MethodPatch, "/grants/unknown", headers, map[string]any{"request_version": 1, "payload": map[string]any{"x": "y"}})
+	assert.Equal(t, http.StatusNotFound, res.StatusCode, "missing grant update should 404")
 }
 
 func TestHandlersReturnInternalServerErrorWhenStoreClosed(t *testing.T) {
@@ -922,16 +951,17 @@ func TestHandlersReturnInternalServerErrorWhenStoreClosed(t *testing.T) {
 		{http.MethodPost, "/requests", map[string]any{"host_id": "any"}},
 		{http.MethodGet, "/requests", nil},
 		{http.MethodGet, "/requests/any", nil},
-		{http.MethodPatch, "/requests/any", map[string]any{"labels": map[string]string{"env": "x"}}},
+		{http.MethodPatch, "/requests/any", map[string]any{"payload": map[string]any{"x": "y"}}},
 		{http.MethodDelete, "/requests/any", nil},
 		{http.MethodPost, "/registers", map[string]any{"host_id": "any"}},
 		{http.MethodGet, "/registers", nil},
 		{http.MethodGet, "/registers/any", nil},
 		{http.MethodPatch, "/registers/any", map[string]any{"labels": map[string]string{"env": "x"}}},
 		{http.MethodDelete, "/registers/any", nil},
-		{http.MethodPost, "/grants", map[string]any{"request_id": "any", "payload": map[string]string{"x": "y"}}},
+		{http.MethodPost, "/grants", map[string]any{"request_id": "any", "request_version": 1, "payload": map[string]string{"x": "y"}}},
 		{http.MethodGet, "/grants", nil},
 		{http.MethodGet, "/grants/any", nil},
+		{http.MethodPatch, "/grants/any", map[string]any{"request_version": 1, "payload": map[string]any{"x": "y"}}},
 		{http.MethodDelete, "/grants/any", nil},
 	}
 
@@ -1052,8 +1082,9 @@ func TestRequestAndGrantDetailPagesAndCrossLinks(t *testing.T) {
 	request := decodeJSON[storage.Request](t, requestRes)
 
 	grantRes := sendTestRequest(t, app, http.MethodPost, "/grants", headers, map[string]any{
-		"request_id": request.ID,
-		"payload":    map[string]any{"permit": true},
+		"request_id":      request.ID,
+		"request_version": request.Version,
+		"payload":         map[string]any{"permit": true},
 	})
 	require.Equal(t, http.StatusCreated, grantRes.StatusCode)
 	grant := decodeJSON[storage.Grant](t, grantRes)

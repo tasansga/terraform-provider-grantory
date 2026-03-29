@@ -1113,6 +1113,104 @@ func TestGrantCRUD(t *testing.T) {
 	assert.ErrorIs(t, err, ErrGrantNotFound, "expected grant to be deleted")
 }
 
+func TestGrantUpdateAllowsPayloadCorrectionAtSameRequestVersion(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := New(ctx, ":memory:")
+	require.NoError(t, err)
+	defer closeStore(t, store)
+
+	require.NoError(t, store.Migrate(ctx))
+
+	host, err := store.CreateHost(ctx, Host{})
+	require.NoError(t, err)
+
+	req, err := store.CreateRequest(ctx, Request{HostID: host.ID})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, req.Version)
+
+	grant, err := store.CreateGrant(ctx, Grant{
+		RequestID:      req.ID,
+		RequestVersion: req.Version,
+		Payload:        map[string]any{"value": "old"},
+	})
+	require.NoError(t, err)
+
+	err = store.UpdateGrant(ctx, grant.ID, map[string]any{"value": "new"}, req.Version)
+	require.NoError(t, err)
+
+	updated, err := store.GetGrant(ctx, grant.ID)
+	require.NoError(t, err)
+	assert.EqualValues(t, req.Version, updated.RequestVersion)
+	assert.Equal(t, "new", updated.Payload["value"])
+}
+
+func TestGrantVersionConflictOnCreateAndUpdate(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := New(ctx, ":memory:")
+	require.NoError(t, err)
+	defer closeStore(t, store)
+
+	require.NoError(t, store.Migrate(ctx))
+
+	host, err := store.CreateHost(ctx, Host{})
+	require.NoError(t, err)
+
+	req, err := store.CreateRequest(ctx, Request{HostID: host.ID, Mutable: true, Payload: map[string]any{"v": "one"}})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, req.Version)
+
+	_, err = store.CreateGrant(ctx, Grant{
+		RequestID:      req.ID,
+		RequestVersion: req.Version + 1,
+		Payload:        map[string]any{"value": "stale"},
+	})
+	require.ErrorIs(t, err, ErrGrantRequestVersionConflict)
+
+	grant, err := store.CreateGrant(ctx, Grant{
+		RequestID:      req.ID,
+		RequestVersion: req.Version,
+		Payload:        map[string]any{"value": "ok"},
+	})
+	require.NoError(t, err)
+
+	payloadV2 := map[string]any{"v": "two"}
+	require.NoError(t, store.UpdateRequest(ctx, req.ID, &payloadV2, nil))
+
+	err = store.UpdateGrant(ctx, grant.ID, map[string]any{"value": "stale-update"}, req.Version)
+	require.ErrorIs(t, err, ErrGrantRequestVersionConflict)
+}
+
+func TestGrantUpdateNoOpSamePayloadAndVersionSucceeds(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := New(ctx, ":memory:")
+	require.NoError(t, err)
+	defer closeStore(t, store)
+
+	require.NoError(t, store.Migrate(ctx))
+
+	host, err := store.CreateHost(ctx, Host{})
+	require.NoError(t, err)
+
+	req, err := store.CreateRequest(ctx, Request{HostID: host.ID})
+	require.NoError(t, err)
+
+	grant, err := store.CreateGrant(ctx, Grant{
+		RequestID:      req.ID,
+		RequestVersion: req.Version,
+		Payload:        map[string]any{"value": "same"},
+	})
+	require.NoError(t, err)
+
+	err = store.UpdateGrant(ctx, grant.ID, map[string]any{"value": "same"}, req.Version)
+	require.NoError(t, err)
+}
+
 func TestCountRequestsByGrantPresence(t *testing.T) {
 	t.Parallel()
 

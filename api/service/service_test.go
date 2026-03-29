@@ -20,6 +20,7 @@ type fakeStore struct {
 	createRequestFn                func(context.Context, RequestCreatePayload) (Request, error)
 	getRequestFn                   func(context.Context, string) (Request, error)
 	listRequestsFn                 func(context.Context, RequestListOptions) ([]Request, error)
+	updateRequestFn                func(context.Context, string, RequestUpdatePayload) (Request, error)
 	updateRequestLabelsFn          func(context.Context, string, map[string]string) (Request, error)
 	deleteRequestFn                func(context.Context, string) error
 	createRegisterFn               func(context.Context, RegisterCreatePayload) (Register, error)
@@ -32,6 +33,7 @@ type fakeStore struct {
 	createGrantFn                  func(context.Context, GrantCreatePayload) (Grant, error)
 	getGrantFn                     func(context.Context, string) (Grant, error)
 	listGrantsFn                   func(context.Context) ([]Grant, error)
+	updateGrantFn                  func(context.Context, string, GrantUpdatePayload) (Grant, error)
 	deleteGrantFn                  func(context.Context, string) error
 	createSchemaDefinitionFn       func(context.Context, SchemaDefinitionCreatePayload) (SchemaDefinition, error)
 	getSchemaDefinitionFn          func(context.Context, string) (SchemaDefinition, error)
@@ -100,6 +102,12 @@ func (f *fakeStore) UpdateRequestLabels(ctx context.Context, id string, labels m
 		return Request{}, fmt.Errorf("unexpected UpdateRequestLabels")
 	}
 	return f.updateRequestLabelsFn(ctx, id, labels)
+}
+func (f *fakeStore) UpdateRequest(ctx context.Context, id string, payload RequestUpdatePayload) (Request, error) {
+	if f.updateRequestFn == nil {
+		return Request{}, fmt.Errorf("unexpected UpdateRequest")
+	}
+	return f.updateRequestFn(ctx, id, payload)
 }
 func (f *fakeStore) DeleteRequest(ctx context.Context, id string) error {
 	if f.deleteRequestFn == nil {
@@ -173,6 +181,12 @@ func (f *fakeStore) DeleteGrant(ctx context.Context, id string) error {
 	}
 	return f.deleteGrantFn(ctx, id)
 }
+func (f *fakeStore) UpdateGrant(ctx context.Context, id string, payload GrantUpdatePayload) (Grant, error) {
+	if f.updateGrantFn == nil {
+		return Grant{}, fmt.Errorf("unexpected UpdateGrant")
+	}
+	return f.updateGrantFn(ctx, id, payload)
+}
 func (f *fakeStore) CreateSchemaDefinition(ctx context.Context, payload SchemaDefinitionCreatePayload) (SchemaDefinition, error) {
 	if f.createSchemaDefinitionFn == nil {
 		return SchemaDefinition{}, fmt.Errorf("unexpected CreateSchemaDefinition")
@@ -222,6 +236,11 @@ func TestServiceValidationRequiredFields(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "request_id is required") {
 		t.Fatalf("expected request_id validation error, got %v", err)
 	}
+
+	_, err = svc.UpdateGrant(context.Background(), "grant-1", GrantUpdatePayload{RequestVersion: 1})
+	if err == nil || !strings.Contains(err.Error(), "payload is required") {
+		t.Fatalf("expected payload validation error, got %v", err)
+	}
 }
 
 func TestServiceSchemaValidationForRequestRegisterAndGrant(t *testing.T) {
@@ -266,8 +285,9 @@ func TestServiceSchemaValidationForRequestRegisterAndGrant(t *testing.T) {
 	}
 
 	_, err = svc.CreateGrant(context.Background(), GrantCreatePayload{
-		RequestID: "req-1",
-		Payload:   map[string]any{"name": 123},
+		RequestID:      "req-1",
+		RequestVersion: 1,
+		Payload:        map[string]any{"name": 123},
 	})
 	if err == nil || !strings.Contains(err.Error(), "does not match schema") {
 		t.Fatalf("expected grant schema mismatch, got %v", err)
@@ -314,5 +334,109 @@ func TestServiceCreateSchemaDefinitionValidation(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "must be valid JSON") {
 		t.Fatalf("expected invalid json error, got %v", err)
+	}
+}
+
+func TestServiceUpdateRequestValidatesPayloadAgainstSchema(t *testing.T) {
+	t.Parallel()
+
+	validSchema := json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`)
+	store := &fakeStore{
+		getRequestFn: func(context.Context, string) (Request, error) {
+			return Request{ID: "req-1", Mutable: true, RequestSchemaDefinitionID: "def-1"}, nil
+		},
+		getSchemaDefinitionFn: func(context.Context, string) (SchemaDefinition, error) {
+			return SchemaDefinition{ID: "def-1", Schema: validSchema}, nil
+		},
+	}
+	svc := New(store)
+
+	payload := map[string]any{"name": 123}
+	_, err := svc.UpdateRequest(context.Background(), "req-1", RequestUpdatePayload{Payload: &payload})
+	if err == nil || !strings.Contains(err.Error(), "does not match schema") {
+		t.Fatalf("expected request schema mismatch, got %v", err)
+	}
+}
+
+func TestServiceUpdateGrantValidatesPayloadAgainstSchema(t *testing.T) {
+	t.Parallel()
+
+	validSchema := json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`)
+	store := &fakeStore{
+		getGrantFn: func(context.Context, string) (Grant, error) {
+			return Grant{ID: "grant-1", RequestID: "req-1"}, nil
+		},
+		getRequestFn: func(context.Context, string) (Request, error) {
+			return Request{ID: "req-1", Version: 1, GrantSchemaDefinitionID: "def-1"}, nil
+		},
+		getSchemaDefinitionFn: func(context.Context, string) (SchemaDefinition, error) {
+			return SchemaDefinition{ID: "def-1", Schema: validSchema}, nil
+		},
+	}
+	svc := New(store)
+
+	_, err := svc.UpdateGrant(context.Background(), "grant-1", GrantUpdatePayload{
+		RequestVersion: 1,
+		Payload:        map[string]any{"name": 123},
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not match schema") {
+		t.Fatalf("expected grant schema mismatch, got %v", err)
+	}
+}
+
+func TestServiceUpdateRequestReturnsImmutableBeforeSchemaValidation(t *testing.T) {
+	t.Parallel()
+
+	validSchema := json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`)
+	schemaLookups := 0
+	store := &fakeStore{
+		getRequestFn: func(context.Context, string) (Request, error) {
+			return Request{ID: "req-1", Mutable: false, RequestSchemaDefinitionID: "def-1"}, nil
+		},
+		getSchemaDefinitionFn: func(context.Context, string) (SchemaDefinition, error) {
+			schemaLookups++
+			return SchemaDefinition{ID: "def-1", Schema: validSchema}, nil
+		},
+	}
+	svc := New(store)
+
+	payload := map[string]any{"name": 123}
+	_, err := svc.UpdateRequest(context.Background(), "req-1", RequestUpdatePayload{Payload: &payload})
+	if !errors.Is(err, ErrRequestImmutable) {
+		t.Fatalf("expected ErrRequestImmutable, got %v", err)
+	}
+	if schemaLookups != 0 {
+		t.Fatalf("expected no schema lookup on immutable request, got %d", schemaLookups)
+	}
+}
+
+func TestServiceUpdateGrantReturnsVersionConflictBeforeSchemaValidation(t *testing.T) {
+	t.Parallel()
+
+	validSchema := json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`)
+	schemaLookups := 0
+	store := &fakeStore{
+		getGrantFn: func(context.Context, string) (Grant, error) {
+			return Grant{ID: "grant-1", RequestID: "req-1"}, nil
+		},
+		getRequestFn: func(context.Context, string) (Request, error) {
+			return Request{ID: "req-1", Version: 2, GrantSchemaDefinitionID: "def-1"}, nil
+		},
+		getSchemaDefinitionFn: func(context.Context, string) (SchemaDefinition, error) {
+			schemaLookups++
+			return SchemaDefinition{ID: "def-1", Schema: validSchema}, nil
+		},
+	}
+	svc := New(store)
+
+	_, err := svc.UpdateGrant(context.Background(), "grant-1", GrantUpdatePayload{
+		RequestVersion: 1,
+		Payload:        map[string]any{"name": 123},
+	})
+	if !errors.Is(err, ErrGrantRequestVersionConflict) {
+		t.Fatalf("expected ErrGrantRequestVersionConflict, got %v", err)
+	}
+	if schemaLookups != 0 {
+		t.Fatalf("expected no schema lookup on version conflict, got %d", schemaLookups)
 	}
 }

@@ -188,6 +188,8 @@ CREATE TABLE IF NOT EXISTS %s (
 	grant_schema_definition_id TEXT,
 	unique_key TEXT,
 	data JSONB,
+	mutable BOOLEAN NOT NULL DEFAULT FALSE,
+	version INTEGER NOT NULL DEFAULT 1,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	FOREIGN KEY(host_id) REFERENCES %s(id) ON DELETE CASCADE,
@@ -243,6 +245,12 @@ END $$;`, s.table("requests"), s.table("requests"), s.table("schema_definitions"
 	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS unique_key TEXT`, s.table("requests"))); err != nil {
 		return fmt.Errorf("add requests unique_key column: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS mutable BOOLEAN NOT NULL DEFAULT FALSE`, s.table("requests"))); err != nil {
+		return fmt.Errorf("add requests mutable column: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1`, s.table("requests"))); err != nil {
+		return fmt.Errorf("add requests version column: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`CREATE UNIQUE INDEX IF NOT EXISTS requests_unique_key_idx ON %s (unique_key) WHERE unique_key IS NOT NULL`, s.table("requests"))); err != nil {
 		return fmt.Errorf("create requests unique_key index: %w", err)
@@ -343,8 +351,7 @@ CREATE TABLE IF NOT EXISTS %s (
 	new_payload JSONB,
 	old_labels JSONB,
 	new_labels JSONB,
-	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-	CHECK (resource_type IN ('register'))
+	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 )`, s.table("resource_events"))
 	if _, err := tx.ExecContext(ctx, stmt); err != nil {
 		return fmt.Errorf("create resource events table: %w", err)
@@ -361,6 +368,7 @@ func (s *postgresStore) ensureGrantsTable(ctx context.Context, tx *sql.Tx) error
 	id TEXT PRIMARY KEY,
 	request_id TEXT NOT NULL,
 	payload JSONB,
+	request_version INTEGER NOT NULL DEFAULT 1,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	FOREIGN KEY(request_id) REFERENCES %s(id) ON DELETE CASCADE,
@@ -368,6 +376,9 @@ func (s *postgresStore) ensureGrantsTable(ctx context.Context, tx *sql.Tx) error
 )`, s.table("grants"), s.table("requests"))
 	if _, err := tx.ExecContext(ctx, stmt); err != nil {
 		return fmt.Errorf("create grants table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS request_version INTEGER NOT NULL DEFAULT 1`, s.table("grants"))); err != nil {
+		return fmt.Errorf("add grants request_version column: %w", err)
 	}
 	return nil
 }
@@ -465,20 +476,6 @@ func (s *postgresStore) ensureHostExists(ctx context.Context, hostID string) err
 	if _, err := s.GetHost(ctx, hostID); err != nil {
 		if errors.Is(err, ErrHostNotFound) {
 			return fmt.Errorf("%w: %s", ErrReferencedHostNotFound, hostID)
-		}
-		return err
-	}
-	return nil
-}
-
-func (s *postgresStore) ensureRequestExists(ctx context.Context, requestID string) error {
-	if requestID == "" {
-		return fmt.Errorf("request id is required")
-	}
-
-	if _, err := s.GetRequest(ctx, requestID); err != nil {
-		if errors.Is(err, ErrRequestNotFound) {
-			return fmt.Errorf("%w: %s", ErrReferencedRequestNotFound, requestID)
 		}
 		return err
 	}
@@ -668,6 +665,8 @@ func (s *postgresStore) CreateRequest(ctx context.Context, req Request) (Request
 		"request_schema_definition_id": req.RequestSchemaDefinitionID,
 		"grant_schema_definition_id":   req.GrantSchemaDefinitionID,
 		"unique_key":                   req.UniqueKey,
+		"mutable":                      req.Mutable,
+		"version":                      req.Version,
 		"payload":                      req.Payload,
 		"labels":                       req.Labels,
 	})
@@ -677,13 +676,17 @@ func (s *postgresStore) CreateRequest(ctx context.Context, req Request) (Request
 		return Request{}, fmt.Errorf("encode request payload: %w", err)
 	}
 
+	if req.Version <= 0 {
+		req.Version = 1
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Request{}, fmt.Errorf("begin request transaction: %w", err)
 	}
 	defer rollbackTx(tx, "rollback create request transaction")
 
-	stmt := fmt.Sprintf(`INSERT INTO %s (id, host_id, request_schema_definition_id, grant_schema_definition_id, unique_key, data) VALUES ($1, $2, $3, $4, $5, $6)`, s.table("requests"))
+	stmt := fmt.Sprintf(`INSERT INTO %s (id, host_id, request_schema_definition_id, grant_schema_definition_id, unique_key, data, mutable, version) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, s.table("requests"))
 	var uniqueKey any
 	if req.UniqueKey != "" {
 		uniqueKey = req.UniqueKey
@@ -696,7 +699,7 @@ func (s *postgresStore) CreateRequest(ctx context.Context, req Request) (Request
 	if req.GrantSchemaDefinitionID != "" {
 		grantSchemaID = req.GrantSchemaDefinitionID
 	}
-	if _, err := tx.ExecContext(ctx, stmt, req.ID, req.HostID, requestSchemaID, grantSchemaID, uniqueKey, payloadValue); err != nil {
+	if _, err := tx.ExecContext(ctx, stmt, req.ID, req.HostID, requestSchemaID, grantSchemaID, uniqueKey, payloadValue, req.Mutable, req.Version); err != nil {
 		if isUniqueConstraintError(err) {
 			if isUniqueKeyConstraintError(err) {
 				return Request{}, fmt.Errorf("%w: %w", ErrRequestUniqueKeyConflict, err)
@@ -708,6 +711,9 @@ func (s *postgresStore) CreateRequest(ctx context.Context, req Request) (Request
 
 	if err := insertLabelsPostgres(ctx, tx, s.table("request_labels"), "request_id", req.ID, req.Labels); err != nil {
 		return Request{}, fmt.Errorf("insert request labels: %w", err)
+	}
+	if err := insertResourceEventPostgres(ctx, tx, s.table("resource_events"), "request", req.ID, "created", nil, req.Payload, nil, req.Labels); err != nil {
+		return Request{}, fmt.Errorf("insert request event: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -730,7 +736,7 @@ func (s *postgresStore) GetRequest(ctx context.Context, id string) (Request, err
 	query := fmt.Sprintf(`
 SELECT id, host_id, request_schema_definition_id, grant_schema_definition_id, unique_key, data,
        CASE WHEN EXISTS (SELECT 1 FROM %s WHERE request_id = %s.id) THEN 1 ELSE 0 END AS has_grant,
-       created_at, updated_at
+       created_at, updated_at, mutable, version
 FROM %s
 WHERE id = $1
 `, s.table("grants"), s.table("requests"), s.table("requests"))
@@ -778,7 +784,7 @@ func (s *postgresStore) ListRequests(ctx context.Context, filters *RequestListFi
 	_, _ = fmt.Fprintf(&query, `
 SELECT id, host_id, request_schema_definition_id, grant_schema_definition_id, unique_key, data,
        CASE WHEN EXISTS (SELECT 1 FROM %s WHERE request_id = %s.id) THEN 1 ELSE 0 END AS has_grant,
-       created_at, updated_at
+       created_at, updated_at, mutable, version
 FROM %s`, s.table("grants"), s.table("requests"), s.table("requests"))
 
 	var args []any
@@ -858,41 +864,84 @@ func (s *postgresStore) CountRequestsByGrantPresence(ctx context.Context) (map[s
 	return counts, nil
 }
 
-func (s *postgresStore) UpdateRequestLabels(ctx context.Context, id string, labels map[string]string) error {
+func (s *postgresStore) UpdateRequest(ctx context.Context, id string, payload *map[string]any, labels *map[string]string) error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("store not initialized")
+	}
+	if payload == nil && labels == nil {
+		return fmt.Errorf("payload and/or labels are required")
 	}
 
 	fields := logrus.Fields{
 		"request_id": id,
+		"payload":    payload,
 		"labels":     labels,
 	}
 
-	s.logDBOperation("requests", "update_labels", fields)
+	s.logDBOperation("requests", "update", fields)
 
-	if _, err := s.GetRequest(ctx, id); err != nil {
+	current, err := s.GetRequest(ctx, id)
+	if err != nil {
 		return err
+	}
+	if payload != nil && !current.Mutable {
+		return ErrRequestImmutable
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin request labels transaction: %w", err)
+		return fmt.Errorf("begin request update transaction: %w", err)
 	}
-	defer rollbackTx(tx, "rollback request labels transaction")
+	defer rollbackTx(tx, "rollback request update transaction")
 
-	if err := replaceLabelsPostgres(ctx, tx, s.table("request_labels"), "request_id", id, labels); err != nil {
-		return fmt.Errorf("replace request labels: %w", err)
+	if labels != nil {
+		if err := replaceLabelsPostgres(ctx, tx, s.table("request_labels"), "request_id", id, *labels); err != nil {
+			return fmt.Errorf("replace request labels: %w", err)
+		}
+	}
+	if payload != nil {
+		payloadValue, err := encodeJSON(*payload)
+		if err != nil {
+			return fmt.Errorf("encode request payload: %w", err)
+		}
+		stmt := fmt.Sprintf(`UPDATE %s SET data = $1, version = version + 1 WHERE id = $2`, s.table("requests"))
+		if _, err := tx.ExecContext(ctx, stmt, payloadValue, id); err != nil {
+			return fmt.Errorf("update request payload: %w", err)
+		}
 	}
 
 	if err := setUpdatedAtPostgres(ctx, tx, s.table("requests"), "id", id, "NOW()"); err != nil {
 		return fmt.Errorf("refresh request timestamp: %w", err)
 	}
 
+	updatedLabels := current.Labels
+	if labels != nil {
+		updatedLabels = *labels
+	}
+	updatedPayload := current.Payload
+	if payload != nil {
+		updatedPayload = *payload
+	}
+	eventType := "updated"
+	if payload != nil && labels == nil {
+		eventType = "payload_updated"
+	}
+	if labels != nil && payload == nil {
+		eventType = "labels_updated"
+	}
+	if err := insertResourceEventPostgres(ctx, tx, s.table("resource_events"), "request", id, eventType, current.Payload, updatedPayload, current.Labels, updatedLabels); err != nil {
+		return fmt.Errorf("insert request event: %w", err)
+	}
+
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit request labels update: %w", err)
+		return fmt.Errorf("commit request update: %w", err)
 	}
 
 	return nil
+}
+
+func (s *postgresStore) UpdateRequestLabels(ctx context.Context, id string, labels map[string]string) error {
+	return s.UpdateRequest(ctx, id, nil, &labels)
 }
 
 // DeleteRequest removes a request from storage.
@@ -905,8 +954,19 @@ func (s *postgresStore) DeleteRequest(ctx context.Context, id string) error {
 		"request_id": id,
 	})
 
+	current, err := s.GetRequest(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin request delete transaction: %w", err)
+	}
+	defer rollbackTx(tx, "rollback request delete transaction")
+
 	stmt := fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, s.table("requests"))
-	res, err := s.db.ExecContext(ctx, stmt, id)
+	res, err := tx.ExecContext(ctx, stmt, id)
 	if err != nil {
 		return fmt.Errorf("delete request: %w", err)
 	}
@@ -917,6 +977,12 @@ func (s *postgresStore) DeleteRequest(ctx context.Context, id string) error {
 	}
 	if count == 0 {
 		return ErrRequestNotFound
+	}
+	if err := insertResourceEventPostgres(ctx, tx, s.table("resource_events"), "request", id, "deleted", current.Payload, nil, current.Labels, nil); err != nil {
+		return fmt.Errorf("insert request event: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit request delete: %w", err)
 	}
 
 	return nil
@@ -1283,16 +1349,16 @@ func (s *postgresStore) CreateGrant(ctx context.Context, grant Grant) (Grant, er
 	if grant.RequestID == "" {
 		return Grant{}, fmt.Errorf("request_id is required")
 	}
-	if err := s.ensureRequestExists(ctx, grant.RequestID); err != nil {
-		return Grant{}, err
-	}
+	requestVersionInput := grant.RequestVersion
 
 	grant.ID = generateID()
 
 	s.logDBOperation("grants", "create", logrus.Fields{
-		"grant_id":   grant.ID,
-		"request_id": grant.RequestID,
-		"payload":    grant.Payload,
+		"grant_id":        grant.ID,
+		"request_id":      grant.RequestID,
+		"request_version_input": requestVersionInput,
+		"request_version": grant.RequestVersion,
+		"payload":         grant.Payload,
 	})
 
 	payloadValue, err := encodeJSON(grant.Payload)
@@ -1300,12 +1366,58 @@ func (s *postgresStore) CreateGrant(ctx context.Context, grant Grant) (Grant, er
 		return Grant{}, fmt.Errorf("encode grant payload: %w", err)
 	}
 
-	stmt := fmt.Sprintf(`INSERT INTO %s (id, request_id, payload) VALUES ($1, $2, $3::jsonb)`, s.table("grants"))
-	if _, err := s.db.ExecContext(ctx, stmt, grant.ID, grant.RequestID, payloadValue); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Grant{}, fmt.Errorf("begin grant transaction: %w", err)
+	}
+	defer rollbackTx(tx, "rollback create grant transaction")
+
+	var insertStmt string
+	var insertArgs []any
+	if requestVersionInput > 0 {
+		insertStmt = fmt.Sprintf(`
+INSERT INTO %s (id, request_id, payload, request_version)
+SELECT $1, r.id, $2::jsonb, r.version
+FROM %s r
+WHERE r.id = $3 AND r.version = $4
+RETURNING request_version
+`, s.table("grants"), s.table("requests"))
+		insertArgs = []any{grant.ID, payloadValue, grant.RequestID, requestVersionInput}
+	} else {
+		insertStmt = fmt.Sprintf(`
+INSERT INTO %s (id, request_id, payload, request_version)
+SELECT $1, r.id, $2::jsonb, r.version
+FROM %s r
+WHERE r.id = $3
+RETURNING request_version
+`, s.table("grants"), s.table("requests"))
+		insertArgs = []any{grant.ID, payloadValue, grant.RequestID}
+	}
+	if err := tx.QueryRowContext(ctx, insertStmt, insertArgs...).Scan(&grant.RequestVersion); err != nil {
 		if isUniqueConstraintError(err) {
 			return Grant{}, fmt.Errorf("%w: %w", ErrGrantAlreadyExists, err)
 		}
+		if errors.Is(err, sql.ErrNoRows) {
+			if requestVersionInput > 0 {
+				existsStmt := fmt.Sprintf(`SELECT EXISTS(SELECT 1 FROM %s WHERE id = $1)`, s.table("requests"))
+				var exists bool
+				if existsErr := tx.QueryRowContext(ctx, existsStmt, grant.RequestID).Scan(&exists); existsErr != nil {
+					return Grant{}, fmt.Errorf("verify request exists: %w", existsErr)
+				}
+				if !exists {
+					return Grant{}, ErrReferencedRequestNotFound
+				}
+				return Grant{}, ErrGrantRequestVersionConflict
+			}
+			return Grant{}, ErrReferencedRequestNotFound
+		}
 		return Grant{}, fmt.Errorf("insert grant: %w", err)
+	}
+	if err := insertResourceEventPostgres(ctx, tx, s.table("resource_events"), "grant", grant.ID, "created", nil, grant.Payload, nil, nil); err != nil {
+		return Grant{}, fmt.Errorf("insert grant event: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Grant{}, fmt.Errorf("commit grant creation: %w", err)
 	}
 
 	return grant, nil
@@ -1321,7 +1433,7 @@ func (s *postgresStore) GetGrant(ctx context.Context, id string) (Grant, error) 
 		"grant_id": id,
 	})
 
-	query := fmt.Sprintf(`SELECT id, request_id, payload::text, created_at, updated_at FROM %s WHERE id = $1`, s.table("grants"))
+	query := fmt.Sprintf(`SELECT id, request_id, payload::text, created_at, updated_at, request_version FROM %s WHERE id = $1`, s.table("grants"))
 	row := s.db.QueryRowContext(ctx, query, id)
 	return scanGrant(row)
 }
@@ -1334,7 +1446,7 @@ func (s *postgresStore) ListGrants(ctx context.Context) ([]Grant, error) {
 
 	s.logDBOperation("grants", "list", nil)
 
-	query := fmt.Sprintf(`SELECT id, request_id, payload::text, created_at, updated_at FROM %s ORDER BY created_at ASC`, s.table("grants"))
+	query := fmt.Sprintf(`SELECT id, request_id, payload::text, created_at, updated_at, request_version FROM %s ORDER BY created_at ASC`, s.table("grants"))
 	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("query grants: %w", err)
@@ -1384,6 +1496,7 @@ func (s *postgresStore) GetGrantForRequest(ctx context.Context, requestID string
 
 	query := fmt.Sprintf(`
 SELECT id, request_id, payload::text, created_at, updated_at
+     , request_version
 FROM %s
 WHERE request_id = $1
 ORDER BY created_at DESC
@@ -1403,6 +1516,102 @@ LIMIT 1
 	return grant, true, nil
 }
 
+func (s *postgresStore) UpdateGrant(ctx context.Context, id string, payload map[string]any, requestVersion int) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("store not initialized")
+	}
+
+	s.logDBOperation("grants", "update", logrus.Fields{
+		"grant_id": id,
+		"payload":  payload,
+		"request_version_input": requestVersion,
+	})
+
+	current, err := s.GetGrant(ctx, id)
+	if err != nil {
+		return err
+	}
+	payloadValue, err := encodeJSON(payload)
+	if err != nil {
+		return fmt.Errorf("encode grant payload: %w", err)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin grant update transaction: %w", err)
+	}
+	defer rollbackTx(tx, "rollback grant update transaction")
+
+	var stmt string
+	var args []any
+	if requestVersion > 0 {
+		stmt = fmt.Sprintf(`
+UPDATE %s g
+SET payload = $1::jsonb, request_version = r.version
+FROM %s r
+WHERE g.id = $2
+  AND r.id = g.request_id
+  AND r.version = $3
+`, s.table("grants"), s.table("requests"))
+		args = []any{payloadValue, id, requestVersion}
+	} else {
+		stmt = fmt.Sprintf(`
+UPDATE %s g
+SET payload = $1::jsonb, request_version = r.version
+FROM %s r
+WHERE g.id = $2
+  AND r.id = g.request_id
+`, s.table("grants"), s.table("requests"))
+		args = []any{payloadValue, id}
+	}
+	result, err := tx.ExecContext(ctx, stmt, args...)
+	if err != nil {
+		return fmt.Errorf("update grant payload: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("inspect grant update result: %w", err)
+	}
+	if rowsAffected == 0 {
+		var requestID string
+		fallbackGrantStmt := fmt.Sprintf(`SELECT request_id FROM %s WHERE id = $1`, s.table("grants"))
+		if err := tx.QueryRowContext(ctx, fallbackGrantStmt, id).Scan(&requestID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrGrantNotFound
+			}
+			return fmt.Errorf("read grant for update fallback: %w", err)
+		}
+		if requestVersion > 0 {
+			currentVersionStmt := fmt.Sprintf(`
+SELECT version
+FROM %s
+WHERE id = $1
+`, s.table("requests"))
+			var currentVersion int
+			if err := tx.QueryRowContext(ctx, currentVersionStmt, requestID).Scan(&currentVersion); err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					return ErrGrantNotFound
+				}
+				return fmt.Errorf("read request version for grant: %w", err)
+			}
+			if currentVersion != requestVersion {
+				return ErrGrantRequestVersionConflict
+			}
+		}
+		return fmt.Errorf("update grant payload: no rows affected")
+	}
+	if err := setUpdatedAtPostgres(ctx, tx, s.table("grants"), "id", id, "NOW()"); err != nil {
+		return fmt.Errorf("refresh grant timestamp: %w", err)
+	}
+	if err := insertResourceEventPostgres(ctx, tx, s.table("resource_events"), "grant", id, "updated", current.Payload, payload, nil, nil); err != nil {
+		return fmt.Errorf("insert grant event: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit grant update: %w", err)
+	}
+	return nil
+}
+
 // DeleteGrant removes a grant record.
 func (s *postgresStore) DeleteGrant(ctx context.Context, id string) error {
 	if s == nil || s.db == nil {
@@ -1413,8 +1622,19 @@ func (s *postgresStore) DeleteGrant(ctx context.Context, id string) error {
 		"grant_id": id,
 	})
 
+	current, err := s.GetGrant(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin grant delete transaction: %w", err)
+	}
+	defer rollbackTx(tx, "rollback grant delete transaction")
+
 	stmt := fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, s.table("grants"))
-	res, err := s.db.ExecContext(ctx, stmt, id)
+	res, err := tx.ExecContext(ctx, stmt, id)
 	if err != nil {
 		return fmt.Errorf("delete grant: %w", err)
 	}
@@ -1425,6 +1645,12 @@ func (s *postgresStore) DeleteGrant(ctx context.Context, id string) error {
 	}
 	if count == 0 {
 		return ErrGrantNotFound
+	}
+	if err := insertResourceEventPostgres(ctx, tx, s.table("resource_events"), "grant", id, "deleted", current.Payload, nil, nil, nil); err != nil {
+		return fmt.Errorf("insert grant event: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit grant delete: %w", err)
 	}
 
 	return nil
@@ -1665,32 +1891,47 @@ func setUpdatedAtPostgres(ctx context.Context, tx *sql.Tx, table, idColumn, id, 
 	return nil
 }
 
-func insertRegisterEventPostgres(ctx context.Context, tx *sql.Tx, table string, event RegisterEvent) error {
-	oldPayload, err := encodeJSON(event.OldPayload)
+func insertResourceEventPostgres(
+	ctx context.Context,
+	tx *sql.Tx,
+	table string,
+	resourceType string,
+	resourceID string,
+	eventType string,
+	oldPayloadMap map[string]any,
+	newPayloadMap map[string]any,
+	oldLabelsMap map[string]string,
+	newLabelsMap map[string]string,
+) error {
+	oldPayload, err := encodeJSON(oldPayloadMap)
 	if err != nil {
 		return fmt.Errorf("encode old_payload: %w", err)
 	}
-	newPayload, err := encodeJSON(event.NewPayload)
+	newPayload, err := encodeJSON(newPayloadMap)
 	if err != nil {
 		return fmt.Errorf("encode new_payload: %w", err)
 	}
-	oldLabels, err := encodeJSON(event.OldLabels)
+	oldLabels, err := encodeJSON(oldLabelsMap)
 	if err != nil {
 		return fmt.Errorf("encode old_labels: %w", err)
 	}
-	newLabels, err := encodeJSON(event.NewLabels)
+	newLabels, err := encodeJSON(newLabelsMap)
 	if err != nil {
 		return fmt.Errorf("encode new_labels: %w", err)
 	}
 
 	stmt := fmt.Sprintf(`
 INSERT INTO %s (id, resource_type, resource_id, event_type, old_payload, new_payload, old_labels, new_labels)
-VALUES ($1, 'register', $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7::jsonb)
+VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb)
 `, table)
-	if _, err := tx.ExecContext(ctx, stmt, event.ID, event.RegisterID, event.EventType, oldPayload, newPayload, oldLabels, newLabels); err != nil {
+	if _, err := tx.ExecContext(ctx, stmt, generateID(), resourceType, resourceID, eventType, oldPayload, newPayload, oldLabels, newLabels); err != nil {
 		return err
 	}
 	return nil
+}
+
+func insertRegisterEventPostgres(ctx context.Context, tx *sql.Tx, table string, event RegisterEvent) error {
+	return insertResourceEventPostgres(ctx, tx, table, "register", event.RegisterID, event.EventType, event.OldPayload, event.NewPayload, event.OldLabels, event.NewLabels)
 }
 
 func (s *postgresStore) migratePostgresSchemaDefinitions(ctx context.Context, tx *sql.Tx) error {

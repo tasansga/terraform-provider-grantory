@@ -214,7 +214,6 @@ func TestUpdateRegisterPreservesEmptyPayloadObject(t *testing.T) {
 		if string(payload) != "{}" {
 			t.Fatalf("expected empty payload object, got %s", string(payload))
 		}
-
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"reg-1","host_id":"host-1","payload":{},"mutable":true,"created_at":"2026-03-29T00:00:00Z","updated_at":"2026-03-29T00:00:00Z"}`))
 	}))
@@ -230,5 +229,94 @@ func TestUpdateRegisterPreservesEmptyPayloadObject(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("update register: %v", err)
+	}
+}
+
+func TestUpdateRequestPreservesEmptyPayloadObject(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			t.Fatalf("unexpected method: %s", r.Method)
+		}
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		var body map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		payload, ok := body["payload"]
+		if !ok {
+			t.Fatalf("expected payload field in patch body, got %s", string(raw))
+		}
+		if string(payload) != "{}" {
+			t.Fatalf("expected empty payload object, got %s", string(payload))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"req-1","host_id":"host-1","payload":{},"mutable":true,"version":2,"has_grant":false,"created_at":"2026-03-29T00:00:00Z","updated_at":"2026-03-29T00:00:00Z"}`))
+	}))
+	defer server.Close()
+
+	c, err := New(Options{BaseURL: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	_, err = c.UpdateRequest(context.Background(), "req-1", RequestUpdatePayload{
+		Payload: map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("update request: %v", err)
+	}
+}
+
+func TestUpdateGrantPreservesEmptyPayloadObject(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			t.Fatalf("unexpected method: %s", r.Method)
+		}
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		var body map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		payload, ok := body["payload"]
+		if !ok {
+			t.Fatalf("expected payload field in patch body, got %s", string(raw))
+		}
+		if string(payload) != "{}" {
+			t.Fatalf("expected empty payload object, got %s", string(payload))
+		}
+		reqVersion, ok := body["request_version"]
+		if !ok {
+			t.Fatalf("expected request_version field in patch body, got %s", string(raw))
+		}
+		if string(reqVersion) != "2" {
+			t.Fatalf("expected request_version=2, got %s", string(reqVersion))
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"grant-1","request_id":"req-1","request_version":2,"payload":{},"created_at":"2026-03-29T00:00:00Z","updated_at":"2026-03-29T00:00:00Z"}`))
+	}))
+	defer server.Close()
+
+	c, err := New(Options{BaseURL: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	_, err = c.UpdateGrant(context.Background(), "grant-1", GrantUpdatePayload{
+		RequestVersion: 2,
+		Payload:        map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("update grant: %v", err)
 	}
 }

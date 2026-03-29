@@ -25,6 +25,8 @@ type Request struct {
 	GrantSchemaDefinitionID   string            `json:"grant_schema_definition_id,omitempty"`
 	UniqueKey                 string            `json:"unique_key,omitempty"`
 	Payload                   map[string]any    `json:"payload,omitempty"`
+	Mutable                   bool              `json:"mutable"`
+	Version                   int               `json:"version"`
 	Labels                    map[string]string `json:"labels,omitempty"`
 	// HasGrant reports whether this request already has an attached grant.
 	HasGrant bool `json:"has_grant"`
@@ -62,11 +64,12 @@ type RegisterEvent struct {
 
 // Grant represents a grant resource.
 type Grant struct {
-	ID        string         `json:"id"`
-	RequestID string         `json:"request_id"`
-	Payload   map[string]any `json:"payload,omitempty"`
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
+	ID             string         `json:"id"`
+	RequestID      string         `json:"request_id"`
+	RequestVersion int            `json:"request_version"`
+	Payload        map[string]any `json:"payload,omitempty"`
+	CreatedAt      time.Time      `json:"created_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
 }
 
 // SchemaDefinition represents a stored JSON schema definition.
@@ -91,13 +94,14 @@ type RequestCreatePayload struct {
 	GrantSchemaDefinitionID   string            `json:"grant_schema_definition_id"`
 	UniqueKey                 string            `json:"unique_key"`
 	Payload                   map[string]any    `json:"payload"`
+	Mutable                   bool              `json:"mutable"`
 	Labels                    map[string]string `json:"labels"`
 }
 
 // RequestUpdatePayload is the request body for updating a request.
 type RequestUpdatePayload struct {
-	Payload map[string]any    `json:"payload,omitempty"`
-	Labels  map[string]string `json:"labels,omitempty"`
+	Payload map[string]any
+	Labels  map[string]string
 }
 
 // RegisterCreatePayload is the request body for creating a register.
@@ -131,8 +135,41 @@ func (p RegisterUpdatePayload) MarshalJSON() ([]byte, error) {
 
 // GrantCreatePayload is the request body for creating a grant.
 type GrantCreatePayload struct {
-	RequestID string         `json:"request_id"`
-	Payload   map[string]any `json:"payload,omitempty"`
+	RequestID      string         `json:"request_id"`
+	RequestVersion int            `json:"request_version"`
+	Payload        map[string]any `json:"payload,omitempty"`
+}
+
+// GrantUpdatePayload is the request body for updating a grant payload.
+type GrantUpdatePayload struct {
+	RequestVersion int
+	Payload        map[string]any
+}
+
+// MarshalJSON preserves non-nil empty maps so callers can intentionally send
+// `payload: {}` in partial updates.
+func (p RequestUpdatePayload) MarshalJSON() ([]byte, error) {
+	body := map[string]any{}
+	if p.Payload != nil {
+		body["payload"] = p.Payload
+	}
+	if p.Labels != nil {
+		body["labels"] = p.Labels
+	}
+	return json.Marshal(body)
+}
+
+// MarshalJSON preserves non-nil empty maps so callers can intentionally send
+// `payload: {}` in updates.
+func (p GrantUpdatePayload) MarshalJSON() ([]byte, error) {
+	body := map[string]any{}
+	if p.RequestVersion > 0 {
+		body["request_version"] = p.RequestVersion
+	}
+	if p.Payload != nil {
+		body["payload"] = p.Payload
+	}
+	return json.Marshal(body)
 }
 
 // SchemaDefinitionCreatePayload is the request body for creating a schema definition.

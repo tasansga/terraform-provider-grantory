@@ -19,6 +19,8 @@ type Request struct {
 	GrantSchemaDefinitionID   string            `json:"grant_schema_definition_id,omitempty"`
 	UniqueKey                 string            `json:"unique_key,omitempty"`
 	Payload                   map[string]any    `json:"payload,omitempty"`
+	Mutable                   bool              `json:"mutable"`
+	Version                   int               `json:"version"`
 	Labels                    map[string]string `json:"labels,omitempty"`
 	HasGrant                  bool              `json:"has_grant"`
 	Grant                     map[string]any    `json:"grant"`
@@ -51,11 +53,12 @@ type RegisterEvent struct {
 }
 
 type Grant struct {
-	ID        string         `json:"id"`
-	RequestID string         `json:"request_id"`
-	Payload   map[string]any `json:"payload,omitempty"`
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
+	ID             string         `json:"id"`
+	RequestID      string         `json:"request_id"`
+	RequestVersion int            `json:"request_version"`
+	Payload        map[string]any `json:"payload,omitempty"`
+	CreatedAt      time.Time      `json:"created_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
 }
 
 type SchemaDefinition struct {
@@ -77,11 +80,13 @@ type RequestCreatePayload struct {
 	GrantSchemaDefinitionID   string            `json:"grant_schema_definition_id"`
 	UniqueKey                 string            `json:"unique_key"`
 	Payload                   map[string]any    `json:"payload"`
+	Mutable                   bool              `json:"mutable"`
 	Labels                    map[string]string `json:"labels"`
 }
 
 type RequestUpdatePayload struct {
-	Labels map[string]string `json:"labels"`
+	Payload *map[string]any    `json:"payload,omitempty"`
+	Labels  *map[string]string `json:"labels,omitempty"`
 }
 
 type RegisterCreatePayload struct {
@@ -99,8 +104,14 @@ type RegisterUpdatePayload struct {
 }
 
 type GrantCreatePayload struct {
-	RequestID string         `json:"request_id"`
-	Payload   map[string]any `json:"payload,omitempty"`
+	RequestID      string         `json:"request_id"`
+	RequestVersion int            `json:"request_version"`
+	Payload        map[string]any `json:"payload,omitempty"`
+}
+
+type GrantUpdatePayload struct {
+	RequestVersion int            `json:"request_version"`
+	Payload        map[string]any `json:"payload"`
 }
 
 type SchemaDefinitionCreatePayload struct {
