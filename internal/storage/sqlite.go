@@ -143,10 +143,24 @@ CREATE TABLE IF NOT EXISTS registers (
 	schema_definition_id TEXT,
 	unique_key TEXT,
 	data TEXT,
+	mutable INTEGER NOT NULL DEFAULT 0,
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	FOREIGN KEY(host_id) REFERENCES hosts(id) ON DELETE CASCADE,
 	FOREIGN KEY(schema_definition_id) REFERENCES schema_definitions(id) ON DELETE SET NULL
+)`
+	resourceEventsTableStatement = `
+CREATE TABLE IF NOT EXISTS resource_events (
+	id TEXT PRIMARY KEY,
+	resource_type TEXT NOT NULL,
+	resource_id TEXT NOT NULL,
+	event_type TEXT NOT NULL,
+	old_payload TEXT,
+	new_payload TEXT,
+	old_labels TEXT,
+	new_labels TEXT,
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	CHECK(resource_type IN ('register'))
 )`
 	grantsTableStatement = `
 CREATE TABLE IF NOT EXISTS grants (
@@ -213,6 +227,7 @@ const (
 	hostLabelsTable             = "host_labels"
 	requestLabelsTable          = "request_labels"
 	registerLabelsTable         = "register_labels"
+	resourceEventsTable         = "resource_events"
 	grantLabelsTable            = "grant_labels"
 	schemaDefinitionLabelsTable = "schema_definition_labels"
 )
@@ -277,6 +292,7 @@ func (s *sqliteStore) Migrate(ctx context.Context) error {
 		{"host labels", s.ensureHostLabelsTable},
 		{"request labels", s.ensureRequestLabelsTable},
 		{"register labels", s.ensureRegisterLabelsTable},
+		{"resource events", s.ensureResourceEventsTable},
 		{"grant labels", s.ensureGrantLabelsTable},
 		{"schema definition labels", s.ensureSchemaDefinitionLabelsTable},
 	}
@@ -359,8 +375,21 @@ func (s *sqliteStore) ensureRegistersTable(ctx context.Context, tx *sql.Tx) erro
 	if err := ensureSQLiteColumn(ctx, tx, "registers", "unique_key", "TEXT"); err != nil {
 		return fmt.Errorf("add registers unique_key column: %w", err)
 	}
+	if err := ensureSQLiteColumn(ctx, tx, "registers", "mutable", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return fmt.Errorf("add registers mutable column: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS registers_unique_key_idx ON registers(unique_key) WHERE unique_key IS NOT NULL`); err != nil {
 		return fmt.Errorf("create registers unique_key index: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteStore) ensureResourceEventsTable(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, resourceEventsTableStatement); err != nil {
+		return fmt.Errorf("create resource events table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS resource_events_resource_idx ON resource_events(resource_type, resource_id, created_at DESC)`); err != nil {
+		return fmt.Errorf("create resource events resource index: %w", err)
 	}
 	return nil
 }
@@ -1029,6 +1058,7 @@ func (s *sqliteStore) CreateRegister(ctx context.Context, reg Register) (Registe
 		"host_id":              reg.HostID,
 		"schema_definition_id": reg.SchemaDefinitionID,
 		"unique_key":           reg.UniqueKey,
+		"mutable":              reg.Mutable,
 		"payload":              reg.Payload,
 		"labels":               reg.Labels,
 	})
@@ -1053,9 +1083,9 @@ func (s *sqliteStore) CreateRegister(ctx context.Context, reg Register) (Registe
 		schemaDefinitionID = reg.SchemaDefinitionID
 	}
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO registers (id, host_id, schema_definition_id, unique_key, data)
-VALUES (?, ?, ?, ?, ?)
-`, reg.ID, reg.HostID, schemaDefinitionID, uniqueKey, payloadValue); err != nil {
+INSERT INTO registers (id, host_id, schema_definition_id, unique_key, data, mutable)
+VALUES (?, ?, ?, ?, ?, ?)
+`, reg.ID, reg.HostID, schemaDefinitionID, uniqueKey, payloadValue, reg.Mutable); err != nil {
 		if isUniqueConstraintError(err) {
 			if isUniqueRegisterKeyConstraintError(err) {
 				return Register{}, fmt.Errorf("%w: %w", ErrRegisterUniqueKeyConflict, err)
@@ -1067,6 +1097,15 @@ VALUES (?, ?, ?, ?, ?)
 
 	if err := insertLabels(ctx, tx, registerLabelsTable, "register_id", reg.ID, reg.Labels); err != nil {
 		return Register{}, fmt.Errorf("insert register labels: %w", err)
+	}
+	if err := insertRegisterEventSQLite(ctx, tx, RegisterEvent{
+		ID:         generateID(),
+		RegisterID: reg.ID,
+		EventType:  "created",
+		NewPayload: reg.Payload,
+		NewLabels:  reg.Labels,
+	}); err != nil {
+		return Register{}, fmt.Errorf("insert register event: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -1088,6 +1127,7 @@ func (s *sqliteStore) GetRegister(ctx context.Context, id string) (Register, err
 
 	row := s.db.QueryRowContext(ctx, `
 SELECT id, host_id, schema_definition_id, unique_key, data, created_at, updated_at
+       , mutable
 FROM registers
 WHERE id = ?
 `, id)
@@ -1126,6 +1166,7 @@ func (s *sqliteStore) ListRegisters(ctx context.Context, filters *RegisterListFi
 	query := strings.Builder{}
 	query.WriteString(`
 SELECT id, host_id, schema_definition_id, unique_key, data, created_at, updated_at
+       , mutable
 FROM registers`)
 
 	var args []any
@@ -1172,40 +1213,126 @@ FROM registers`)
 	return registers, nil
 }
 
-// UpdateRegisterLabels replaces the labels stored for a register record.
-func (s *sqliteStore) UpdateRegisterLabels(ctx context.Context, id string, labels map[string]string) error {
+// UpdateRegister updates payload/labels for a register record.
+func (s *sqliteStore) UpdateRegister(ctx context.Context, id string, payload *map[string]any, labels *map[string]string) error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("store not initialized")
+	}
+	if payload == nil && labels == nil {
+		return fmt.Errorf("payload and/or labels are required")
 	}
 
 	fields := logrus.Fields{
 		"register_id": id,
+		"payload":     payload,
 		"labels":      labels,
 	}
-	s.logDBOperation("registers", "update_labels", fields)
-	if _, err := s.GetRegister(ctx, id); err != nil {
+	s.logDBOperation("registers", "update", fields)
+
+	current, err := s.GetRegister(ctx, id)
+	if err != nil {
 		return err
+	}
+	if payload != nil && !current.Mutable {
+		return ErrRegisterImmutable
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin register labels transaction: %w", err)
+		return fmt.Errorf("begin register update transaction: %w", err)
 	}
-	defer rollbackTx(tx, "rollback register labels transaction")
+	defer rollbackTx(tx, "rollback register update transaction")
 
-	if err := replaceLabels(ctx, tx, registerLabelsTable, "register_id", id, labels); err != nil {
-		return fmt.Errorf("replace register labels: %w", err)
+	if labels != nil {
+		if err := replaceLabels(ctx, tx, registerLabelsTable, "register_id", id, *labels); err != nil {
+			return fmt.Errorf("replace register labels: %w", err)
+		}
+	}
+	if payload != nil {
+		payloadValue, err := encodeJSON(*payload)
+		if err != nil {
+			return fmt.Errorf("encode register payload: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE registers SET data = ? WHERE id = ?`, payloadValue, id); err != nil {
+			return fmt.Errorf("update register payload: %w", err)
+		}
 	}
 
 	if err := setUpdatedAt(ctx, tx, "registers", "id", id, "strftime('%Y-%m-%d %H:%M:%f', 'now')"); err != nil {
 		return fmt.Errorf("refresh register timestamp: %w", err)
 	}
 
+	updatedLabels := current.Labels
+	if labels != nil {
+		updatedLabels = *labels
+	}
+	updatedPayload := current.Payload
+	if payload != nil {
+		updatedPayload = *payload
+	}
+	eventType := "updated"
+	if payload != nil && labels == nil {
+		eventType = "payload_updated"
+	}
+	if labels != nil && payload == nil {
+		eventType = "labels_updated"
+	}
+	if err := insertRegisterEventSQLite(ctx, tx, RegisterEvent{
+		ID:         generateID(),
+		RegisterID: id,
+		EventType:  eventType,
+		OldPayload: current.Payload,
+		NewPayload: updatedPayload,
+		OldLabels:  current.Labels,
+		NewLabels:  updatedLabels,
+	}); err != nil {
+		return fmt.Errorf("insert register event: %w", err)
+	}
+
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit register labels update: %w", err)
+		return fmt.Errorf("commit register update: %w", err)
 	}
 
 	return nil
+}
+
+// UpdateRegisterLabels replaces the labels stored for a register record.
+func (s *sqliteStore) UpdateRegisterLabels(ctx context.Context, id string, labels map[string]string) error {
+	return s.UpdateRegister(ctx, id, nil, &labels)
+}
+
+func (s *sqliteStore) ListRegisterEvents(ctx context.Context, registerID string) ([]RegisterEvent, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("store not initialized")
+	}
+	if _, err := s.GetRegister(ctx, registerID); err != nil {
+		return nil, err
+	}
+	s.logDBOperation("resource_events", "list", logrus.Fields{"register_id": registerID})
+
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, resource_id, event_type, old_payload, new_payload, old_labels, new_labels, created_at
+FROM resource_events
+WHERE resource_type = 'register' AND resource_id = ?
+ORDER BY created_at DESC
+`, registerID)
+	if err != nil {
+		return nil, fmt.Errorf("query register events: %w", err)
+	}
+	defer closeRows(rows, "close register events rows")
+
+	events := make([]RegisterEvent, 0)
+	for rows.Next() {
+		event, err := scanRegisterEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("scan register events: %w", err)
+	}
+	return events, nil
 }
 
 // DeleteRegister removes a register record from storage.
@@ -1218,7 +1345,18 @@ func (s *sqliteStore) DeleteRegister(ctx context.Context, id string) error {
 		"register_id": id,
 	})
 
-	res, err := s.db.ExecContext(ctx, `DELETE FROM registers WHERE id = ?`, id)
+	current, err := s.GetRegister(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin register delete transaction: %w", err)
+	}
+	defer rollbackTx(tx, "rollback register delete transaction")
+
+	res, err := tx.ExecContext(ctx, `DELETE FROM registers WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete register: %w", err)
 	}
@@ -1229,6 +1367,18 @@ func (s *sqliteStore) DeleteRegister(ctx context.Context, id string) error {
 	}
 	if count == 0 {
 		return ErrRegisterNotFound
+	}
+	if err := insertRegisterEventSQLite(ctx, tx, RegisterEvent{
+		ID:         generateID(),
+		RegisterID: id,
+		EventType:  "deleted",
+		OldPayload: current.Payload,
+		OldLabels:  current.Labels,
+	}); err != nil {
+		return fmt.Errorf("insert register event: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit register delete: %w", err)
 	}
 
 	return nil
@@ -1720,11 +1870,12 @@ func scanRegister(scanner rowScanner) (Register, error) {
 		schemaID     sql.NullString
 		uniqueKey    sql.NullString
 		payloadValue sql.NullString
+		mutableValue any
 		createdAt    any
 		updatedAt    any
 	)
 
-	if err := scanner.Scan(&reg.ID, &reg.HostID, &schemaID, &uniqueKey, &payloadValue, &createdAt, &updatedAt); err != nil {
+	if err := scanner.Scan(&reg.ID, &reg.HostID, &schemaID, &uniqueKey, &payloadValue, &createdAt, &updatedAt, &mutableValue); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Register{}, ErrRegisterNotFound
 		}
@@ -1737,6 +1888,11 @@ func scanRegister(scanner rowScanner) (Register, error) {
 	if uniqueKey.Valid {
 		reg.UniqueKey = uniqueKey.String
 	}
+	mutable, parseErr := parseDBBool(mutableValue)
+	if parseErr != nil {
+		return Register{}, fmt.Errorf("decode register mutable: %w", parseErr)
+	}
+	reg.Mutable = mutable
 
 	var err error
 	reg.Payload, err = decodeAnyMap(payloadValue)
@@ -1752,6 +1908,57 @@ func scanRegister(scanner rowScanner) (Register, error) {
 	}
 
 	return reg, nil
+}
+
+func scanRegisterEvent(scanner rowScanner) (RegisterEvent, error) {
+	var (
+		event           RegisterEvent
+		oldPayloadValue sql.NullString
+		newPayloadValue sql.NullString
+		oldLabelsValue  sql.NullString
+		newLabelsValue  sql.NullString
+		createdAt       any
+	)
+
+	if err := scanner.Scan(
+		&event.ID,
+		&event.RegisterID,
+		&event.EventType,
+		&oldPayloadValue,
+		&newPayloadValue,
+		&oldLabelsValue,
+		&newLabelsValue,
+		&createdAt,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return RegisterEvent{}, ErrRegisterNotFound
+		}
+		return RegisterEvent{}, err
+	}
+
+	var err error
+	event.OldPayload, err = decodeAnyMap(oldPayloadValue)
+	if err != nil {
+		return RegisterEvent{}, fmt.Errorf("decode register event old_payload: %w", err)
+	}
+	event.NewPayload, err = decodeAnyMap(newPayloadValue)
+	if err != nil {
+		return RegisterEvent{}, fmt.Errorf("decode register event new_payload: %w", err)
+	}
+	event.OldLabels, err = decodeStringMap(oldLabelsValue)
+	if err != nil {
+		return RegisterEvent{}, fmt.Errorf("decode register event old_labels: %w", err)
+	}
+	event.NewLabels, err = decodeStringMap(newLabelsValue)
+	if err != nil {
+		return RegisterEvent{}, fmt.Errorf("decode register event new_labels: %w", err)
+	}
+	event.CreatedAt, err = parseDBTime(createdAt)
+	if err != nil {
+		return RegisterEvent{}, err
+	}
+
+	return event, nil
 }
 
 func scanGrant(scanner rowScanner) (Grant, error) {
@@ -1818,6 +2025,33 @@ func parseDBTime(value any) (time.Time, error) {
 	}
 }
 
+func parseDBBool(value any) (bool, error) {
+	switch v := value.(type) {
+	case bool:
+		return v, nil
+	case int64:
+		return v != 0, nil
+	case int:
+		return v != 0, nil
+	case []byte:
+		return parseDBBool(string(v))
+	case string:
+		normalized := strings.TrimSpace(strings.ToLower(v))
+		switch normalized {
+		case "", "0", "false", "f":
+			return false, nil
+		case "1", "true", "t":
+			return true, nil
+		default:
+			return false, fmt.Errorf("invalid bool value %q", v)
+		}
+	case nil:
+		return false, nil
+	default:
+		return false, fmt.Errorf("invalid bool type %T", value)
+	}
+}
+
 func generateID() string {
 	return uuid.NewString()
 }
@@ -1844,6 +2078,17 @@ func decodeAnyMap(value sql.NullString) (map[string]any, error) {
 	return dest, nil
 }
 
+func decodeStringMap(value sql.NullString) (map[string]string, error) {
+	if !value.Valid || value.String == "" {
+		return nil, nil
+	}
+	var dest map[string]string
+	if err := json.Unmarshal([]byte(value.String), &dest); err != nil {
+		return nil, err
+	}
+	return dest, nil
+}
+
 func decodeRawJSON(value sql.NullString) (json.RawMessage, error) {
 	if !value.Valid || value.String == "" {
 		return nil, nil
@@ -1860,6 +2105,33 @@ func nullableText(value string) any {
 		return nil
 	}
 	return trimmed
+}
+
+func insertRegisterEventSQLite(ctx context.Context, tx *sql.Tx, event RegisterEvent) error {
+	oldPayload, err := encodeJSON(event.OldPayload)
+	if err != nil {
+		return fmt.Errorf("encode old_payload: %w", err)
+	}
+	newPayload, err := encodeJSON(event.NewPayload)
+	if err != nil {
+		return fmt.Errorf("encode new_payload: %w", err)
+	}
+	oldLabels, err := encodeJSON(event.OldLabels)
+	if err != nil {
+		return fmt.Errorf("encode old_labels: %w", err)
+	}
+	newLabels, err := encodeJSON(event.NewLabels)
+	if err != nil {
+		return fmt.Errorf("encode new_labels: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO resource_events (id, resource_type, resource_id, event_type, old_payload, new_payload, old_labels, new_labels)
+VALUES (?, 'register', ?, ?, ?, ?, ?, ?)
+`, event.ID, event.RegisterID, event.EventType, oldPayload, newPayload, oldLabels, newLabels); err != nil {
+		return err
+	}
+	return nil
 }
 
 func insertLabels(ctx context.Context, tx *sql.Tx, table, idColumn, id string, labels map[string]string) error {

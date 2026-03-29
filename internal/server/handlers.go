@@ -191,6 +191,7 @@ func registerRegisterRoutes(app fiber.Router) {
 	group.Get("/", handler.list)
 	group.Post("/", handler.create)
 	group.Get("/:id", handler.get)
+	group.Get("/:id/events", handler.listEvents)
 	group.Patch("/:id", handler.update)
 	group.Delete("/:id", handler.delete)
 }
@@ -456,11 +457,13 @@ type registerCreatePayload struct {
 	SchemaDefinitionID string            `json:"schema_definition_id"`
 	UniqueKey          string            `json:"unique_key"`
 	Payload            map[string]any    `json:"payload"`
+	Mutable            bool              `json:"mutable"`
 	Labels             map[string]string `json:"labels"`
 }
 
 type registerUpdatePayload struct {
-	Labels *map[string]string `json:"labels"`
+	Payload *map[string]any    `json:"payload"`
+	Labels  *map[string]string `json:"labels"`
 }
 
 func (h registerHandler) create(c *fiber.Ctx) error {
@@ -477,6 +480,7 @@ func (h registerHandler) create(c *fiber.Ctx) error {
 		"schema_definition_id": payload.SchemaDefinitionID,
 		"unique_key":           payload.UniqueKey,
 		"payload":              payload.Payload,
+		"mutable":              payload.Mutable,
 		"labels":               payload.Labels,
 	})
 
@@ -490,6 +494,7 @@ func (h registerHandler) create(c *fiber.Ctx) error {
 		SchemaDefinitionID: payload.SchemaDefinitionID,
 		UniqueKey:          payload.UniqueKey,
 		Payload:            payload.Payload,
+		Mutable:            payload.Mutable,
 		Labels:             payload.Labels,
 	})
 	if err != nil {
@@ -560,28 +565,56 @@ func (h registerHandler) update(c *fiber.Ctx) error {
 	if err := c.BodyParser(&payload); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, err.Error())
 	}
-	if payload.Labels == nil {
-		return fiber.NewError(fiber.StatusBadRequest, "labels are required")
+	if payload.Payload == nil && payload.Labels == nil {
+		return fiber.NewError(fiber.StatusBadRequest, "payload and/or labels are required")
 	}
 
 	registerID := c.Params("id")
-	logRequestEntry(c, "registerHandler.update", map[string]any{"register_id": registerID, "labels": payload.Labels})
+	logRequestEntry(c, "registerHandler.update", map[string]any{"register_id": registerID, "payload": payload.Payload, "labels": payload.Labels})
 
 	svc, namespace, err := resolveNamespaceService(c)
 	if err != nil {
 		return err
 	}
 
-	updated, err := svc.UpdateRegisterLabels(c.Context(), registerID, *payload.Labels)
+	updated, err := svc.UpdateRegister(c.Context(), registerID, apiservice.RegisterUpdatePayload{
+		Payload: payload.Payload,
+		Labels:  payload.Labels,
+	})
 	if err != nil {
-		if errors.Is(err, apiservice.ErrRegisterNotFound) {
+		switch {
+		case errors.Is(err, apiservice.ErrRegisterNotFound):
 			return fiber.NewError(fiber.StatusNotFound, "register not found")
+		case errors.Is(err, apiservice.ErrRegisterImmutable):
+			return fiber.NewError(fiber.StatusConflict, "register payload is immutable")
+		case isValidationError(err):
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
 		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("update register labels")
 		return fiber.NewError(fiber.StatusInternalServerError, "unable to update register")
 	}
 
 	return c.JSON(updated)
+}
+
+func (h registerHandler) listEvents(c *fiber.Ctx) error {
+	registerID := c.Params("id")
+	logRequestEntry(c, "registerHandler.listEvents", map[string]any{"register_id": registerID})
+
+	svc, namespace, err := resolveNamespaceService(c)
+	if err != nil {
+		return err
+	}
+
+	events, err := svc.ListRegisterEvents(c.Context(), registerID)
+	if err != nil {
+		if errors.Is(err, apiservice.ErrRegisterNotFound) {
+			return fiber.NewError(fiber.StatusNotFound, "register not found")
+		}
+		logrus.WithError(err).WithField("namespace", namespace).Error("list register events")
+		return fiber.NewError(fiber.StatusInternalServerError, "unable to list register events")
+	}
+	return c.JSON(events)
 }
 
 func (h registerHandler) delete(c *fiber.Ctx) error {

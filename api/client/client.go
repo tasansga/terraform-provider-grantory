@@ -292,6 +292,15 @@ func (c *Client) UpdateRegisterLabels(ctx context.Context, id string, labels map
 	return c.UpdateRegister(ctx, id, RegisterUpdatePayload{Labels: normalizeLabels(labels)})
 }
 
+// ListRegisterEvents lists register change events for a register.
+func (c *Client) ListRegisterEvents(ctx context.Context, id string) ([]RegisterEvent, error) {
+	var events []RegisterEvent
+	if err := c.doJSON(ctx, http.MethodGet, fmt.Sprintf("/registers/%s/events", id), nil, &events); err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
 // DeleteRegister deletes a register by ID.
 func (c *Client) DeleteRegister(ctx context.Context, id string) error {
 	return c.doJSON(ctx, http.MethodDelete, fmt.Sprintf("/registers/%s", id), nil, nil)

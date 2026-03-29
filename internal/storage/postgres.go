@@ -137,6 +137,7 @@ func (s *postgresStore) Migrate(ctx context.Context) error {
 		{"host labels", s.ensureHostLabelsTable},
 		{"request labels", s.ensureRequestLabelsTable},
 		{"register labels", s.ensureRegisterLabelsTable},
+		{"resource events", s.ensureResourceEventsTable},
 		{"grant labels", s.ensureGrantLabelsTable},
 		{"schema definition labels", s.ensureSchemaDefinitionLabelsTable},
 	}
@@ -286,6 +287,7 @@ CREATE TABLE IF NOT EXISTS %s (
 	schema_definition_id TEXT,
 	unique_key TEXT,
 	data JSONB,
+	mutable BOOLEAN NOT NULL DEFAULT FALSE,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	FOREIGN KEY(host_id) REFERENCES %s(id) ON DELETE CASCADE,
@@ -299,6 +301,9 @@ CREATE TABLE IF NOT EXISTS %s (
 	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS unique_key TEXT`, s.table("registers"))); err != nil {
 		return fmt.Errorf("add registers unique_key column: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS mutable BOOLEAN NOT NULL DEFAULT FALSE`, s.table("registers"))); err != nil {
+		return fmt.Errorf("add registers mutable column: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`CREATE UNIQUE INDEX IF NOT EXISTS registers_unique_key_idx ON %s (unique_key) WHERE unique_key IS NOT NULL`, s.table("registers"))); err != nil {
 		return fmt.Errorf("create registers unique_key index: %w", err)
@@ -323,6 +328,29 @@ DO $$ BEGIN
 	END IF;
 END $$;`, s.schema, s.table("registers"), s.table("schema_definitions"))); err != nil {
 		return fmt.Errorf("add registers schema_definition_id foreign key: %w", err)
+	}
+	return nil
+}
+
+func (s *postgresStore) ensureResourceEventsTable(ctx context.Context, tx *sql.Tx) error {
+	stmt := fmt.Sprintf(`
+CREATE TABLE IF NOT EXISTS %s (
+	id TEXT PRIMARY KEY,
+	resource_type TEXT NOT NULL,
+	resource_id TEXT NOT NULL,
+	event_type TEXT NOT NULL,
+	old_payload JSONB,
+	new_payload JSONB,
+	old_labels JSONB,
+	new_labels JSONB,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+	CHECK (resource_type IN ('register'))
+)`, s.table("resource_events"))
+	if _, err := tx.ExecContext(ctx, stmt); err != nil {
+		return fmt.Errorf("create resource events table: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`CREATE INDEX IF NOT EXISTS resource_events_resource_idx ON %s (resource_type, resource_id, created_at DESC)`, s.table("resource_events"))); err != nil {
+		return fmt.Errorf("create resource events resource index: %w", err)
 	}
 	return nil
 }
@@ -913,6 +941,7 @@ func (s *postgresStore) CreateRegister(ctx context.Context, reg Register) (Regis
 		"host_id":              reg.HostID,
 		"schema_definition_id": reg.SchemaDefinitionID,
 		"unique_key":           reg.UniqueKey,
+		"mutable":              reg.Mutable,
 		"payload":              reg.Payload,
 		"labels":               reg.Labels,
 	})
@@ -928,7 +957,7 @@ func (s *postgresStore) CreateRegister(ctx context.Context, reg Register) (Regis
 	}
 	defer rollbackTx(tx, "rollback create register transaction")
 
-	stmt := fmt.Sprintf(`INSERT INTO %s (id, host_id, schema_definition_id, unique_key, data) VALUES ($1, $2, $3, $4, $5)`, s.table("registers"))
+	stmt := fmt.Sprintf(`INSERT INTO %s (id, host_id, schema_definition_id, unique_key, data, mutable) VALUES ($1, $2, $3, $4, $5, $6)`, s.table("registers"))
 	var uniqueKey any
 	if reg.UniqueKey != "" {
 		uniqueKey = reg.UniqueKey
@@ -937,7 +966,7 @@ func (s *postgresStore) CreateRegister(ctx context.Context, reg Register) (Regis
 	if reg.SchemaDefinitionID != "" {
 		schemaDefinitionID = reg.SchemaDefinitionID
 	}
-	if _, err := tx.ExecContext(ctx, stmt, reg.ID, reg.HostID, schemaDefinitionID, uniqueKey, payloadValue); err != nil {
+	if _, err := tx.ExecContext(ctx, stmt, reg.ID, reg.HostID, schemaDefinitionID, uniqueKey, payloadValue, reg.Mutable); err != nil {
 		if isUniqueConstraintError(err) {
 			if isUniqueRegisterKeyConstraintError(err) {
 				return Register{}, fmt.Errorf("%w: %w", ErrRegisterUniqueKeyConflict, err)
@@ -949,6 +978,15 @@ func (s *postgresStore) CreateRegister(ctx context.Context, reg Register) (Regis
 
 	if err := insertLabelsPostgres(ctx, tx, s.table("register_labels"), "register_id", reg.ID, reg.Labels); err != nil {
 		return Register{}, fmt.Errorf("insert register labels: %w", err)
+	}
+	if err := insertRegisterEventPostgres(ctx, tx, s.table("resource_events"), RegisterEvent{
+		ID:         generateID(),
+		RegisterID: reg.ID,
+		EventType:  "created",
+		NewPayload: reg.Payload,
+		NewLabels:  reg.Labels,
+	}); err != nil {
+		return Register{}, fmt.Errorf("insert register event: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -968,7 +1006,7 @@ func (s *postgresStore) GetRegister(ctx context.Context, id string) (Register, e
 		"register_id": id,
 	})
 
-	query := fmt.Sprintf(`SELECT id, host_id, schema_definition_id, unique_key, data, created_at, updated_at FROM %s WHERE id = $1`, s.table("registers"))
+	query := fmt.Sprintf(`SELECT id, host_id, schema_definition_id, unique_key, data, created_at, updated_at, mutable FROM %s WHERE id = $1`, s.table("registers"))
 	row := s.db.QueryRowContext(ctx, query, id)
 
 	reg, err := scanRegister(row)
@@ -1003,7 +1041,7 @@ func (s *postgresStore) ListRegisters(ctx context.Context, filters *RegisterList
 	s.logDBOperation("registers", "list", logFields)
 
 	query := strings.Builder{}
-	_, _ = fmt.Fprintf(&query, `SELECT id, host_id, schema_definition_id, unique_key, data, created_at, updated_at FROM %s`, s.table("registers"))
+	_, _ = fmt.Fprintf(&query, `SELECT id, host_id, schema_definition_id, unique_key, data, created_at, updated_at, mutable FROM %s`, s.table("registers"))
 
 	var args []any
 	var where []string
@@ -1050,39 +1088,127 @@ func (s *postgresStore) ListRegisters(ctx context.Context, filters *RegisterList
 }
 
 // UpdateRegisterLabels replaces the labels stored for a register record.
-func (s *postgresStore) UpdateRegisterLabels(ctx context.Context, id string, labels map[string]string) error {
+func (s *postgresStore) UpdateRegister(ctx context.Context, id string, payload *map[string]any, labels *map[string]string) error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("store not initialized")
+	}
+	if payload == nil && labels == nil {
+		return fmt.Errorf("payload and/or labels are required")
 	}
 
 	fields := logrus.Fields{
 		"register_id": id,
+		"payload":     payload,
 		"labels":      labels,
 	}
-	s.logDBOperation("registers", "update_labels", fields)
-	if _, err := s.GetRegister(ctx, id); err != nil {
+	s.logDBOperation("registers", "update", fields)
+
+	current, err := s.GetRegister(ctx, id)
+	if err != nil {
 		return err
+	}
+	if payload != nil && !current.Mutable {
+		return ErrRegisterImmutable
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin register labels transaction: %w", err)
+		return fmt.Errorf("begin register update transaction: %w", err)
 	}
-	defer rollbackTx(tx, "rollback register labels transaction")
+	defer rollbackTx(tx, "rollback register update transaction")
 
-	if err := replaceLabelsPostgres(ctx, tx, s.table("register_labels"), "register_id", id, labels); err != nil {
-		return fmt.Errorf("replace register labels: %w", err)
+	if labels != nil {
+		if err := replaceLabelsPostgres(ctx, tx, s.table("register_labels"), "register_id", id, *labels); err != nil {
+			return fmt.Errorf("replace register labels: %w", err)
+		}
+	}
+	if payload != nil {
+		payloadValue, err := encodeJSON(*payload)
+		if err != nil {
+			return fmt.Errorf("encode register payload: %w", err)
+		}
+		stmt := fmt.Sprintf(`UPDATE %s SET data = $1 WHERE id = $2`, s.table("registers"))
+		if _, err := tx.ExecContext(ctx, stmt, payloadValue, id); err != nil {
+			return fmt.Errorf("update register payload: %w", err)
+		}
 	}
 
 	if err := setUpdatedAtPostgres(ctx, tx, s.table("registers"), "id", id, "NOW()"); err != nil {
 		return fmt.Errorf("refresh register timestamp: %w", err)
 	}
 
+	updatedLabels := current.Labels
+	if labels != nil {
+		updatedLabels = *labels
+	}
+	updatedPayload := current.Payload
+	if payload != nil {
+		updatedPayload = *payload
+	}
+	eventType := "updated"
+	if payload != nil && labels == nil {
+		eventType = "payload_updated"
+	}
+	if labels != nil && payload == nil {
+		eventType = "labels_updated"
+	}
+	if err := insertRegisterEventPostgres(ctx, tx, s.table("resource_events"), RegisterEvent{
+		ID:         generateID(),
+		RegisterID: id,
+		EventType:  eventType,
+		OldPayload: current.Payload,
+		NewPayload: updatedPayload,
+		OldLabels:  current.Labels,
+		NewLabels:  updatedLabels,
+	}); err != nil {
+		return fmt.Errorf("insert register event: %w", err)
+	}
+
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit register labels update: %w", err)
+		return fmt.Errorf("commit register update: %w", err)
 	}
 
 	return nil
+}
+
+// UpdateRegisterLabels replaces the labels stored for a register record.
+func (s *postgresStore) UpdateRegisterLabels(ctx context.Context, id string, labels map[string]string) error {
+	return s.UpdateRegister(ctx, id, nil, &labels)
+}
+
+func (s *postgresStore) ListRegisterEvents(ctx context.Context, registerID string) ([]RegisterEvent, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("store not initialized")
+	}
+	if _, err := s.GetRegister(ctx, registerID); err != nil {
+		return nil, err
+	}
+	s.logDBOperation("resource_events", "list", logrus.Fields{"register_id": registerID})
+
+	query := fmt.Sprintf(`
+SELECT id, resource_id, event_type, old_payload::text, new_payload::text, old_labels::text, new_labels::text, created_at
+FROM %s
+WHERE resource_type = 'register' AND resource_id = $1
+ORDER BY created_at DESC
+`, s.table("resource_events"))
+	rows, err := s.db.QueryContext(ctx, query, registerID)
+	if err != nil {
+		return nil, fmt.Errorf("query register events: %w", err)
+	}
+	defer closeRows(rows, "close register events rows")
+
+	events := make([]RegisterEvent, 0)
+	for rows.Next() {
+		event, err := scanRegisterEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("scan register events: %w", err)
+	}
+	return events, nil
 }
 
 // DeleteRegister removes a register record from storage.
@@ -1095,8 +1221,19 @@ func (s *postgresStore) DeleteRegister(ctx context.Context, id string) error {
 		"register_id": id,
 	})
 
+	current, err := s.GetRegister(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin register delete transaction: %w", err)
+	}
+	defer rollbackTx(tx, "rollback register delete transaction")
+
 	stmt := fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, s.table("registers"))
-	res, err := s.db.ExecContext(ctx, stmt, id)
+	res, err := tx.ExecContext(ctx, stmt, id)
 	if err != nil {
 		return fmt.Errorf("delete register: %w", err)
 	}
@@ -1107,6 +1244,18 @@ func (s *postgresStore) DeleteRegister(ctx context.Context, id string) error {
 	}
 	if count == 0 {
 		return ErrRegisterNotFound
+	}
+	if err := insertRegisterEventPostgres(ctx, tx, s.table("resource_events"), RegisterEvent{
+		ID:         generateID(),
+		RegisterID: id,
+		EventType:  "deleted",
+		OldPayload: current.Payload,
+		OldLabels:  current.Labels,
+	}); err != nil {
+		return fmt.Errorf("insert register event: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit register delete: %w", err)
 	}
 
 	return nil
@@ -1512,6 +1661,34 @@ func setUpdatedAtPostgres(ctx context.Context, tx *sql.Tx, table, idColumn, id, 
 	stmt := fmt.Sprintf(`UPDATE %s SET updated_at = %s WHERE %s = $1`, table, nowExpr, idColumn)
 	if _, err := tx.ExecContext(ctx, stmt, id); err != nil {
 		return fmt.Errorf("update %s timestamp: %w", table, err)
+	}
+	return nil
+}
+
+func insertRegisterEventPostgres(ctx context.Context, tx *sql.Tx, table string, event RegisterEvent) error {
+	oldPayload, err := encodeJSON(event.OldPayload)
+	if err != nil {
+		return fmt.Errorf("encode old_payload: %w", err)
+	}
+	newPayload, err := encodeJSON(event.NewPayload)
+	if err != nil {
+		return fmt.Errorf("encode new_payload: %w", err)
+	}
+	oldLabels, err := encodeJSON(event.OldLabels)
+	if err != nil {
+		return fmt.Errorf("encode old_labels: %w", err)
+	}
+	newLabels, err := encodeJSON(event.NewLabels)
+	if err != nil {
+		return fmt.Errorf("encode new_labels: %w", err)
+	}
+
+	stmt := fmt.Sprintf(`
+INSERT INTO %s (id, resource_type, resource_id, event_type, old_payload, new_payload, old_labels, new_labels)
+VALUES ($1, 'register', $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7::jsonb)
+`, table)
+	if _, err := tx.ExecContext(ctx, stmt, event.ID, event.RegisterID, event.EventType, oldPayload, newPayload, oldLabels, newLabels); err != nil {
+		return err
 	}
 	return nil
 }

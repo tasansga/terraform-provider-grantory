@@ -33,9 +33,21 @@ type Register struct {
 	SchemaDefinitionID string            `json:"schema_definition_id,omitempty"`
 	UniqueKey          string            `json:"unique_key,omitempty"`
 	Payload            map[string]any    `json:"payload,omitempty"`
+	Mutable            bool              `json:"mutable"`
 	Labels             map[string]string `json:"labels,omitempty"`
 	CreatedAt          time.Time         `json:"created_at"`
 	UpdatedAt          time.Time         `json:"updated_at"`
+}
+
+type RegisterEvent struct {
+	ID         string            `json:"id"`
+	RegisterID string            `json:"register_id"`
+	EventType  string            `json:"event_type"`
+	OldPayload map[string]any    `json:"old_payload,omitempty"`
+	NewPayload map[string]any    `json:"new_payload,omitempty"`
+	OldLabels  map[string]string `json:"old_labels,omitempty"`
+	NewLabels  map[string]string `json:"new_labels,omitempty"`
+	CreatedAt  time.Time         `json:"created_at"`
 }
 
 type Grant struct {
@@ -77,11 +89,13 @@ type RegisterCreatePayload struct {
 	SchemaDefinitionID string            `json:"schema_definition_id"`
 	UniqueKey          string            `json:"unique_key"`
 	Payload            map[string]any    `json:"payload"`
+	Mutable            bool              `json:"mutable"`
 	Labels             map[string]string `json:"labels"`
 }
 
 type RegisterUpdatePayload struct {
-	Labels map[string]string `json:"labels"`
+	Payload *map[string]any    `json:"payload,omitempty"`
+	Labels  *map[string]string `json:"labels,omitempty"`
 }
 
 type GrantCreatePayload struct {

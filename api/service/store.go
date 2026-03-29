@@ -22,7 +22,9 @@ type Store interface {
 	CreateRegister(ctx context.Context, payload RegisterCreatePayload) (Register, error)
 	GetRegister(ctx context.Context, id string) (Register, error)
 	ListRegisters(ctx context.Context, opts RegisterListOptions) ([]Register, error)
+	UpdateRegister(ctx context.Context, id string, payload RegisterUpdatePayload) (Register, error)
 	UpdateRegisterLabels(ctx context.Context, id string, labels map[string]string) (Register, error)
+	ListRegisterEvents(ctx context.Context, registerID string) ([]RegisterEvent, error)
 	DeleteRegister(ctx context.Context, id string) error
 
 	CreateGrant(ctx context.Context, payload GrantCreatePayload) (Grant, error)

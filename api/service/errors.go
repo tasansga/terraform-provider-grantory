@@ -15,6 +15,7 @@ var (
 	ErrRegisterNotFound                  = errors.New("register not found")
 	ErrRegisterAlreadyExists             = errors.New("register already exists")
 	ErrRegisterUniqueKeyConflict         = errors.New("register unique key already exists")
+	ErrRegisterImmutable                 = errors.New("register is immutable")
 	ErrSchemaDefinitionNotFound          = errors.New("schema definition not found")
 	ErrSchemaDefinitionAlreadyExists     = errors.New("schema definition already exists")
 	ErrSchemaDefinitionUniqueKeyConflict = errors.New("schema definition unique key already exists")

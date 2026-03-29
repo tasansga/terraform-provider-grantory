@@ -42,9 +42,22 @@ type Register struct {
 	SchemaDefinitionID string            `json:"schema_definition_id,omitempty"`
 	UniqueKey          string            `json:"unique_key,omitempty"`
 	Payload            map[string]any    `json:"payload,omitempty"`
+	Mutable            bool              `json:"mutable"`
 	Labels             map[string]string `json:"labels,omitempty"`
 	CreatedAt          time.Time         `json:"created_at"`
 	UpdatedAt          time.Time         `json:"updated_at"`
+}
+
+// RegisterEvent represents a register change event.
+type RegisterEvent struct {
+	ID         string            `json:"id"`
+	RegisterID string            `json:"register_id"`
+	EventType  string            `json:"event_type"`
+	OldPayload map[string]any    `json:"old_payload,omitempty"`
+	NewPayload map[string]any    `json:"new_payload,omitempty"`
+	OldLabels  map[string]string `json:"old_labels,omitempty"`
+	NewLabels  map[string]string `json:"new_labels,omitempty"`
+	CreatedAt  time.Time         `json:"created_at"`
 }
 
 // Grant represents a grant resource.
@@ -93,12 +106,27 @@ type RegisterCreatePayload struct {
 	SchemaDefinitionID string            `json:"schema_definition_id"`
 	UniqueKey          string            `json:"unique_key"`
 	Payload            map[string]any    `json:"payload"`
+	Mutable            bool              `json:"mutable"`
 	Labels             map[string]string `json:"labels"`
 }
 
 // RegisterUpdatePayload is the request body for updating a register.
 type RegisterUpdatePayload struct {
-	Labels map[string]string `json:"labels,omitempty"`
+	Payload map[string]any    `json:"payload,omitempty"`
+	Labels  map[string]string `json:"labels,omitempty"`
+}
+
+// MarshalJSON preserves non-nil empty maps so callers can intentionally send
+// `payload: {}` or `labels: {}` in partial updates.
+func (p RegisterUpdatePayload) MarshalJSON() ([]byte, error) {
+	body := map[string]any{}
+	if p.Payload != nil {
+		body["payload"] = p.Payload
+	}
+	if p.Labels != nil {
+		body["labels"] = p.Labels
+	}
+	return json.Marshal(body)
 }
 
 // GrantCreatePayload is the request body for creating a grant.

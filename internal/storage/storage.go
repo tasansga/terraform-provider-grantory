@@ -31,7 +31,9 @@ type Store interface {
 	CreateRegister(ctx context.Context, reg Register) (Register, error)
 	GetRegister(ctx context.Context, id string) (Register, error)
 	ListRegisters(ctx context.Context, filters *RegisterListFilters) ([]Register, error)
+	UpdateRegister(ctx context.Context, id string, payload *map[string]any, labels *map[string]string) error
 	UpdateRegisterLabels(ctx context.Context, id string, labels map[string]string) error
+	ListRegisterEvents(ctx context.Context, registerID string) ([]RegisterEvent, error)
 	DeleteRegister(ctx context.Context, id string) error
 	CountRegisters(ctx context.Context) (map[string]int64, error)
 
@@ -85,9 +87,21 @@ type Register struct {
 	SchemaDefinitionID string            `json:"schema_definition_id,omitempty"`
 	UniqueKey          string            `json:"unique_key,omitempty"`
 	Payload            map[string]any    `json:"payload,omitempty"`
+	Mutable            bool              `json:"mutable"`
 	Labels             map[string]string `json:"labels,omitempty"`
 	CreatedAt          time.Time         `json:"created_at"`
 	UpdatedAt          time.Time         `json:"updated_at"`
+}
+
+type RegisterEvent struct {
+	ID         string            `json:"id"`
+	RegisterID string            `json:"register_id"`
+	EventType  string            `json:"event_type"`
+	OldPayload map[string]any    `json:"old_payload,omitempty"`
+	NewPayload map[string]any    `json:"new_payload,omitempty"`
+	OldLabels  map[string]string `json:"old_labels,omitempty"`
+	NewLabels  map[string]string `json:"new_labels,omitempty"`
+	CreatedAt  time.Time         `json:"created_at"`
 }
 
 // RegisterListFilters describes optional filters for listing registers.
@@ -137,6 +151,8 @@ var (
 	ErrRegisterNotFound = errors.New("register not found")
 	// ErrRegisterUniqueKeyConflict is returned when a register with the same unique key exists.
 	ErrRegisterUniqueKeyConflict = errors.New("register unique key already exists")
+	// ErrRegisterImmutable is returned when payload updates are attempted on immutable registers.
+	ErrRegisterImmutable = errors.New("register is immutable")
 	// ErrSchemaDefinitionNotFound is returned when a schema definition cannot be located.
 	ErrSchemaDefinitionNotFound = errors.New("schema definition not found")
 	// ErrSchemaDefinitionAlreadyExists is returned when a schema definition with the given ID exists.

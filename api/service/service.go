@@ -99,8 +99,34 @@ func (s *Service) ListRegisters(ctx context.Context, opts RegisterListOptions) (
 	return s.store.ListRegisters(ctx, opts)
 }
 
+func (s *Service) UpdateRegister(ctx context.Context, id string, payload RegisterUpdatePayload) (Register, error) {
+	if payload.Payload == nil && payload.Labels == nil {
+		return Register{}, fmt.Errorf("payload and/or labels are required")
+	}
+	if payload.Payload != nil {
+		reg, err := s.store.GetRegister(ctx, id)
+		if err != nil {
+			return Register{}, err
+		}
+		if reg.SchemaDefinitionID != "" {
+			def, err := s.store.GetSchemaDefinition(ctx, reg.SchemaDefinitionID)
+			if err != nil {
+				return Register{}, err
+			}
+			if err := validateJSONInstance(def.Schema, *payload.Payload, "register payload", "schema"); err != nil {
+				return Register{}, err
+			}
+		}
+	}
+	return s.store.UpdateRegister(ctx, id, payload)
+}
+
 func (s *Service) UpdateRegisterLabels(ctx context.Context, id string, labels map[string]string) (Register, error) {
-	return s.store.UpdateRegisterLabels(ctx, id, labels)
+	return s.UpdateRegister(ctx, id, RegisterUpdatePayload{Labels: &labels})
+}
+
+func (s *Service) ListRegisterEvents(ctx context.Context, registerID string) ([]RegisterEvent, error) {
+	return s.store.ListRegisterEvents(ctx, registerID)
 }
 
 func (s *Service) DeleteRegister(ctx context.Context, id string) error {

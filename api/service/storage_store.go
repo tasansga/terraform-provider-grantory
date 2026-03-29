@@ -158,6 +158,7 @@ func (a storageStore) CreateRegister(ctx context.Context, payload RegisterCreate
 		SchemaDefinitionID: payload.SchemaDefinitionID,
 		UniqueKey:          payload.UniqueKey,
 		Payload:            payload.Payload,
+		Mutable:            payload.Mutable,
 		Labels:             payload.Labels,
 	})
 	if err != nil {
@@ -190,11 +191,27 @@ func (a storageStore) ListRegisters(ctx context.Context, opts RegisterListOption
 	return out, nil
 }
 
-func (a storageStore) UpdateRegisterLabels(ctx context.Context, id string, labels map[string]string) (Register, error) {
-	if err := a.store.UpdateRegisterLabels(ctx, id, labels); err != nil {
+func (a storageStore) UpdateRegister(ctx context.Context, id string, payload RegisterUpdatePayload) (Register, error) {
+	if err := a.store.UpdateRegister(ctx, id, payload.Payload, payload.Labels); err != nil {
 		return Register{}, mapStorageError(err)
 	}
 	return a.GetRegister(ctx, id)
+}
+
+func (a storageStore) UpdateRegisterLabels(ctx context.Context, id string, labels map[string]string) (Register, error) {
+	return a.UpdateRegister(ctx, id, RegisterUpdatePayload{Labels: &labels})
+}
+
+func (a storageStore) ListRegisterEvents(ctx context.Context, registerID string) ([]RegisterEvent, error) {
+	events, err := a.store.ListRegisterEvents(ctx, registerID)
+	if err != nil {
+		return nil, mapStorageError(err)
+	}
+	out := make([]RegisterEvent, 0, len(events))
+	for _, event := range events {
+		out = append(out, registerEventFromStorage(event))
+	}
+	return out, nil
 }
 
 func (a storageStore) DeleteRegister(ctx context.Context, id string) error {
@@ -329,9 +346,23 @@ func registerFromStorage(reg storage.Register) Register {
 		SchemaDefinitionID: reg.SchemaDefinitionID,
 		UniqueKey:          reg.UniqueKey,
 		Payload:            reg.Payload,
+		Mutable:            reg.Mutable,
 		Labels:             reg.Labels,
 		CreatedAt:          reg.CreatedAt,
 		UpdatedAt:          reg.UpdatedAt,
+	}
+}
+
+func registerEventFromStorage(event storage.RegisterEvent) RegisterEvent {
+	return RegisterEvent{
+		ID:         event.ID,
+		RegisterID: event.RegisterID,
+		EventType:  event.EventType,
+		OldPayload: event.OldPayload,
+		NewPayload: event.NewPayload,
+		OldLabels:  event.OldLabels,
+		NewLabels:  event.NewLabels,
+		CreatedAt:  event.CreatedAt,
 	}
 }
 
@@ -381,6 +412,8 @@ func mapStorageError(err error) error {
 		return ErrRegisterAlreadyExists
 	case errors.Is(err, storage.ErrRegisterUniqueKeyConflict):
 		return ErrRegisterUniqueKeyConflict
+	case errors.Is(err, storage.ErrRegisterImmutable):
+		return ErrRegisterImmutable
 	case errors.Is(err, storage.ErrSchemaDefinitionNotFound):
 		return ErrSchemaDefinitionNotFound
 	case errors.Is(err, storage.ErrSchemaDefinitionAlreadyExists):

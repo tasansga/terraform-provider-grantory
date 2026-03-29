@@ -25,7 +25,9 @@ type fakeStore struct {
 	createRegisterFn               func(context.Context, RegisterCreatePayload) (Register, error)
 	getRegisterFn                  func(context.Context, string) (Register, error)
 	listRegistersFn                func(context.Context, RegisterListOptions) ([]Register, error)
+	updateRegisterFn               func(context.Context, string, RegisterUpdatePayload) (Register, error)
 	updateRegisterLabelsFn         func(context.Context, string, map[string]string) (Register, error)
+	listRegisterEventsFn           func(context.Context, string) ([]RegisterEvent, error)
 	deleteRegisterFn               func(context.Context, string) error
 	createGrantFn                  func(context.Context, GrantCreatePayload) (Grant, error)
 	getGrantFn                     func(context.Context, string) (Grant, error)
@@ -128,6 +130,18 @@ func (f *fakeStore) UpdateRegisterLabels(ctx context.Context, id string, labels 
 		return Register{}, fmt.Errorf("unexpected UpdateRegisterLabels")
 	}
 	return f.updateRegisterLabelsFn(ctx, id, labels)
+}
+func (f *fakeStore) UpdateRegister(ctx context.Context, id string, payload RegisterUpdatePayload) (Register, error) {
+	if f.updateRegisterFn == nil {
+		return Register{}, fmt.Errorf("unexpected UpdateRegister")
+	}
+	return f.updateRegisterFn(ctx, id, payload)
+}
+func (f *fakeStore) ListRegisterEvents(ctx context.Context, registerID string) ([]RegisterEvent, error) {
+	if f.listRegisterEventsFn == nil {
+		return nil, fmt.Errorf("unexpected ListRegisterEvents")
+	}
+	return f.listRegisterEventsFn(ctx, registerID)
 }
 func (f *fakeStore) DeleteRegister(ctx context.Context, id string) error {
 	if f.deleteRegisterFn == nil {
