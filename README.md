@@ -9,6 +9,8 @@ Links:
 - [OpenTofu registry](https://search.opentofu.org/provider/tasansga/grantory/latest)
 - [terraform registry](https://registry.terraform.io/providers/tasansga/grantory/latest)
 - [Go API client docs (pkg.go.dev)](https://pkg.go.dev/github.com/tasansga/terraform-provider-grantory/api/client)
+- [Go embedded service docs (pkg.go.dev)](https://pkg.go.dev/github.com/tasansga/terraform-provider-grantory/api/service)
+- [Go embedded server docs (pkg.go.dev)](https://pkg.go.dev/github.com/tasansga/terraform-provider-grantory/api/server)
 
 ## Concepts
 
@@ -112,6 +114,53 @@ c, err := client.New(client.Options{
 ```
 
 Authentication is optional in Grantory itself. Set `Token` (Bearer) or `User` + `Password` only when your reverse proxy or gateway enforces it.
+
+For embedded/in-process usage (function calls, no HTTP routing), use:
+
+```go
+import "github.com/tasansga/terraform-provider-grantory/api/service"
+```
+
+In-memory SQLite example:
+
+```go
+ctx := context.Background()
+
+store, err := service.NewSQLiteStore(ctx, ":memory:")
+if err != nil {
+  panic(err)
+}
+
+svc := service.New(store)
+host, err := svc.CreateHost(ctx, service.HostCreatePayload{
+  UniqueKey: "app-01",
+  Labels:    map[string]string{"env": "dev"},
+})
+if err != nil {
+  panic(err)
+}
+
+fmt.Println(host.ID)
+```
+
+For embedded HTTP server usage (listeners + routes), use:
+
+```go
+cfg := server.DefaultConfig()
+cfg.Database = "./data"
+cfg.BindAddr = "127.0.0.1:8080"
+cfg.TLSBind = "off"
+
+srv, err := server.New(context.Background(), cfg)
+if err != nil {
+  panic(err)
+}
+defer srv.Close()
+
+if err := srv.Serve(context.Background()); err != nil {
+  panic(err)
+}
+```
 
 
 ## Authentication and namespaces

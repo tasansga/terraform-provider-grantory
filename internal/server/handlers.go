@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,12 +9,11 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/gofiber/fiber/v2"
-	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/sirupsen/logrus"
 
+	apiservice "github.com/tasansga/terraform-provider-grantory/api/service"
 	"github.com/tasansga/terraform-provider-grantory/internal/storage"
 )
 
@@ -73,20 +71,17 @@ func (h hostHandler) create(c *fiber.Ctx) error {
 
 	logRequestEntry(c, "hostHandler.create", map[string]any{"payload": payload})
 
-	store, namespace, err := resolveNamespaceStore(c)
+	svc, namespace, err := resolveNamespaceService(c)
 	if err != nil {
 		return err
 	}
 
-	host, err := store.CreateHost(c.Context(), storage.Host{
-		UniqueKey: payload.UniqueKey,
-		Labels:    payload.Labels,
-	})
+	host, err := svc.CreateHost(c.Context(), apiservice.HostCreatePayload{UniqueKey: payload.UniqueKey, Labels: payload.Labels})
 	if err != nil {
 		switch {
-		case errors.Is(err, storage.ErrHostAlreadyExists):
+		case errors.Is(err, apiservice.ErrHostAlreadyExists):
 			return fiber.NewError(fiber.StatusConflict, "host already exists")
-		case errors.Is(err, storage.ErrHostUniqueKeyConflict):
+		case errors.Is(err, apiservice.ErrHostUniqueKeyConflict):
 			return fiber.NewError(fiber.StatusConflict, "host unique key already exists")
 		default:
 			logrus.WithError(err).WithField("namespace", namespace).Error("create host")
@@ -100,12 +95,12 @@ func (h hostHandler) create(c *fiber.Ctx) error {
 func (h hostHandler) list(c *fiber.Ctx) error {
 	logRequestEntry(c, "hostHandler.list", nil)
 
-	store, namespace, err := resolveNamespaceStore(c)
+	svc, namespace, err := resolveNamespaceService(c)
 	if err != nil {
 		return err
 	}
 
-	hosts, err := store.ListHosts(c.Context())
+	hosts, err := svc.ListHosts(c.Context())
 	if err != nil {
 		logrus.WithError(err).WithField("namespace", namespace).Error("list hosts")
 		return fiber.NewError(fiber.StatusInternalServerError, "unable to list hosts")
@@ -117,14 +112,14 @@ func (h hostHandler) get(c *fiber.Ctx) error {
 	hostID := c.Params("id")
 	logRequestEntry(c, "hostHandler.get", map[string]any{"host_id": hostID})
 
-	store, namespace, err := resolveNamespaceStore(c)
+	svc, namespace, err := resolveNamespaceService(c)
 	if err != nil {
 		return err
 	}
 
-	host, err := store.GetHost(c.Context(), hostID)
+	host, err := svc.GetHost(c.Context(), hostID)
 	if err != nil {
-		if errors.Is(err, storage.ErrHostNotFound) {
+		if errors.Is(err, apiservice.ErrHostNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "host not found")
 		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("get host")
@@ -137,13 +132,13 @@ func (h hostHandler) delete(c *fiber.Ctx) error {
 	hostID := c.Params("id")
 	logRequestEntry(c, "hostHandler.delete", map[string]any{"host_id": hostID})
 
-	store, namespace, err := resolveNamespaceStore(c)
+	svc, namespace, err := resolveNamespaceService(c)
 	if err != nil {
 		return err
 	}
 
-	if err := store.DeleteHost(c.Context(), hostID); err != nil {
-		if errors.Is(err, storage.ErrHostNotFound) {
+	if err := svc.DeleteHost(c.Context(), hostID); err != nil {
+		if errors.Is(err, apiservice.ErrHostNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "host not found")
 		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("delete host")
@@ -162,28 +157,20 @@ func (h hostHandler) updateLabels(c *fiber.Ctx) error {
 	}
 
 	hostID := c.Params("id")
-	logRequestEntry(c, "hostHandler.updateLabels", map[string]any{
-		"host_id": hostID,
-		"payload": payload,
-	})
+	logRequestEntry(c, "hostHandler.updateLabels", map[string]any{"host_id": hostID, "payload": payload})
 
-	store, namespace, err := resolveNamespaceStore(c)
+	svc, namespace, err := resolveNamespaceService(c)
 	if err != nil {
 		return err
 	}
 
-	if err := store.UpdateHostLabels(c.Context(), hostID, payload.Labels); err != nil {
-		if errors.Is(err, storage.ErrHostNotFound) {
+	updated, err := svc.UpdateHostLabels(c.Context(), hostID, payload.Labels)
+	if err != nil {
+		if errors.Is(err, apiservice.ErrHostNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "host not found")
 		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("update host labels")
 		return fiber.NewError(fiber.StatusInternalServerError, "unable to update host")
-	}
-
-	updated, err := store.GetHost(c.Context(), hostID)
-	if err != nil {
-		logrus.WithError(err).WithField("namespace", namespace).Error("fetch host after labels update")
-		return fiber.NewError(fiber.StatusInternalServerError, "unable to return host")
 	}
 	return c.JSON(updated)
 }
@@ -219,12 +206,6 @@ func registerSchemaDefinitionRoutes(app fiber.Router) {
 }
 
 type requestHandler struct{}
-
-type requestResponse struct {
-	storage.Request
-	Grant   map[string]any `json:"grant"`
-	GrantID string         `json:"grant_id,omitempty"`
-}
 
 type requestCreatePayload struct {
 	HostID                    string            `json:"host_id"`
@@ -269,70 +250,46 @@ func (h requestHandler) create(c *fiber.Ctx) error {
 		"labels":                       payload.Labels,
 	})
 
-	store, namespace, err := resolveNamespaceStore(c)
+	svc, namespace, err := resolveNamespaceService(c)
 	if err != nil {
 		return err
 	}
 
-	if payload.RequestSchemaDefinitionID != "" {
-		def, err := store.GetSchemaDefinition(c.Context(), payload.RequestSchemaDefinitionID)
-		if err != nil {
-			if errors.Is(err, storage.ErrSchemaDefinitionNotFound) {
-				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("schema definition %s not found", payload.RequestSchemaDefinitionID))
-			}
-			logrus.WithError(err).WithField("namespace", namespace).Error("get schema definition for request")
-			return fiber.NewError(fiber.StatusInternalServerError, "unable to load schema definition")
-		}
-		if err := validateJSONInstance(def.Schema, payload.Payload, "request payload", "schema"); err != nil {
-			return fiber.NewError(fiber.StatusBadRequest, err.Error())
-		}
-	}
-	if payload.GrantSchemaDefinitionID != "" {
-		if _, err := store.GetSchemaDefinition(c.Context(), payload.GrantSchemaDefinitionID); err != nil {
-			if errors.Is(err, storage.ErrSchemaDefinitionNotFound) {
-				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("schema definition %s not found", payload.GrantSchemaDefinitionID))
-			}
-			logrus.WithError(err).WithField("namespace", namespace).Error("get schema definition for grant")
-			return fiber.NewError(fiber.StatusInternalServerError, "unable to load schema definition")
-		}
-	}
-
-	req := storage.Request{
+	created, err := svc.CreateRequest(c.Context(), apiservice.RequestCreatePayload{
 		HostID:                    payload.HostID,
 		RequestSchemaDefinitionID: payload.RequestSchemaDefinitionID,
 		GrantSchemaDefinitionID:   payload.GrantSchemaDefinitionID,
 		UniqueKey:                 payload.UniqueKey,
 		Payload:                   payload.Payload,
 		Labels:                    payload.Labels,
-	}
-	created, err := store.CreateRequest(c.Context(), req)
+	})
 	if err != nil {
 		switch {
-		case errors.Is(err, storage.ErrRequestAlreadyExists):
+		case errors.Is(err, apiservice.ErrRequestAlreadyExists):
 			return fiber.NewError(fiber.StatusConflict, "request already exists")
-		case errors.Is(err, storage.ErrRequestUniqueKeyConflict):
+		case errors.Is(err, apiservice.ErrRequestUniqueKeyConflict):
 			return fiber.NewError(fiber.StatusConflict, "request unique key already exists")
-		case errors.Is(err, storage.ErrReferencedHostNotFound):
+		case errors.Is(err, apiservice.ErrReferencedHostNotFound):
 			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("host %s not found", payload.HostID))
+		case errors.Is(err, apiservice.ErrSchemaDefinitionNotFound):
+			missingID, resolveErr := resolveMissingRequestSchemaID(c.Context(), svc, payload.RequestSchemaDefinitionID, payload.GrantSchemaDefinitionID)
+			if resolveErr != nil {
+				logrus.WithError(resolveErr).WithField("namespace", namespace).Error("resolve missing schema definition for request")
+				return fiber.NewError(fiber.StatusInternalServerError, "unable to load schema definition")
+			}
+			if missingID != "" {
+				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("schema definition %s not found", missingID))
+			}
+			return fiber.NewError(fiber.StatusBadRequest, "schema definition not found")
+		case isValidationError(err):
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
 		default:
 			logrus.WithError(err).WithField("namespace", namespace).Error("create request")
 			return fiber.NewError(fiber.StatusInternalServerError, "unable to persist request")
 		}
 	}
 
-	loaded, err := store.GetRequest(c.Context(), created.ID)
-	if err != nil {
-		logrus.WithError(err).WithField("namespace", namespace).Error("fetch request after create")
-		return fiber.NewError(fiber.StatusInternalServerError, "unable to return request")
-	}
-
-	response, err := buildRequestResponse(c.Context(), store, loaded)
-	if err != nil {
-		logrus.WithError(err).WithField("namespace", namespace).WithField("request_id", created.ID).Error("prepare request response")
-		return fiber.NewError(fiber.StatusInternalServerError, "unable to include grant data")
-	}
-
-	return c.Status(fiber.StatusCreated).JSON(response)
+	return c.Status(fiber.StatusCreated).JSON(created)
 }
 
 func (h requestHandler) list(c *fiber.Ctx) error {
@@ -343,67 +300,52 @@ func (h requestHandler) list(c *fiber.Ctx) error {
 
 	logRequestEntry(c, "requestHandler.list", map[string]any{"filters": loggableRequestFilters(filters)})
 
-	store, namespace, err := resolveNamespaceStore(c)
+	svc, namespace, err := resolveNamespaceService(c)
 	if err != nil {
 		return err
 	}
 
-	requests, err := store.ListRequests(c.Context(), &filters)
+	requests, err := svc.ListRequests(c.Context(), filters)
 	if err != nil {
 		logrus.WithError(err).WithField("namespace", namespace).Error("list requests")
 		return fiber.NewError(fiber.StatusInternalServerError, "unable to list requests")
 	}
 
-	responses := make([]requestResponse, 0, len(requests))
-	for _, req := range requests {
-		response, err := buildRequestResponse(c.Context(), store, req)
-		if err != nil {
-			logrus.WithError(err).WithField("namespace", namespace).WithField("request_id", req.ID).Error("prepare request response")
-			return fiber.NewError(fiber.StatusInternalServerError, "unable to include grant data")
-		}
-		responses = append(responses, response)
-	}
-
-	return c.JSON(responses)
+	return c.JSON(requests)
 }
 
 func (h requestHandler) get(c *fiber.Ctx) error {
 	reqID := c.Params("id")
 	logRequestEntry(c, "requestHandler.get", map[string]any{"request_id": reqID})
 
-	store, namespace, err := resolveNamespaceStore(c)
+	svc, namespace, err := resolveNamespaceService(c)
 	if err != nil {
 		return err
 	}
 
-	req, err := store.GetRequest(c.Context(), reqID)
+	req, err := svc.GetRequest(c.Context(), reqID)
 	if err != nil {
-		if errors.Is(err, storage.ErrRequestNotFound) {
+		if errors.Is(err, apiservice.ErrRequestNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "request not found")
 		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("get request")
 		return fiber.NewError(fiber.StatusInternalServerError, "unable to fetch request")
 	}
 
-	response, err := buildRequestResponse(c.Context(), store, req)
-	if err != nil {
-		logrus.WithError(err).WithField("namespace", namespace).WithField("request_id", req.ID).Error("prepare request response")
-		return fiber.NewError(fiber.StatusInternalServerError, "unable to include grant data")
-	}
-	return c.JSON(response)
+	return c.JSON(req)
 }
 
 func (h requestHandler) delete(c *fiber.Ctx) error {
 	requestID := c.Params("id")
 	logRequestEntry(c, "requestHandler.delete", map[string]any{"request_id": requestID})
 
-	store, namespace, err := resolveNamespaceStore(c)
+	svc, namespace, err := resolveNamespaceService(c)
 	if err != nil {
 		return err
 	}
 
-	if err := store.DeleteRequest(c.Context(), requestID); err != nil {
-		if errors.Is(err, storage.ErrRequestNotFound) {
+	if err := svc.DeleteRequest(c.Context(), requestID); err != nil {
+		if errors.Is(err, apiservice.ErrRequestNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "request not found")
 		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("delete request")
@@ -412,7 +354,7 @@ func (h requestHandler) delete(c *fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func loggableRequestFilters(filters storage.RequestListFilters) map[string]any {
+func loggableRequestFilters(filters apiservice.RequestListOptions) map[string]any {
 	entry := map[string]any{}
 	if filters.HasGrant != nil {
 		entry["has_grant"] = *filters.HasGrant
@@ -429,26 +371,26 @@ func loggableRequestFilters(filters storage.RequestListFilters) map[string]any {
 	return entry
 }
 
-func parseRequestListFilters(c *fiber.Ctx) (storage.RequestListFilters, error) {
+func parseRequestListFilters(c *fiber.Ctx) (apiservice.RequestListOptions, error) {
 	query, err := url.ParseQuery(string(c.Context().URI().QueryString()))
 	if err != nil {
-		return storage.RequestListFilters{}, fiber.NewError(fiber.StatusBadRequest, "invalid query parameters")
+		return apiservice.RequestListOptions{}, fiber.NewError(fiber.StatusBadRequest, "invalid query parameters")
 	}
 
-	filters := storage.RequestListFilters{}
+	filters := apiservice.RequestListOptions{}
 	if raw := query.Get("has_grant"); raw != "" {
 		value, err := strconv.ParseBool(raw)
 		if err != nil {
-			return storage.RequestListFilters{}, fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("invalid has_grant %q", raw))
+			return apiservice.RequestListOptions{}, fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("invalid has_grant %q", raw))
 		}
 		filters.HasGrant = &value
 	}
 
 	if filters.Labels, err = parseLabelFilters(query); err != nil {
-		return storage.RequestListFilters{}, err
+		return apiservice.RequestListOptions{}, err
 	}
 	if filters.HostLabels, err = parseHostLabelFilters(query); err != nil {
-		return storage.RequestListFilters{}, err
+		return apiservice.RequestListOptions{}, err
 	}
 
 	return filters, nil
@@ -478,54 +420,6 @@ func parseLabelFiltersWithKey(query url.Values, keyName string) (map[string]stri
 	}
 	return nil, nil
 }
-func applyRequestFilters(requests []storage.Request, filters storage.RequestListFilters) []storage.Request {
-	var filtered []storage.Request
-	for _, req := range requests {
-		if filters.HasGrant != nil && req.HasGrant != *filters.HasGrant {
-			continue
-		}
-		if !matchesLabelFilters(req.Labels, filters.Labels) {
-			continue
-		}
-		filtered = append(filtered, req)
-	}
-	return filtered
-}
-
-func matchesLabelFilters(labels map[string]string, filters map[string]string) bool {
-	if len(filters) == 0 {
-		return true
-	}
-	if len(labels) == 0 {
-		return false
-	}
-	for key, expected := range filters {
-		if labels[key] != expected {
-			return false
-		}
-	}
-	return true
-}
-
-func buildRequestResponse(ctx context.Context, store storage.Store, req storage.Request) (requestResponse, error) {
-	resp := requestResponse{Request: req}
-	grant, found, err := store.GetGrantForRequest(ctx, req.ID)
-	if err != nil {
-		return resp, fmt.Errorf("fetch applied grant: %w", err)
-	}
-	if !found {
-		return resp, nil
-	}
-	grantPayload := map[string]any{
-		"grant_id":   grant.ID,
-		"created_at": grant.CreatedAt.Format(time.RFC3339Nano),
-		"updated_at": grant.UpdatedAt.Format(time.RFC3339Nano),
-	}
-	grantPayload["payload"] = grant.Payload
-	resp.Grant = grantPayload
-	resp.GrantID = grant.ID
-	return resp, nil
-}
 
 func (h requestHandler) update(c *fiber.Ctx) error {
 	var payload requestUpdatePayload
@@ -537,41 +431,22 @@ func (h requestHandler) update(c *fiber.Ctx) error {
 	}
 
 	reqID := c.Params("id")
-	logRequestEntry(c, "requestHandler.update", map[string]any{
-		"request_id": reqID,
-		"labels":     payload.Labels,
-	})
+	logRequestEntry(c, "requestHandler.update", map[string]any{"request_id": reqID, "labels": payload.Labels})
 
-	store, namespace, err := resolveNamespaceStore(c)
+	svc, namespace, err := resolveNamespaceService(c)
 	if err != nil {
 		return err
 	}
 
-	labels := map[string]string(nil)
-	if payload.Labels != nil {
-		labels = *payload.Labels
-	}
-
-	if err := store.UpdateRequestLabels(c.Context(), reqID, labels); err != nil {
-		if errors.Is(err, storage.ErrRequestNotFound) {
+	updated, err := svc.UpdateRequestLabels(c.Context(), reqID, *payload.Labels)
+	if err != nil {
+		if errors.Is(err, apiservice.ErrRequestNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "request not found")
 		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("update request labels")
 		return fiber.NewError(fiber.StatusInternalServerError, "unable to update request")
 	}
-
-	updated, err := store.GetRequest(c.Context(), reqID)
-	if err != nil {
-		logrus.WithError(err).WithField("namespace", namespace).Error("fetch request after update")
-		return fiber.NewError(fiber.StatusInternalServerError, "unable to return request")
-	}
-
-	response, err := buildRequestResponse(c.Context(), store, updated)
-	if err != nil {
-		logrus.WithError(err).WithField("namespace", namespace).WithField("request_id", updated.ID).Error("prepare request response")
-		return fiber.NewError(fiber.StatusInternalServerError, "unable to include grant data")
-	}
-	return c.JSON(response)
+	return c.JSON(updated)
 }
 
 type registerHandler struct{}
@@ -605,54 +480,37 @@ func (h registerHandler) create(c *fiber.Ctx) error {
 		"labels":               payload.Labels,
 	})
 
-	store, namespace, err := resolveNamespaceStore(c)
+	svc, namespace, err := resolveNamespaceService(c)
 	if err != nil {
 		return err
 	}
 
-	if payload.SchemaDefinitionID != "" {
-		def, err := store.GetSchemaDefinition(c.Context(), payload.SchemaDefinitionID)
-		if err != nil {
-			if errors.Is(err, storage.ErrSchemaDefinitionNotFound) {
-				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("schema definition %s not found", payload.SchemaDefinitionID))
-			}
-			logrus.WithError(err).WithField("namespace", namespace).Error("get schema definition for register")
-			return fiber.NewError(fiber.StatusInternalServerError, "unable to load schema definition")
-		}
-		if err := validateJSONInstance(def.Schema, payload.Payload, "register payload", "schema"); err != nil {
-			return fiber.NewError(fiber.StatusBadRequest, err.Error())
-		}
-	}
-
-	reg := storage.Register{
+	created, err := svc.CreateRegister(c.Context(), apiservice.RegisterCreatePayload{
 		HostID:             payload.HostID,
 		SchemaDefinitionID: payload.SchemaDefinitionID,
 		UniqueKey:          payload.UniqueKey,
 		Payload:            payload.Payload,
 		Labels:             payload.Labels,
-	}
-	created, err := store.CreateRegister(c.Context(), reg)
+	})
 	if err != nil {
 		switch {
-		case errors.Is(err, storage.ErrRegisterAlreadyExists):
+		case errors.Is(err, apiservice.ErrRegisterAlreadyExists):
 			return fiber.NewError(fiber.StatusConflict, "register already exists")
-		case errors.Is(err, storage.ErrRegisterUniqueKeyConflict):
+		case errors.Is(err, apiservice.ErrRegisterUniqueKeyConflict):
 			return fiber.NewError(fiber.StatusConflict, "register unique key already exists")
-		case errors.Is(err, storage.ErrReferencedHostNotFound):
+		case errors.Is(err, apiservice.ErrReferencedHostNotFound):
 			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("host %s not found", payload.HostID))
+		case errors.Is(err, apiservice.ErrSchemaDefinitionNotFound):
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("schema definition %s not found", payload.SchemaDefinitionID))
+		case isValidationError(err):
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
 		default:
 			logrus.WithError(err).WithField("namespace", namespace).Error("create register")
 			return fiber.NewError(fiber.StatusInternalServerError, "unable to persist register")
 		}
 	}
 
-	stored, err := store.GetRegister(c.Context(), created.ID)
-	if err != nil {
-		logrus.WithError(err).WithField("namespace", namespace).Error("fetch register after create")
-		return fiber.NewError(fiber.StatusInternalServerError, "unable to return register")
-	}
-
-	return c.Status(fiber.StatusCreated).JSON(stored)
+	return c.Status(fiber.StatusCreated).JSON(created)
 }
 
 func (h registerHandler) list(c *fiber.Ctx) error {
@@ -663,12 +521,12 @@ func (h registerHandler) list(c *fiber.Ctx) error {
 
 	logRequestEntry(c, "registerHandler.list", map[string]any{"filters": filters})
 
-	store, namespace, err := resolveNamespaceStore(c)
+	svc, namespace, err := resolveNamespaceService(c)
 	if err != nil {
 		return err
 	}
 
-	registers, err := store.ListRegisters(c.Context(), &filters)
+	registers, err := svc.ListRegisters(c.Context(), filters)
 	if err != nil {
 		logrus.WithError(err).WithField("namespace", namespace).Error("list registers")
 		return fiber.NewError(fiber.StatusInternalServerError, "unable to list registers")
@@ -681,14 +539,14 @@ func (h registerHandler) get(c *fiber.Ctx) error {
 	registerID := c.Params("id")
 	logRequestEntry(c, "registerHandler.get", map[string]any{"register_id": registerID})
 
-	store, namespace, err := resolveNamespaceStore(c)
+	svc, namespace, err := resolveNamespaceService(c)
 	if err != nil {
 		return err
 	}
 
-	reg, err := store.GetRegister(c.Context(), registerID)
+	reg, err := svc.GetRegister(c.Context(), registerID)
 	if err != nil {
-		if errors.Is(err, storage.ErrRegisterNotFound) {
+		if errors.Is(err, apiservice.ErrRegisterNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "register not found")
 		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("get register")
@@ -707,34 +565,22 @@ func (h registerHandler) update(c *fiber.Ctx) error {
 	}
 
 	registerID := c.Params("id")
-	logRequestEntry(c, "registerHandler.update", map[string]any{
-		"register_id": registerID,
-		"labels":      payload.Labels,
-	})
+	logRequestEntry(c, "registerHandler.update", map[string]any{"register_id": registerID, "labels": payload.Labels})
 
-	store, namespace, err := resolveNamespaceStore(c)
+	svc, namespace, err := resolveNamespaceService(c)
 	if err != nil {
 		return err
 	}
 
-	labels := map[string]string(nil)
-	if payload.Labels != nil {
-		labels = *payload.Labels
-	}
-
-	if err := store.UpdateRegisterLabels(c.Context(), registerID, labels); err != nil {
-		if errors.Is(err, storage.ErrRegisterNotFound) {
+	updated, err := svc.UpdateRegisterLabels(c.Context(), registerID, *payload.Labels)
+	if err != nil {
+		if errors.Is(err, apiservice.ErrRegisterNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "register not found")
 		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("update register labels")
 		return fiber.NewError(fiber.StatusInternalServerError, "unable to update register")
 	}
 
-	updated, err := store.GetRegister(c.Context(), registerID)
-	if err != nil {
-		logrus.WithError(err).WithField("namespace", namespace).Error("fetch register after update")
-		return fiber.NewError(fiber.StatusInternalServerError, "unable to return register")
-	}
 	return c.JSON(updated)
 }
 
@@ -742,13 +588,13 @@ func (h registerHandler) delete(c *fiber.Ctx) error {
 	registerID := c.Params("id")
 	logRequestEntry(c, "registerHandler.delete", map[string]any{"register_id": registerID})
 
-	store, namespace, err := resolveNamespaceStore(c)
+	svc, namespace, err := resolveNamespaceService(c)
 	if err != nil {
 		return err
 	}
 
-	if err := store.DeleteRegister(c.Context(), registerID); err != nil {
-		if errors.Is(err, storage.ErrRegisterNotFound) {
+	if err := svc.DeleteRegister(c.Context(), registerID); err != nil {
+		if errors.Is(err, apiservice.ErrRegisterNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "register not found")
 		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("delete register")
@@ -757,17 +603,17 @@ func (h registerHandler) delete(c *fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func parseRegisterListFilters(c *fiber.Ctx) (storage.RegisterListFilters, error) {
+func parseRegisterListFilters(c *fiber.Ctx) (apiservice.RegisterListOptions, error) {
 	query, err := url.ParseQuery(string(c.Context().URI().QueryString()))
 	if err != nil {
-		return storage.RegisterListFilters{}, fiber.NewError(fiber.StatusBadRequest, "invalid query parameters")
+		return apiservice.RegisterListOptions{}, fiber.NewError(fiber.StatusBadRequest, "invalid query parameters")
 	}
-	filters := storage.RegisterListFilters{}
+	filters := apiservice.RegisterListOptions{}
 	if filters.Labels, err = parseLabelFilters(query); err != nil {
-		return storage.RegisterListFilters{}, err
+		return apiservice.RegisterListOptions{}, err
 	}
 	if filters.HostLabels, err = parseHostLabelFilters(query); err != nil {
-		return storage.RegisterListFilters{}, err
+		return apiservice.RegisterListOptions{}, err
 	}
 	return filters, nil
 }
@@ -777,65 +623,48 @@ func (h schemaDefinitionHandler) create(c *fiber.Ctx) error {
 	if err := c.BodyParser(&payload); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, err.Error())
 	}
-	if err := requireJSONValue(payload.Schema, "schema"); err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, err.Error())
-	}
-	if err := validateJSONSchema(payload.Schema, "schema"); err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, err.Error())
-	}
 
-	logRequestEntry(c, "schemaDefinitionHandler.create", map[string]any{
-		"schema_bytes": len(payload.Schema),
-		"unique_key":   payload.UniqueKey,
-		"labels":       payload.Labels,
-	})
+	logRequestEntry(c, "schemaDefinitionHandler.create", map[string]any{"schema_bytes": len(payload.Schema), "unique_key": payload.UniqueKey, "labels": payload.Labels})
 
-	store, namespace, err := resolveNamespaceStore(c)
+	svc, namespace, err := resolveNamespaceService(c)
 	if err != nil {
 		return err
 	}
 
-	def := storage.SchemaDefinition{
+	created, err := svc.CreateSchemaDefinition(c.Context(), apiservice.SchemaDefinitionCreatePayload{
 		UniqueKey: payload.UniqueKey,
 		Schema:    payload.Schema,
 		Labels:    payload.Labels,
-	}
-	created, err := store.CreateSchemaDefinition(c.Context(), def)
+	})
 	if err != nil {
 		switch {
-		case errors.Is(err, storage.ErrSchemaDefinitionAlreadyExists):
+		case errors.Is(err, apiservice.ErrSchemaDefinitionAlreadyExists):
 			return fiber.NewError(fiber.StatusConflict, "schema definition already exists")
-		case errors.Is(err, storage.ErrSchemaDefinitionUniqueKeyConflict):
+		case errors.Is(err, apiservice.ErrSchemaDefinitionUniqueKeyConflict):
 			return fiber.NewError(fiber.StatusConflict, "schema definition unique key already exists")
+		case isValidationError(err):
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
 		default:
 			logrus.WithError(err).WithField("namespace", namespace).Error("create schema definition")
 			return fiber.NewError(fiber.StatusInternalServerError, "unable to persist schema definition")
 		}
 	}
 
-	loaded, err := store.GetSchemaDefinition(c.Context(), created.ID)
-	if err != nil {
-		logrus.WithError(err).WithField("namespace", namespace).Error("fetch schema definition after create")
-		return fiber.NewError(fiber.StatusInternalServerError, "unable to return schema definition")
-	}
-
-	return c.Status(http.StatusCreated).JSON(loaded)
+	return c.Status(http.StatusCreated).JSON(created)
 }
 
 func (h schemaDefinitionHandler) get(c *fiber.Ctx) error {
 	defID := c.Params("id")
-	logRequestEntry(c, "schemaDefinitionHandler.get", map[string]any{
-		"schema_definition_id": defID,
-	})
+	logRequestEntry(c, "schemaDefinitionHandler.get", map[string]any{"schema_definition_id": defID})
 
-	store, namespace, err := resolveNamespaceStore(c)
+	svc, namespace, err := resolveNamespaceService(c)
 	if err != nil {
 		return err
 	}
 
-	def, err := store.GetSchemaDefinition(c.Context(), defID)
+	def, err := svc.GetSchemaDefinition(c.Context(), defID)
 	if err != nil {
-		if errors.Is(err, storage.ErrSchemaDefinitionNotFound) {
+		if errors.Is(err, apiservice.ErrSchemaDefinitionNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "schema definition not found")
 		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("get schema definition")
@@ -848,12 +677,12 @@ func (h schemaDefinitionHandler) get(c *fiber.Ctx) error {
 func (h schemaDefinitionHandler) list(c *fiber.Ctx) error {
 	logRequestEntry(c, "schemaDefinitionHandler.list", nil)
 
-	store, namespace, err := resolveNamespaceStore(c)
+	svc, namespace, err := resolveNamespaceService(c)
 	if err != nil {
 		return err
 	}
 
-	defs, err := store.ListSchemaDefinitions(c.Context())
+	defs, err := svc.ListSchemaDefinitions(c.Context())
 	if err != nil {
 		logrus.WithError(err).WithField("namespace", namespace).Error("list schema definitions")
 		return fiber.NewError(fiber.StatusInternalServerError, "unable to list schema definitions")
@@ -864,17 +693,15 @@ func (h schemaDefinitionHandler) list(c *fiber.Ctx) error {
 
 func (h schemaDefinitionHandler) delete(c *fiber.Ctx) error {
 	defID := c.Params("id")
-	logRequestEntry(c, "schemaDefinitionHandler.delete", map[string]any{
-		"schema_definition_id": defID,
-	})
+	logRequestEntry(c, "schemaDefinitionHandler.delete", map[string]any{"schema_definition_id": defID})
 
-	store, namespace, err := resolveNamespaceStore(c)
+	svc, namespace, err := resolveNamespaceService(c)
 	if err != nil {
 		return err
 	}
 
-	if err := store.DeleteSchemaDefinition(c.Context(), defID); err != nil {
-		if errors.Is(err, storage.ErrSchemaDefinitionNotFound) {
+	if err := svc.DeleteSchemaDefinition(c.Context(), defID); err != nil {
+		if errors.Is(err, apiservice.ErrSchemaDefinitionNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "schema definition not found")
 		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("delete schema definition")
@@ -894,29 +721,22 @@ func (h schemaDefinitionHandler) updateLabels(c *fiber.Ctx) error {
 	}
 
 	defID := c.Params("id")
-	logRequestEntry(c, "schemaDefinitionHandler.updateLabels", map[string]any{
-		"schema_definition_id": defID,
-		"labels":               payload.Labels,
-	})
+	logRequestEntry(c, "schemaDefinitionHandler.updateLabels", map[string]any{"schema_definition_id": defID, "labels": payload.Labels})
 
-	store, namespace, err := resolveNamespaceStore(c)
+	svc, namespace, err := resolveNamespaceService(c)
 	if err != nil {
 		return err
 	}
 
-	if err := store.UpdateSchemaDefinitionLabels(c.Context(), defID, payload.Labels); err != nil {
-		if errors.Is(err, storage.ErrSchemaDefinitionNotFound) {
+	updated, err := svc.UpdateSchemaDefinitionLabels(c.Context(), defID, payload.Labels)
+	if err != nil {
+		if errors.Is(err, apiservice.ErrSchemaDefinitionNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "schema definition not found")
 		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("update schema definition labels")
 		return fiber.NewError(fiber.StatusInternalServerError, "unable to update schema definition")
 	}
 
-	updated, err := store.GetSchemaDefinition(c.Context(), defID)
-	if err != nil {
-		logrus.WithError(err).WithField("namespace", namespace).Error("fetch schema definition after labels update")
-		return fiber.NewError(fiber.StatusInternalServerError, "unable to return schema definition")
-	}
 	return c.JSON(updated)
 }
 
@@ -945,72 +765,42 @@ func (h grantHandler) create(c *fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusBadRequest, "request_id is required")
 	}
 
-	logRequestEntry(c, "grantHandler.create", map[string]any{
-		"request_id": payload.RequestID,
-	})
+	logRequestEntry(c, "grantHandler.create", map[string]any{"request_id": payload.RequestID})
 
-	store, namespace, err := resolveNamespaceStore(c)
+	svc, namespace, err := resolveNamespaceService(c)
 	if err != nil {
 		return err
 	}
 
-	req, err := store.GetRequest(c.Context(), payload.RequestID)
-	if err != nil {
-		if errors.Is(err, storage.ErrRequestNotFound) {
-			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("request %s not found", payload.RequestID))
-		}
-		logrus.WithError(err).WithField("namespace", namespace).Error("get request for grant")
-		return fiber.NewError(fiber.StatusInternalServerError, "unable to load request")
-	}
-
-	if req.GrantSchemaDefinitionID != "" {
-		def, err := store.GetSchemaDefinition(c.Context(), req.GrantSchemaDefinitionID)
-		if err != nil {
-			if errors.Is(err, storage.ErrSchemaDefinitionNotFound) {
-				return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("schema definition %s not found", req.GrantSchemaDefinitionID))
-			}
-			logrus.WithError(err).WithField("namespace", namespace).Error("get schema definition for grant")
-			return fiber.NewError(fiber.StatusInternalServerError, "unable to load schema definition")
-		}
-		if err := validateJSONInstance(def.Schema, payload.Payload, "grant payload", "schema"); err != nil {
-			return fiber.NewError(fiber.StatusBadRequest, err.Error())
-		}
-	}
-
-	grant := storage.Grant{
-		RequestID: payload.RequestID,
-		Payload:   payload.Payload,
-	}
-	created, err := store.CreateGrant(c.Context(), grant)
+	grant, err := svc.CreateGrant(c.Context(), apiservice.GrantCreatePayload{RequestID: payload.RequestID, Payload: payload.Payload})
 	if err != nil {
 		switch {
-		case errors.Is(err, storage.ErrGrantAlreadyExists):
+		case errors.Is(err, apiservice.ErrGrantAlreadyExists):
 			return fiber.NewError(fiber.StatusConflict, "grant already exists")
-		case errors.Is(err, storage.ErrReferencedRequestNotFound):
+		case errors.Is(err, apiservice.ErrRequestNotFound), errors.Is(err, apiservice.ErrReferencedRequestNotFound):
 			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("request %s not found", payload.RequestID))
+		case errors.Is(err, apiservice.ErrSchemaDefinitionNotFound):
+			return fiber.NewError(fiber.StatusBadRequest, "schema definition not found")
+		case isValidationError(err):
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
 		default:
 			logrus.WithError(err).WithField("namespace", namespace).Error("create grant")
 			return fiber.NewError(fiber.StatusInternalServerError, "unable to persist grant")
 		}
 	}
 
-	stored, err := store.GetGrant(c.Context(), created.ID)
-	if err != nil {
-		logrus.WithError(err).WithField("namespace", namespace).Error("fetch grant after create")
-		return fiber.NewError(fiber.StatusInternalServerError, "unable to return grant")
-	}
-	return c.Status(fiber.StatusCreated).JSON(stored)
+	return c.Status(fiber.StatusCreated).JSON(grant)
 }
 
 func (h grantHandler) list(c *fiber.Ctx) error {
 	logRequestEntry(c, "grantHandler.list", nil)
 
-	store, namespace, err := resolveNamespaceStore(c)
+	svc, namespace, err := resolveNamespaceService(c)
 	if err != nil {
 		return err
 	}
 
-	grants, err := store.ListGrants(c.Context())
+	grants, err := svc.ListGrants(c.Context())
 	if err != nil {
 		logrus.WithError(err).WithField("namespace", namespace).Error("list grants")
 		return fiber.NewError(fiber.StatusInternalServerError, "unable to list grants")
@@ -1021,14 +811,15 @@ func (h grantHandler) list(c *fiber.Ctx) error {
 func (h grantHandler) get(c *fiber.Ctx) error {
 	grantID := c.Params("id")
 	logRequestEntry(c, "grantHandler.get", map[string]any{"grant_id": grantID})
-	store, namespace, err := resolveNamespaceStore(c)
+
+	svc, namespace, err := resolveNamespaceService(c)
 	if err != nil {
 		return err
 	}
 
-	grant, err := store.GetGrant(c.Context(), grantID)
+	grant, err := svc.GetGrant(c.Context(), grantID)
 	if err != nil {
-		if errors.Is(err, storage.ErrGrantNotFound) {
+		if errors.Is(err, apiservice.ErrGrantNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "grant not found")
 		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("get grant")
@@ -1041,19 +832,27 @@ func (h grantHandler) delete(c *fiber.Ctx) error {
 	grantID := c.Params("id")
 	logRequestEntry(c, "grantHandler.delete", map[string]any{"grant_id": grantID})
 
-	store, namespace, err := resolveNamespaceStore(c)
+	svc, namespace, err := resolveNamespaceService(c)
 	if err != nil {
 		return err
 	}
 
-	if err := store.DeleteGrant(c.Context(), grantID); err != nil {
-		if errors.Is(err, storage.ErrGrantNotFound) {
+	if err := svc.DeleteGrant(c.Context(), grantID); err != nil {
+		if errors.Is(err, apiservice.ErrGrantNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "grant not found")
 		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("delete grant")
 		return fiber.NewError(fiber.StatusInternalServerError, "unable to delete grant")
 	}
 	return c.SendStatus(fiber.StatusNoContent)
+}
+
+func resolveNamespaceService(c *fiber.Ctx) (*apiservice.Service, string, error) {
+	store, namespace, err := resolveNamespaceStore(c)
+	if err != nil {
+		return nil, namespace, err
+	}
+	return apiservice.New(newServiceStoreAdapter(store)), namespace, nil
 }
 
 func resolveNamespaceStore(c *fiber.Ctx) (storage.Store, string, error) {
@@ -1088,58 +887,32 @@ func namespaceFromCtx(c *fiber.Ctx) string {
 	return DefaultNamespace
 }
 
-func requireJSONValue(value json.RawMessage, field string) error {
-	trimmed := bytes.TrimSpace(value)
-	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
-		return fmt.Errorf("%s is required", field)
-	}
-	if !json.Valid(trimmed) {
-		return fmt.Errorf("%s must be valid JSON", field)
-	}
-	return nil
+func isValidationError(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "is required") ||
+		strings.Contains(msg, "must be valid json") ||
+		strings.Contains(msg, "not valid json schema") ||
+		strings.Contains(msg, "does not match schema")
 }
 
-func validateJSONSchema(value json.RawMessage, field string) error {
-	_, err := compileJSONSchema(value, field)
-	return err
-}
-
-func validateJSONInstance(schemaValue json.RawMessage, instance any, field, schemaField string) error {
-	schema, err := compileJSONSchema(schemaValue, schemaField)
-	if err != nil {
-		return err
+func resolveMissingRequestSchemaID(ctx context.Context, svc *apiservice.Service, requestSchemaID, grantSchemaID string) (string, error) {
+	if requestSchemaID != "" {
+		_, err := svc.GetSchemaDefinition(ctx, requestSchemaID)
+		if errors.Is(err, apiservice.ErrSchemaDefinitionNotFound) {
+			return requestSchemaID, nil
+		}
+		if err != nil {
+			return "", err
+		}
 	}
-
-	instanceBytes, err := json.Marshal(instance)
-	if err != nil {
-		return fmt.Errorf("%s must be valid JSON: %w", field, err)
+	if grantSchemaID != "" {
+		_, err := svc.GetSchemaDefinition(ctx, grantSchemaID)
+		if errors.Is(err, apiservice.ErrSchemaDefinitionNotFound) {
+			return grantSchemaID, nil
+		}
+		if err != nil {
+			return "", err
+		}
 	}
-	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(instanceBytes))
-	if err != nil {
-		return fmt.Errorf("%s must be valid JSON: %w", field, err)
-	}
-	if err := schema.Validate(doc); err != nil {
-		return fmt.Errorf("%s does not match %s: %w", field, schemaField, err)
-	}
-	return nil
-}
-
-func compileJSONSchema(value json.RawMessage, field string) (*jsonschema.Schema, error) {
-	compiler := jsonschema.NewCompiler()
-	compiler.DefaultDraft(jsonschema.Draft2020)
-
-	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(value))
-	if err != nil {
-		return nil, fmt.Errorf("%s must be valid JSON: %w", field, err)
-	}
-
-	resourceID := fmt.Sprintf("%s.json", field)
-	if err := compiler.AddResource(resourceID, doc); err != nil {
-		return nil, fmt.Errorf("%s is not valid JSON Schema: %w", field, err)
-	}
-	schema, err := compiler.Compile(resourceID)
-	if err != nil {
-		return nil, fmt.Errorf("%s is not valid JSON Schema: %w", field, err)
-	}
-	return schema, nil
+	return "", nil
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	apiservice "github.com/tasansga/terraform-provider-grantory/api/service"
 	"github.com/tasansga/terraform-provider-grantory/internal/api"
 	"github.com/tasansga/terraform-provider-grantory/internal/config"
 	"github.com/tasansga/terraform-provider-grantory/internal/storage"
@@ -265,7 +266,7 @@ func TestAPIEndpoints(t *testing.T) {
 
 	res = sendTestRequest(t, app, http.MethodGet, fmt.Sprintf("/requests/%s", reqID), headers, nil)
 	assert.Equal(t, http.StatusOK, res.StatusCode, "get request after grant")
-	updatedReq := decodeJSON[requestResponse](t, res)
+	updatedReq := decodeJSON[apiservice.Request](t, res)
 	assert.True(t, updatedReq.HasGrant, "request should report grant presence")
 	if assert.NotNil(t, updatedReq.Grant, "grant payload should be included") {
 		if payload, ok := updatedReq.Grant["detail"]; ok {

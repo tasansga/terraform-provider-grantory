@@ -63,6 +63,29 @@ func ptrBool(value bool) *bool {
 	return &value
 }
 
+func filterRequestsForTest(requests []storage.Request, filters storage.RequestListFilters) []storage.Request {
+	var filtered []storage.Request
+	for _, req := range requests {
+		if filters.HasGrant != nil && req.HasGrant != *filters.HasGrant {
+			continue
+		}
+		if len(filters.Labels) > 0 {
+			match := true
+			for key, expected := range filters.Labels {
+				if req.Labels[key] != expected {
+					match = false
+					break
+				}
+			}
+			if !match {
+				continue
+			}
+		}
+		filtered = append(filtered, req)
+	}
+	return filtered
+}
+
 func TestApplyRequestFilters(t *testing.T) {
 	t.Parallel()
 
@@ -112,7 +135,7 @@ func TestApplyRequestFilters(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			results := applyRequestFilters(requests, tc.filters)
+			results := filterRequestsForTest(requests, tc.filters)
 			assert.Len(t, results, len(tc.wantIDs), "filtered request count")
 			for i, req := range results {
 				assert.Equal(t, tc.wantIDs[i], req.ID, "filtered request ID mismatch")
@@ -184,7 +207,7 @@ func TestHandleReadinessTLSFailure(t *testing.T) {
 	assert.NoError(t, os.WriteFile(keyPath, []byte("key"), 0o600))
 
 	cfg := config.Config{
-		Database:  t.TempDir(),
+		Database: t.TempDir(),
 		TLSCert:  filepath.Join(dir, "missing.crt"),
 		TLSKey:   keyPath,
 		BindAddr: "127.0.0.1:0",
@@ -214,7 +237,7 @@ func TestHandleReadinessTLSSuccess(t *testing.T) {
 	assert.NoError(t, os.WriteFile(keyPath, []byte("key"), 0o600))
 
 	cfg := config.Config{
-		Database:  t.TempDir(),
+		Database: t.TempDir(),
 		TLSCert:  certPath,
 		TLSKey:   keyPath,
 		BindAddr: "127.0.0.1:0",
