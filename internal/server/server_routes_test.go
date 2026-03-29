@@ -85,6 +85,8 @@ func newTestApp(t *testing.T) (*fiber.App, func()) {
 	registerSchemaDefinitionRoutes(api)
 	registerGrantRoutes(api)
 	api.Get("/metrics", srv.handleMetrics)
+	api.Get("/index.html", srv.handleIndex)
+	api.Get("/register.html", srv.handleRegisterPage)
 
 	cleanup := func() {
 		if err := store.Close(); err != nil {
@@ -978,6 +980,50 @@ func TestIndexHandler(t *testing.T) {
 	headers := map[string]string{"REMOTE_USER": "cli-user"}
 	res := sendTestRequest(t, app, http.MethodGet, "/index.html", headers, nil)
 	assert.Equal(t, http.StatusOK, res.StatusCode, "index handler should render page")
+}
+
+func TestRegisterDetailPageAndIndexLink(t *testing.T) {
+	t.Parallel()
+
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+
+	headers := map[string]string{"REMOTE_USER": "register-page"}
+	hostRes := sendTestRequest(t, app, http.MethodPost, "/hosts", headers, map[string]any{
+		"labels": map[string]string{"env": "test"},
+	})
+	require.Equal(t, http.StatusCreated, hostRes.StatusCode)
+	host := decodeJSON[storage.Host](t, hostRes)
+
+	registerRes := sendTestRequest(t, app, http.MethodPost, "/registers", headers, map[string]any{
+		"host_id":    host.ID,
+		"mutable":    true,
+		"payload":    map[string]any{"name": "web"},
+		"labels":     map[string]string{"role": "db"},
+		"unique_key": "register:page:test",
+	})
+	require.Equal(t, http.StatusCreated, registerRes.StatusCode)
+	register := decodeJSON[storage.Register](t, registerRes)
+
+	patchRes := sendTestRequest(t, app, http.MethodPatch, fmt.Sprintf("/registers/%s", register.ID), headers, map[string]any{
+		"payload": map[string]any{"name": "api"},
+	})
+	require.Equal(t, http.StatusOK, patchRes.StatusCode)
+
+	indexRes := sendTestRequest(t, app, http.MethodGet, "/index.html", headers, nil)
+	require.Equal(t, http.StatusOK, indexRes.StatusCode)
+	indexBody, err := io.ReadAll(indexRes.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(indexBody), fmt.Sprintf("/register.html?id=%s", register.ID))
+
+	detailRes := sendTestRequest(t, app, http.MethodGet, fmt.Sprintf("/register.html?id=%s", register.ID), headers, nil)
+	require.Equal(t, http.StatusOK, detailRes.StatusCode)
+	detailBody, err := io.ReadAll(detailRes.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(detailBody), register.ID)
+	assert.Contains(t, string(detailBody), "name")
+	assert.Contains(t, string(detailBody), "api")
+	assert.Contains(t, string(detailBody), "payload_updated")
 }
 
 func TestRootRedirectsToIndex(t *testing.T) {

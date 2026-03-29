@@ -3,6 +3,8 @@ package server
 import (
 	"bytes"
 	_ "embed"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -18,12 +20,18 @@ import (
 var (
 	//go:embed templates/index.html
 	indexTemplateSource string
+	//go:embed templates/register.html
+	registerTemplateSource string
 	//go:embed static/water.min.css
 	waterCSS []byte
 
 	indexTemplate = template.Must(template.New("index").Funcs(template.FuncMap{
 		"labelSummary": labelSummary,
 	}).Parse(indexTemplateSource))
+	registerTemplate = template.Must(template.New("register").Funcs(template.FuncMap{
+		"labelSummary": labelSummary,
+		"prettyJSON":   prettyJSON,
+	}).Parse(registerTemplateSource))
 )
 
 type indexPageData struct {
@@ -37,6 +45,12 @@ type indexPageData struct {
 	Requests             []storage.Request
 	Grants               []storage.Grant
 	Registers            []storage.Register
+}
+
+type registerPageData struct {
+	Namespace string
+	Register  storage.Register
+	Events    []storage.RegisterEvent
 }
 
 func (s *Server) handleIndex(c *fiber.Ctx) error {
@@ -112,6 +126,50 @@ func (s *Server) handleIndex(c *fiber.Ctx) error {
 	return c.Status(http.StatusOK).Send(buf.Bytes())
 }
 
+func (s *Server) handleRegisterPage(c *fiber.Ctx) error {
+	logRequestEntry(c, "Server.handleRegisterPage", nil)
+
+	store, namespace, err := resolveNamespaceStore(c)
+	if err != nil {
+		return err
+	}
+
+	registerID := strings.TrimSpace(c.Query("id"))
+	if registerID == "" {
+		return fiber.NewError(http.StatusBadRequest, "id query parameter is required")
+	}
+
+	register, err := store.GetRegister(c.Context(), registerID)
+	if err != nil {
+		if errors.Is(err, storage.ErrRegisterNotFound) {
+			return fiber.NewError(http.StatusNotFound, "register not found")
+		}
+		logrus.WithError(err).WithField("namespace", namespace).WithField("register_id", registerID).Error("load register for detail page")
+		return fiber.NewError(http.StatusInternalServerError, "unable to load register")
+	}
+
+	events, err := store.ListRegisterEvents(c.Context(), registerID)
+	if err != nil {
+		logrus.WithError(err).WithField("namespace", namespace).WithField("register_id", registerID).Error("load register events for detail page")
+		return fiber.NewError(http.StatusInternalServerError, "unable to load register events")
+	}
+
+	data := registerPageData{
+		Namespace: namespace,
+		Register:  register,
+		Events:    events,
+	}
+
+	var buf bytes.Buffer
+	if err := registerTemplate.Execute(&buf, data); err != nil {
+		logrus.WithError(err).WithField("namespace", namespace).Error("render register page")
+		return fiber.NewError(http.StatusInternalServerError, "unable to render register page")
+	}
+
+	c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
+	return c.Status(http.StatusOK).Send(buf.Bytes())
+}
+
 func (s *Server) handleWaterCSS(c *fiber.Ctx) error {
 	logRequestEntry(c, "Server.handleWaterCSS", nil)
 	c.Set(fiber.HeaderContentType, "text/css; charset=utf-8")
@@ -133,4 +191,15 @@ func labelSummary(labels map[string]string) string {
 		parts = append(parts, fmt.Sprintf("%s=%s", key, labels[key]))
 	}
 	return strings.Join(parts, ", ")
+}
+
+func prettyJSON(value any) string {
+	if value == nil {
+		return "{}"
+	}
+	b, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
 }

@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>
+            Grantory Register{{if ne .Namespace "_def"}} - Namespace
+            {{.Namespace}}{{end}}
+        </title>
+        <link rel="stylesheet" href="/static/water.min.css" />
+    </head>
+    <body>
+        <main>
+            <header>
+                <h1>Register Detail</h1>
+                <p>
+                    <a href="/index.html">Back to index</a>
+                </p>
+            </header>
+
+            <section>
+                <h2>Metadata</h2>
+                <table class="striped">
+                    <tbody>
+                        <tr>
+                            <th>Register ID</th>
+                            <td>{{.Register.ID}}</td>
+                        </tr>
+                        <tr>
+                            <th>Host ID</th>
+                            <td>{{.Register.HostID}}</td>
+                        </tr>
+                        <tr>
+                            <th>Schema Definition ID</th>
+                            <td>{{if .Register.SchemaDefinitionID}}{{.Register.SchemaDefinitionID}}{{else}}—{{end}}</td>
+                        </tr>
+                        <tr>
+                            <th>Unique Key</th>
+                            <td>{{if .Register.UniqueKey}}{{.Register.UniqueKey}}{{else}}—{{end}}</td>
+                        </tr>
+                        <tr>
+                            <th>Mutable</th>
+                            <td>{{.Register.Mutable}}</td>
+                        </tr>
+                        <tr>
+                            <th>Labels</th>
+                            <td>{{labelSummary .Register.Labels}}</td>
+                        </tr>
+                        <tr>
+                            <th>Created At</th>
+                            <td>{{.Register.CreatedAt}}</td>
+                        </tr>
+                        <tr>
+                            <th>Updated At</th>
+                            <td>{{.Register.UpdatedAt}}</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <section>
+                <h2>Payload</h2>
+                <pre><code>{{prettyJSON .Register.Payload}}</code></pre>
+            </section>
+
+            <section>
+                <h2>Audit Log</h2>
+                {{if .Events}}
+                <table class="striped">
+                    <thead>
+                        <tr>
+                            <th>When</th>
+                            <th>Event</th>
+                            <th>Old Payload</th>
+                            <th>New Payload</th>
+                            <th>Old Labels</th>
+                            <th>New Labels</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{range .Events}}
+                        <tr>
+                            <td>{{.CreatedAt}}</td>
+                            <td>{{.EventType}}</td>
+                            <td><pre><code>{{prettyJSON .OldPayload}}</code></pre></td>
+                            <td><pre><code>{{prettyJSON .NewPayload}}</code></pre></td>
+                            <td><pre><code>{{prettyJSON .OldLabels}}</code></pre></td>
+                            <td><pre><code>{{prettyJSON .NewLabels}}</code></pre></td>
+                        </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+                {{else}}
+                <p class="muted">No audit events yet.</p>
+                {{end}}
+            </section>
+        </main>
+    </body>
+</html>

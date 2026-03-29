@@ -57,6 +57,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	registerGrantRoutes(api)
 	api.Get("/metrics", s.handleMetrics)
 	api.Get("/index.html", s.handleIndex)
+	api.Get("/register.html", s.handleRegisterPage)
 
 	go func() {
 		<-ctx.Done()

@@ -149,7 +149,11 @@
                     <tbody>
                         {{range .Registers}}
                         <tr id="register-{{.ID}}">
-                            <td>{{.ID}}</td>
+                            <td>
+                                <a href="/register.html?id={{.ID}}"
+                                    >{{.ID}}</a
+                                >
+                            </td>
                             <td>
                                 <a href="#host-{{.HostID}}">{{.HostID}}</a>
                             </td>
