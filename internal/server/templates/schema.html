@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>
+            Grantory Schema{{if ne .Namespace "_def"}} - Namespace
+            {{.Namespace}}{{end}}
+        </title>
+        <link rel="stylesheet" href="/static/water.min.css" />
+    </head>
+    <body>
+        <main>
+            <header>
+                <h1>Schema Definition Detail</h1>
+                <p><a href="/index.html">Back to index</a></p>
+            </header>
+
+            <section>
+                <h2>Metadata</h2>
+                <table class="striped">
+                    <tbody>
+                        <tr><th>Schema ID</th><td>{{.Schema.ID}}</td></tr>
+                        <tr><th>Unique Key</th><td>{{if .Schema.UniqueKey}}{{.Schema.UniqueKey}}{{else}}—{{end}}</td></tr>
+                        <tr><th>Labels</th><td>{{labelSummary .Schema.Labels}}</td></tr>
+                        <tr><th>Created At</th><td>{{.Schema.CreatedAt}}</td></tr>
+                    </tbody>
+                </table>
+            </section>
+
+            <section>
+                <h2>Schema JSON</h2>
+                <pre><code>{{prettyJSON .Schema.Schema}}</code></pre>
+            </section>
+        </main>
+    </body>
+</html>

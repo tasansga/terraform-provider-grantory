@@ -26,6 +26,8 @@ var (
 	requestTemplateSource string
 	//go:embed templates/grant.html
 	grantTemplateSource string
+	//go:embed templates/schema.html
+	schemaTemplateSource string
 	//go:embed static/water.min.css
 	waterCSS []byte
 
@@ -43,6 +45,10 @@ var (
 	grantTemplate = template.Must(template.New("grant").Funcs(template.FuncMap{
 		"prettyJSON": prettyJSON,
 	}).Parse(grantTemplateSource))
+	schemaTemplate = template.Must(template.New("schema").Funcs(template.FuncMap{
+		"labelSummary": labelSummary,
+		"prettyJSON":   prettyJSON,
+	}).Parse(schemaTemplateSource))
 )
 
 type indexPageData struct {
@@ -56,6 +62,7 @@ type indexPageData struct {
 	Requests             []storage.Request
 	Grants               []storage.Grant
 	Registers            []storage.Register
+	SchemaDefinitions    []storage.SchemaDefinition
 }
 
 type registerPageData struct {
@@ -74,6 +81,11 @@ type grantPageData struct {
 	Namespace string
 	Grant     storage.Grant
 	Request   storage.Request
+}
+
+type schemaPageData struct {
+	Namespace string
+	Schema    storage.SchemaDefinition
 }
 
 func (s *Server) handleIndex(c *fiber.Ctx) error {
@@ -125,6 +137,11 @@ func (s *Server) handleIndex(c *fiber.Ctx) error {
 		logrus.WithError(err).WithField("namespace", namespace).Error("list grants for index")
 		return fiber.NewError(http.StatusInternalServerError, "unable to list grants")
 	}
+	schemaDefinitions, err := store.ListSchemaDefinitions(c.Context())
+	if err != nil {
+		logrus.WithError(err).WithField("namespace", namespace).Error("list schema definitions for index")
+		return fiber.NewError(http.StatusInternalServerError, "unable to list schema definitions")
+	}
 
 	data := indexPageData{
 		Namespace:            namespace,
@@ -137,6 +154,7 @@ func (s *Server) handleIndex(c *fiber.Ctx) error {
 		Requests:             requests,
 		Grants:               grants,
 		Registers:            registers,
+		SchemaDefinitions:    schemaDefinitions,
 	}
 
 	var buf bytes.Buffer
@@ -281,6 +299,43 @@ func (s *Server) handleGrantPage(c *fiber.Ctx) error {
 	if err := grantTemplate.Execute(&buf, data); err != nil {
 		logrus.WithError(err).WithField("namespace", namespace).Error("render grant page")
 		return fiber.NewError(http.StatusInternalServerError, "unable to render grant page")
+	}
+
+	c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
+	return c.Status(http.StatusOK).Send(buf.Bytes())
+}
+
+func (s *Server) handleSchemaPage(c *fiber.Ctx) error {
+	logRequestEntry(c, "Server.handleSchemaPage", nil)
+
+	store, namespace, err := resolveNamespaceStore(c)
+	if err != nil {
+		return err
+	}
+
+	schemaID := strings.TrimSpace(c.Query("id"))
+	if schemaID == "" {
+		return fiber.NewError(http.StatusBadRequest, "id query parameter is required")
+	}
+
+	def, err := store.GetSchemaDefinition(c.Context(), schemaID)
+	if err != nil {
+		if errors.Is(err, storage.ErrSchemaDefinitionNotFound) {
+			return fiber.NewError(http.StatusNotFound, "schema definition not found")
+		}
+		logrus.WithError(err).WithField("namespace", namespace).WithField("schema_definition_id", schemaID).Error("load schema definition for detail page")
+		return fiber.NewError(http.StatusInternalServerError, "unable to load schema definition")
+	}
+
+	data := schemaPageData{
+		Namespace: namespace,
+		Schema:    def,
+	}
+
+	var buf bytes.Buffer
+	if err := schemaTemplate.Execute(&buf, data); err != nil {
+		logrus.WithError(err).WithField("namespace", namespace).Error("render schema page")
+		return fiber.NewError(http.StatusInternalServerError, "unable to render schema page")
 	}
 
 	c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)

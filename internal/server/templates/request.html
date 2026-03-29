@@ -22,8 +22,22 @@
                     <tbody>
                         <tr><th>Request ID</th><td>{{.Request.ID}}</td></tr>
                         <tr><th>Host ID</th><td><a href="/index.html#host-{{.Request.HostID}}">{{.Request.HostID}}</a></td></tr>
-                        <tr><th>Request Schema ID</th><td>{{if .Request.RequestSchemaDefinitionID}}{{.Request.RequestSchemaDefinitionID}}{{else}}—{{end}}</td></tr>
-                        <tr><th>Grant Schema ID</th><td>{{if .Request.GrantSchemaDefinitionID}}{{.Request.GrantSchemaDefinitionID}}{{else}}—{{end}}</td></tr>
+                        <tr>
+                            <th>Request Schema ID</th>
+                            <td>
+                                {{if .Request.RequestSchemaDefinitionID}}
+                                <a href="/schema.html?id={{.Request.RequestSchemaDefinitionID}}">{{.Request.RequestSchemaDefinitionID}}</a>
+                                {{else}}—{{end}}
+                            </td>
+                        </tr>
+                        <tr>
+                            <th>Grant Schema ID</th>
+                            <td>
+                                {{if .Request.GrantSchemaDefinitionID}}
+                                <a href="/schema.html?id={{.Request.GrantSchemaDefinitionID}}">{{.Request.GrantSchemaDefinitionID}}</a>
+                                {{else}}—{{end}}
+                            </td>
+                        </tr>
                         <tr><th>Unique Key</th><td>{{if .Request.UniqueKey}}{{.Request.UniqueKey}}{{else}}—{{end}}</td></tr>
                         <tr><th>Has Grant</th><td>{{.Request.HasGrant}}</td></tr>
                         <tr><th>Labels</th><td>{{labelSummary .Request.Labels}}</td></tr>

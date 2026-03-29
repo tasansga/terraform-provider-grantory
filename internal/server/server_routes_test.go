@@ -89,6 +89,7 @@ func newTestApp(t *testing.T) (*fiber.App, func()) {
 	api.Get("/register.html", srv.handleRegisterPage)
 	api.Get("/request.html", srv.handleRequestPage)
 	api.Get("/grant.html", srv.handleGrantPage)
+	api.Get("/schema.html", srv.handleSchemaPage)
 
 	cleanup := func() {
 		if err := store.Close(); err != nil {
@@ -1081,6 +1082,42 @@ func TestRequestAndGrantDetailPagesAndCrossLinks(t *testing.T) {
 	assert.Contains(t, string(grantDetailBody), "permit")
 	assert.Contains(t, string(grantDetailBody), "true")
 	assert.Contains(t, string(grantDetailBody), fmt.Sprintf("/request.html?id=%s", request.ID))
+}
+
+func TestSchemaDetailPageAndIndexLink(t *testing.T) {
+	t.Parallel()
+
+	app, cleanup := newTestApp(t)
+	defer cleanup()
+
+	headers := map[string]string{"REMOTE_USER": "schema-page"}
+	defRes := sendTestRequest(t, app, http.MethodPost, "/schema-definitions", headers, map[string]any{
+		"unique_key": "schema:detail:test",
+		"schema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name": map[string]any{"type": "string"},
+			},
+		},
+		"labels": map[string]string{"team": "ops"},
+	})
+	require.Equal(t, http.StatusCreated, defRes.StatusCode)
+	def := decodeJSON[storage.SchemaDefinition](t, defRes)
+
+	indexRes := sendTestRequest(t, app, http.MethodGet, "/index.html", headers, nil)
+	require.Equal(t, http.StatusOK, indexRes.StatusCode)
+	indexBody, err := io.ReadAll(indexRes.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(indexBody), fmt.Sprintf("/schema.html?id=%s", def.ID))
+
+	detailRes := sendTestRequest(t, app, http.MethodGet, fmt.Sprintf("/schema.html?id=%s", def.ID), headers, nil)
+	require.Equal(t, http.StatusOK, detailRes.StatusCode)
+	detailBody, err := io.ReadAll(detailRes.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(detailBody), def.ID)
+	assert.Contains(t, string(detailBody), "schema:detail:test")
+	assert.Contains(t, string(detailBody), "name")
+	assert.Contains(t, string(detailBody), "string")
 }
 
 func TestRootRedirectsToIndex(t *testing.T) {

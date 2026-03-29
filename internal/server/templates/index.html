@@ -174,6 +174,37 @@
                 <p class="muted">No registers yet.</p>
                 {{end}}
             </section>
+            <section>
+                <h2>Schema Definitions</h2>
+                {{if .SchemaDefinitions}}
+                <table class="striped">
+                    <thead>
+                        <tr>
+                            <th>Schema ID</th>
+                            <th>Unique Key</th>
+                            <th>Labels</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{range .SchemaDefinitions}}
+                        <tr id="schema-{{.ID}}">
+                            <td>
+                                <a href="/schema.html?id={{.ID}}"
+                                    >{{.ID}}</a
+                                >
+                            </td>
+                            <td>
+                                {{if .UniqueKey}}{{.UniqueKey}}{{else}}—{{end}}
+                            </td>
+                            <td>{{labelSummary .Labels}}</td>
+                        </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+                {{else}}
+                <p class="muted">No schema definitions yet.</p>
+                {{end}}
+            </section>
         </main>
         <footer>
             Quick links

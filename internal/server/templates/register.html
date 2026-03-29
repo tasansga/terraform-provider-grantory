@@ -32,7 +32,7 @@
                         </tr>
                         <tr>
                             <th>Schema Definition ID</th>
-                            <td>{{if .Register.SchemaDefinitionID}}{{.Register.SchemaDefinitionID}}{{else}}—{{end}}</td>
+                            <td>{{if .Register.SchemaDefinitionID}}<a href="/schema.html?id={{.Register.SchemaDefinitionID}}">{{.Register.SchemaDefinitionID}}</a>{{else}}—{{end}}</td>
                         </tr>
                         <tr>
                             <th>Unique Key</th>

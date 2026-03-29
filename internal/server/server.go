@@ -60,6 +60,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	api.Get("/register.html", s.handleRegisterPage)
 	api.Get("/request.html", s.handleRequestPage)
 	api.Get("/grant.html", s.handleGrantPage)
+	api.Get("/schema.html", s.handleSchemaPage)
 
 	go func() {
 		<-ctx.Done()
