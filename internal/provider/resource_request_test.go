@@ -37,6 +37,7 @@ func TestResourceRequestLifecycle(t *testing.T) {
 	data := schema.TestResourceDataRaw(t, resource.Schema, map[string]any{
 		"host_id": "host-abc",
 		"payload": string(requestDataJSON),
+		"mutable": true,
 		"labels": map[string]any{
 			"env": "testing",
 		},
@@ -45,6 +46,7 @@ func TestResourceRequestLifecycle(t *testing.T) {
 	assert.False(t, resource.CreateContext(context.Background(), data, client).HasError(), "unexpected diagnostics from create")
 
 	assert.Equal(t, "req-123", data.Id(), "resource id should match generated request ID")
+	assert.Equal(t, true, data.Get("mutable"), "mutable should round-trip")
 
 	rawPayload, _ := data.Get("payload").(string)
 	assert.NotEmpty(t, rawPayload, "payload should be a JSON string")
@@ -61,11 +63,25 @@ func TestResourceRequestLifecycle(t *testing.T) {
 
 	assert.False(t, resource.ReadContext(context.Background(), data, client).HasError(), "read diagnostics")
 
+	assert.NoError(t, data.Set("payload", `{"name":"prod-db"}`), "prepare payload update")
 	assert.NoError(t, data.Set("labels", map[string]any{"env": "prod"}), "prepare label update")
 	assert.False(t, resource.UpdateContext(context.Background(), data, client).HasError(), "update diagnostics")
 
+	updatedPayload, _ := data.Get("payload").(string)
+	var updatedPayloadJSON map[string]any
+	assert.NoError(t, json.Unmarshal([]byte(updatedPayload), &updatedPayloadJSON), "updated payload should decode")
+	assert.Equal(t, "prod-db", updatedPayloadJSON["name"], "payload should refresh after update")
 	updatedLabels, _ := data.Get("labels").(map[string]any)
 	assert.Equal(t, "prod", updatedLabels["env"], "labels should refresh after update")
+
+	assert.NoError(t, data.Set("payload", ""), "prepare payload clear")
+	assert.False(t, resource.UpdateContext(context.Background(), data, client).HasError(), "payload clear diagnostics")
+	clearedPayload, _ := data.Get("payload").(string)
+	if clearedPayload != "" {
+		var clearedPayloadJSON map[string]any
+		assert.NoError(t, json.Unmarshal([]byte(clearedPayload), &clearedPayloadJSON), "cleared payload should decode")
+		assert.Len(t, clearedPayloadJSON, 0, "cleared payload should be empty object")
+	}
 
 	assert.False(t, resource.DeleteContext(context.Background(), data, client).HasError(), "delete diagnostics")
 

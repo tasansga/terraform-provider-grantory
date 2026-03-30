@@ -51,6 +51,24 @@ func TestResourceGrantLifecycle(t *testing.T) {
 
 	assert.False(t, resource.ReadContext(context.Background(), data, client).HasError(), "read diagnostics")
 
+	assert.NoError(t, data.Set("payload", `{"user":"bob"}`), "prepare payload update")
+	assert.False(t, resource.UpdateContext(context.Background(), data, client).HasError(), "update diagnostics")
+	updatedPayloadValue, ok := data.Get("payload").(string)
+	assert.True(t, ok, "updated grant payload should be a string")
+	var updatedDecoded map[string]any
+	assert.NoError(t, json.Unmarshal([]byte(updatedPayloadValue), &updatedDecoded), "updated grant payload should decode")
+	assert.Equal(t, "bob", updatedDecoded["user"], "grant payload user value should be updated")
+
+	assert.NoError(t, data.Set("payload", ""), "prepare payload clear")
+	assert.False(t, resource.UpdateContext(context.Background(), data, client).HasError(), "payload clear diagnostics")
+	clearedPayloadValue, ok := data.Get("payload").(string)
+	assert.True(t, ok, "cleared grant payload should be a string")
+	if clearedPayloadValue != "" {
+		var clearedPayloadDecoded map[string]any
+		assert.NoError(t, json.Unmarshal([]byte(clearedPayloadValue), &clearedPayloadDecoded), "cleared grant payload should decode")
+		assert.Len(t, clearedPayloadDecoded, 0, "cleared payload should be empty object")
+	}
+
 	assert.False(t, resource.DeleteContext(context.Background(), data, client).HasError(), "delete diagnostics")
 
 	assert.Empty(t, data.Id(), "id should be cleared after delete")
@@ -131,6 +149,8 @@ func (h *grantTestHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == "/grants":
 		h.handleCreate(w, r)
+	case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/grants/"):
+		h.handleUpdate(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/grants/"):
 		h.handleGet(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/requests/"):
@@ -207,6 +227,43 @@ func (h *grantTestHandler) handleDelete(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *grantTestHandler) handleUpdate(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/grants/")
+
+	h.mu.Lock()
+	grant, ok := h.grants[id]
+	h.mu.Unlock()
+
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	var payload struct {
+		RequestVersion int             `json:"request_version"`
+		Payload        *map[string]any `json:"payload"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if payload.RequestVersion <= 0 || payload.Payload == nil {
+		http.Error(w, "request_version and payload are required", http.StatusBadRequest)
+		return
+	}
+
+	grant.Payload = *payload.Payload
+	grant.RequestVersion = payload.RequestVersion
+	grant.UpdatedAt = testGrantUpdatedAt
+
+	h.mu.Lock()
+	h.grants[id] = grant
+	h.mu.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(grant)
 }
 
 func (h *grantTestHandler) handleGetRequest(w http.ResponseWriter, r *http.Request) {

@@ -47,6 +47,110 @@ var (
 	cliConfigTemplate       = template.Must(template.New("cliConfig").Funcs(template.FuncMap{
 		"quote": strconv.Quote,
 	}).Parse(cliConfigTemplateSource))
+
+	terraformMutabilityTemplate = template.Must(template.New("mutability").Parse(`
+terraform {
+  required_providers {
+    grantory = {
+      source  = "tasansga/grantory"
+      version = "{{ .ProviderVersion }}"
+    }
+  }
+}
+
+provider "grantory" {
+  server = "{{ .ServerURL }}"
+}
+
+resource "grantory_host" "integration" {
+  labels = {
+    env   = "integration"
+    suite = "{{ .SuiteKey }}"
+  }
+}
+
+resource "grantory_request" "immutable" {
+  host_id    = grantory_host.integration.host_id
+  unique_key = "req-immutable-{{ .SuiteKey }}"
+{{- if eq .RequestImmutablePayload "" }}
+  payload = ""
+{{- else }}
+  payload = jsonencode({ value = "{{ .RequestImmutablePayload }}" })
+{{- end }}
+  labels = {
+    phase = "{{ .PhaseLabel }}"
+    mode  = "immutable"
+  }
+}
+
+resource "grantory_request" "mutable" {
+  host_id    = grantory_host.integration.host_id
+  unique_key = "req-mutable-{{ .SuiteKey }}"
+  mutable    = true
+{{- if eq .RequestMutablePayload "" }}
+  payload = ""
+{{- else }}
+  payload = jsonencode({ value = "{{ .RequestMutablePayload }}" })
+{{- end }}
+  labels = {
+    phase = "{{ .PhaseLabel }}"
+    mode  = "mutable"
+  }
+}
+
+resource "grantory_register" "immutable" {
+  host_id    = grantory_host.integration.host_id
+  unique_key = "reg-immutable-{{ .SuiteKey }}"
+{{- if eq .RegisterImmutablePayload "" }}
+  payload = ""
+{{- else }}
+  payload = jsonencode({ value = "{{ .RegisterImmutablePayload }}" })
+{{- end }}
+  labels = {
+    phase = "{{ .PhaseLabel }}"
+    mode  = "immutable"
+  }
+}
+
+resource "grantory_register" "mutable" {
+  host_id    = grantory_host.integration.host_id
+  unique_key = "reg-mutable-{{ .SuiteKey }}"
+  mutable    = true
+{{- if eq .RegisterMutablePayload "" }}
+  payload = ""
+{{- else }}
+  payload = jsonencode({ value = "{{ .RegisterMutablePayload }}" })
+{{- end }}
+  labels = {
+    phase = "{{ .PhaseLabel }}"
+    mode  = "mutable"
+  }
+}
+
+output "request_immutable_id" {
+  value = grantory_request.immutable.id
+}
+
+output "request_mutable_id" {
+  value = grantory_request.mutable.id
+}
+
+output "request_mutable_payload" {
+  value = grantory_request.mutable.payload
+}
+
+output "register_immutable_id" {
+  value = grantory_register.immutable.id
+}
+
+output "register_mutable_id" {
+  value = grantory_register.mutable.id
+}
+
+output "register_mutable_payload" {
+  value = grantory_register.mutable.payload
+}
+`))
 )
 
 type terraformTemplateData struct {
@@ -71,6 +175,21 @@ type grantTemplateData struct {
 	ServerURL       string
 	RequestLabels   []labelEntry
 	RegisterLabels  []labelEntry
+}
+
+type mutabilityTemplateData struct {
+	ProviderVersion          string
+	ServerURL                string
+	SuiteKey                 string
+	PhaseLabel               string
+	RequestImmutablePayload  string
+	RequestMutablePayload    string
+	RegisterImmutablePayload string
+	RegisterMutablePayload   string
+}
+
+type terraformOutputEntry struct {
+	Value any `json:"value"`
 }
 
 func TestIntegrationTerraformApplyUpdatesServer(t *testing.T) {
@@ -192,6 +311,111 @@ func TestIntegrationTerraformApplyUpdatesServer(t *testing.T) {
 	require.True(t, freshRequest.HasGrant, "request should be marked as granted")
 }
 
+func TestIntegrationTerraformMutabilityPayloadBehavior(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test that runs Terraform/OpenTofu")
+	}
+
+	tofuPath, err := exec.LookPath("tofu")
+	if err != nil {
+		t.Skipf("tofu binary not found; %v", err)
+	}
+
+	workspace := t.TempDir()
+	buildDir := filepath.Join(workspace, "provider-bin")
+	require.NoError(t, os.MkdirAll(buildDir, 0o755))
+	providerBin := filepath.Join(buildDir, "terraform-provider-grantory")
+	buildProviderBinary(t, providerBin)
+
+	devDir := filepath.Join(workspace, "terraform-provider-dev")
+	require.NoError(t, os.MkdirAll(devDir, 0o755))
+	copyFile(t, providerBin, filepath.Join(devDir, "terraform-provider-grantory"))
+
+	serverDataDir := filepath.Join(workspace, "data")
+	require.NoError(t, os.MkdirAll(serverDataDir, 0o755))
+	serverURL, stopServer := startIntegrationServer(t, serverDataDir)
+	t.Cleanup(stopServer)
+
+	tfDir := filepath.Join(workspace, "terraform")
+	require.NoError(t, os.MkdirAll(tfDir, 0o755))
+
+	cliConfigPath := filepath.Join(workspace, "terraform.rc")
+	writeCLIConfig(t, devDir, cliConfigPath)
+
+	suiteKey := strings.ReplaceAll(t.Name(), "/", "-")
+
+	// Phase 1: initial apply.
+	writeMutabilityTerraformConfig(t, tfDir, mutabilityTemplateData{
+		ProviderVersion:          integrationProviderVersion,
+		ServerURL:                serverURL,
+		SuiteKey:                 suiteKey,
+		PhaseLabel:               "phase1",
+		RequestImmutablePayload:  "req-imm-v1",
+		RequestMutablePayload:    "req-mut-v1",
+		RegisterImmutablePayload: "reg-imm-v1",
+		RegisterMutablePayload:   "reg-mut-v1",
+	})
+	runTofuCommand(t, tofuPath, tfDir, cliConfigPath, "apply", "-input=false", "-auto-approve")
+	outputs1 := runTofuOutput(t, tofuPath, tfDir, cliConfigPath)
+
+	// Phase 2: labels-only change should keep IDs for both immutable and mutable resources.
+	writeMutabilityTerraformConfig(t, tfDir, mutabilityTemplateData{
+		ProviderVersion:          integrationProviderVersion,
+		ServerURL:                serverURL,
+		SuiteKey:                 suiteKey,
+		PhaseLabel:               "phase2",
+		RequestImmutablePayload:  "req-imm-v1",
+		RequestMutablePayload:    "req-mut-v1",
+		RegisterImmutablePayload: "reg-imm-v1",
+		RegisterMutablePayload:   "reg-mut-v1",
+	})
+	runTofuCommand(t, tofuPath, tfDir, cliConfigPath, "apply", "-input=false", "-auto-approve")
+	outputs2 := runTofuOutput(t, tofuPath, tfDir, cliConfigPath)
+
+	require.Equal(t, outputString(t, outputs1, "request_immutable_id"), outputString(t, outputs2, "request_immutable_id"))
+	require.Equal(t, outputString(t, outputs1, "request_mutable_id"), outputString(t, outputs2, "request_mutable_id"))
+	require.Equal(t, outputString(t, outputs1, "register_immutable_id"), outputString(t, outputs2, "register_immutable_id"))
+	require.Equal(t, outputString(t, outputs1, "register_mutable_id"), outputString(t, outputs2, "register_mutable_id"))
+
+	// Phase 3: payload change should replace immutable resources, but update mutable resources in place.
+	writeMutabilityTerraformConfig(t, tfDir, mutabilityTemplateData{
+		ProviderVersion:          integrationProviderVersion,
+		ServerURL:                serverURL,
+		SuiteKey:                 suiteKey,
+		PhaseLabel:               "phase2",
+		RequestImmutablePayload:  "req-imm-v2",
+		RequestMutablePayload:    "req-mut-v2",
+		RegisterImmutablePayload: "reg-imm-v2",
+		RegisterMutablePayload:   "reg-mut-v2",
+	})
+	runTofuCommand(t, tofuPath, tfDir, cliConfigPath, "apply", "-input=false", "-auto-approve")
+	outputs3 := runTofuOutput(t, tofuPath, tfDir, cliConfigPath)
+
+	require.NotEqual(t, outputString(t, outputs2, "request_immutable_id"), outputString(t, outputs3, "request_immutable_id"))
+	require.NotEqual(t, outputString(t, outputs2, "register_immutable_id"), outputString(t, outputs3, "register_immutable_id"))
+	require.Equal(t, outputString(t, outputs2, "request_mutable_id"), outputString(t, outputs3, "request_mutable_id"))
+	require.Equal(t, outputString(t, outputs2, "register_mutable_id"), outputString(t, outputs3, "register_mutable_id"))
+
+	// Phase 4: mutable payload clear should stay in place and succeed.
+	writeMutabilityTerraformConfig(t, tfDir, mutabilityTemplateData{
+		ProviderVersion:          integrationProviderVersion,
+		ServerURL:                serverURL,
+		SuiteKey:                 suiteKey,
+		PhaseLabel:               "phase2",
+		RequestImmutablePayload:  "req-imm-v2",
+		RequestMutablePayload:    "",
+		RegisterImmutablePayload: "reg-imm-v2",
+		RegisterMutablePayload:   "",
+	})
+	runTofuCommand(t, tofuPath, tfDir, cliConfigPath, "apply", "-input=false", "-auto-approve")
+	outputs4 := runTofuOutput(t, tofuPath, tfDir, cliConfigPath)
+
+	require.Equal(t, outputString(t, outputs3, "request_mutable_id"), outputString(t, outputs4, "request_mutable_id"))
+	require.Equal(t, outputString(t, outputs3, "register_mutable_id"), outputString(t, outputs4, "register_mutable_id"))
+	require.Contains(t, []string{"", "{}"}, strings.TrimSpace(outputString(t, outputs4, "request_mutable_payload")))
+	require.Contains(t, []string{"", "{}"}, strings.TrimSpace(outputString(t, outputs4, "register_mutable_payload")))
+}
+
 func buildProviderBinary(t *testing.T, dst string) {
 	t.Helper()
 	cmd := exec.Command("go", "build", "-o", dst, "./cmd/terraform-provider-grantory")
@@ -246,6 +470,14 @@ func writeGrantPipelineConfig(t *testing.T, dir, serverURL string, labels map[st
 	require.NoError(t, os.WriteFile(path, buf.Bytes(), 0o644))
 }
 
+func writeMutabilityTerraformConfig(t *testing.T, dir string, data mutabilityTemplateData) {
+	t.Helper()
+	var buf bytes.Buffer
+	require.NoError(t, terraformMutabilityTemplate.Execute(&buf, data), "render mutability Terraform template")
+	path := filepath.Join(dir, "main.tf")
+	require.NoError(t, os.WriteFile(path, buf.Bytes(), 0o644))
+}
+
 func labelEntriesFromMap(labels map[string]string) []labelEntry {
 	if len(labels) == 0 {
 		return nil
@@ -288,6 +520,35 @@ func runTofuCommand(t *testing.T, tofuPath, tfDir, cliConfig string, args ...str
 		t.Fatalf("tofu %s failed: %v\nstdout:\n%s\nstderr:\n%s",
 			strings.Join(args, " "), err, stdout.String(), stderr.String())
 	}
+}
+
+func runTofuOutput(t *testing.T, tofuPath, tfDir, cliConfig string) map[string]terraformOutputEntry {
+	t.Helper()
+	cmd := exec.Command(tofuPath, "output", "-json")
+	cmd.Dir = tfDir
+	cmd.Env = append(os.Environ(),
+		"TF_IN_AUTOMATION=1",
+		fmt.Sprintf("TF_CLI_CONFIG_FILE=%s", cliConfig),
+		fmt.Sprintf("TOFU_CLI_CONFIG_FILE=%s", cliConfig),
+	)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("tofu output -json failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
+	}
+	var out map[string]terraformOutputEntry
+	require.NoError(t, json.Unmarshal(stdout.Bytes(), &out), "decode tofu output json")
+	return out
+}
+
+func outputString(t *testing.T, outputs map[string]terraformOutputEntry, key string) string {
+	t.Helper()
+	entry, ok := outputs[key]
+	require.True(t, ok, "missing output key %q", key)
+	value, ok := entry.Value.(string)
+	require.True(t, ok, "output %q should be string", key)
+	return value
 }
 
 func listHostsViaCLI(t *testing.T, serverURL string) []storage.Host {

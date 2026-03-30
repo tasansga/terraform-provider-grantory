@@ -41,6 +41,11 @@ func dataRequest() *schema.Resource {
 				Optional:    true,
 				Description: "JSON-encoded payload that describes the requested resource.",
 			},
+			"mutable": {
+				Type:        schema.TypeBool,
+				Computed:    true,
+				Description: "Whether request payload updates are allowed in place.",
+			},
 			"labels": {
 				Type:        schema.TypeMap,
 				Computed:    true,

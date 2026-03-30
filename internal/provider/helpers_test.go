@@ -48,6 +48,9 @@ func TestParseAndEncodeJSONString(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, map[string]any{"key": "value"}, decoded)
 
+	_, err = parseJSONString("null")
+	assert.Error(t, err)
+
 	encoded, err := encodeMapToJSONString(decoded)
 	assert.NoError(t, err)
 	assert.JSONEq(t, "{\"key\":\"value\"}", encoded)
@@ -72,6 +75,10 @@ func TestSetJSONStringAttributeClearsValue(t *testing.T) {
 	diags = setJSONStringAttribute(data, "payload", payload)
 	assert.Empty(t, diags)
 	assert.Equal(t, "{\"name\":\"test\"}", data.Get("payload"))
+
+	diags = setJSONStringAttribute(data, "payload", map[string]any{})
+	assert.Empty(t, diags)
+	assert.Equal(t, "{}", data.Get("payload"))
 }
 
 func TestHashAsJSONIsDeterministic(t *testing.T) {
@@ -91,4 +98,16 @@ func TestExtractMap(t *testing.T) {
 	assert.Nil(t, extractMap(123))
 	value := map[string]any{"key": "value"}
 	assert.Equal(t, value, extractMap(value))
+}
+
+func TestPayloadDiffSuppress(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, payloadDiffSuppress("payload", "", "{}", nil))
+	assert.True(t, payloadDiffSuppress("payload", "{ }", "", nil))
+	assert.True(t, payloadDiffSuppress("payload", "{}", "{ }", nil))
+	assert.False(t, payloadDiffSuppress("payload", "", "null", nil))
+	assert.False(t, payloadDiffSuppress("payload", "{}", "null", nil))
+	assert.False(t, payloadDiffSuppress("payload", "", "{\"x\":1}", nil))
+	assert.False(t, payloadDiffSuppress("payload", "{\"x\":1}", "{\"y\":1}", nil))
 }

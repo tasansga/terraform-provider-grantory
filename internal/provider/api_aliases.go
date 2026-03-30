@@ -16,4 +16,5 @@ type apiRequestUpdatePayload = apiclient.RequestUpdatePayload
 type apiRegisterCreatePayload = apiclient.RegisterCreatePayload
 type apiRegisterUpdatePayload = apiclient.RegisterUpdatePayload
 type apiGrantCreatePayload = apiclient.GrantCreatePayload
+type apiGrantUpdatePayload = apiclient.GrantUpdatePayload
 type apiSchemaDefinitionCreatePayload = apiclient.SchemaDefinitionCreatePayload

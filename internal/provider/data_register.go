@@ -36,6 +36,11 @@ func dataRegister() *schema.Resource {
 				Optional:    true,
 				Description: "JSON-encoded payload that describes the registered item.",
 			},
+			"mutable": {
+				Type:        schema.TypeBool,
+				Computed:    true,
+				Description: "Whether register payload updates are allowed in place.",
+			},
 			"labels": {
 				Type:        schema.TypeMap,
 				Computed:    true,

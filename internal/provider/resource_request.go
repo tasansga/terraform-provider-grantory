@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 )
 
@@ -35,10 +36,16 @@ func resourceRequest() *schema.Resource {
 				Description: "Optional schema definition identifier used to validate grant payloads.",
 			},
 			"payload": {
-				Type:        schema.TypeString,
+				Type:             schema.TypeString,
+				Optional:         true,
+				Description:      "JSON-encoded payload that describes the requested resource.",
+				DiffSuppressFunc: payloadDiffSuppress,
+			},
+			"mutable": {
+				Type:        schema.TypeBool,
 				Optional:    true,
 				ForceNew:    true,
-				Description: "JSON-encoded payload that describes the requested resource.",
+				Description: "Whether request payload updates are allowed in place.",
 			},
 			"labels": {
 				Type:        schema.TypeMap,
@@ -68,6 +75,9 @@ func resourceRequest() *schema.Resource {
 		ReadContext:   resourceRequestRead,
 		UpdateContext: resourceRequestUpdate,
 		DeleteContext: resourceRequestDelete,
+		CustomizeDiff: customdiff.ForceNewIf("payload", func(_ context.Context, d *schema.ResourceDiff, _ any) bool {
+			return payloadChangeRequiresReplacement(d)
+		}),
 	}
 }
 func resourceRequestCreate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
@@ -94,6 +104,7 @@ func resourceRequestCreate(ctx context.Context, d *schema.ResourceData, meta any
 		GrantSchemaDefinitionID:   d.Get("grant_schema_definition_id").(string),
 		UniqueKey:                 d.Get("unique_key").(string),
 		Payload:                   requestPayload,
+		Mutable:                   d.Get("mutable").(bool),
 		Labels:                    expandStringMap(extractMap(d.Get("labels"))),
 	}
 
@@ -130,6 +141,18 @@ func resourceRequestUpdate(ctx context.Context, d *schema.ResourceData, meta any
 	client := meta.(*grantoryClient)
 	var payload apiRequestUpdatePayload
 	changed := false
+	if d.HasChange("payload") {
+		parsed, err := parseJSONPatchPayload(d.Get("payload").(string))
+		if err != nil {
+			return diag.Diagnostics{{
+				Severity: diag.Error,
+				Summary:  "invalid request payload",
+				Detail:   err.Error(),
+			}}
+		}
+		payload.Payload = parsed
+		changed = true
+	}
 	if d.HasChange("labels") {
 		payload.Labels = expandStringMap(extractMap(d.Get("labels")))
 		changed = true
@@ -184,6 +207,9 @@ func setRequestAttributes(d *schema.ResourceData, req apiRequest) diag.Diagnosti
 		if additional := setJSONStringAttribute(d, "payload", req.Payload); additional != nil {
 			diags = append(diags, additional...)
 		}
+	}
+	if err := d.Set("mutable", req.Mutable); err != nil {
+		diags = append(diags, diag.FromErr(err)...)
 	}
 	if req.Labels != nil {
 		if err := d.Set("labels", flattenStringMap(req.Labels)); err != nil {

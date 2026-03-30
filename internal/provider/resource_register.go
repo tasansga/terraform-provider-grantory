@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 )
 
@@ -29,10 +30,16 @@ func resourceRegister() *schema.Resource {
 				Description: "Optional schema definition identifier used to validate register payloads.",
 			},
 			"payload": {
-				Type:        schema.TypeString,
+				Type:             schema.TypeString,
+				Optional:         true,
+				Description:      "JSON-encoded payload that describes the registered item.",
+				DiffSuppressFunc: payloadDiffSuppress,
+			},
+			"mutable": {
+				Type:        schema.TypeBool,
 				Optional:    true,
 				ForceNew:    true,
-				Description: "JSON-encoded payload that describes the registered item.",
+				Description: "Whether register payload updates are allowed in place.",
 			},
 			"labels": {
 				Type:        schema.TypeMap,
@@ -47,6 +54,9 @@ func resourceRegister() *schema.Resource {
 		ReadContext:   resourceRegisterRead,
 		UpdateContext: resourceRegisterUpdate,
 		DeleteContext: resourceRegisterDelete,
+		CustomizeDiff: customdiff.ForceNewIf("payload", func(_ context.Context, d *schema.ResourceDiff, _ any) bool {
+			return payloadChangeRequiresReplacement(d)
+		}),
 	}
 }
 
@@ -73,6 +83,7 @@ func resourceRegisterCreate(ctx context.Context, d *schema.ResourceData, meta an
 		SchemaDefinitionID: d.Get("schema_definition_id").(string),
 		UniqueKey:          d.Get("unique_key").(string),
 		Payload:            registerPayload,
+		Mutable:            d.Get("mutable").(bool),
 		Labels:             expandStringMap(extractMap(d.Get("labels"))),
 	}
 
@@ -109,6 +120,18 @@ func resourceRegisterUpdate(ctx context.Context, d *schema.ResourceData, meta an
 	client := meta.(*grantoryClient)
 	var payload apiRegisterUpdatePayload
 	changed := false
+	if d.HasChange("payload") {
+		parsed, err := parseJSONPatchPayload(d.Get("payload").(string))
+		if err != nil {
+			return diag.Diagnostics{{
+				Severity: diag.Error,
+				Summary:  "invalid register payload",
+				Detail:   err.Error(),
+			}}
+		}
+		payload.Payload = parsed
+		changed = true
+	}
 	if d.HasChange("labels") {
 		payload.Labels = expandStringMap(extractMap(d.Get("labels")))
 		changed = true
@@ -160,6 +183,9 @@ func setRegisterAttributes(d *schema.ResourceData, reg apiRegister) diag.Diagnos
 		if additional := setJSONStringAttribute(d, "payload", reg.Payload); additional != nil {
 			diags = append(diags, additional...)
 		}
+	}
+	if err := d.Set("mutable", reg.Mutable); err != nil {
+		diags = append(diags, diag.FromErr(err)...)
 	}
 	if reg.Labels != nil {
 		if err := d.Set("labels", flattenStringMap(reg.Labels)); err != nil {

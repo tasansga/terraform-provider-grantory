@@ -68,14 +68,26 @@ func expandAnyMap(input map[string]any) map[string]any {
 }
 
 func parseJSONString(payload string) (map[string]any, error) {
-	if strings.TrimSpace(payload) == "" {
+	trimmed := strings.TrimSpace(payload)
+	if trimmed == "" {
 		return nil, nil
 	}
 	var parsed map[string]any
-	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
+	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
 		return nil, err
 	}
+	if parsed == nil {
+		return nil, fmt.Errorf("json object is required; null is not allowed")
+	}
 	return parsed, nil
+}
+
+func parseJSONPatchPayload(payload string) (map[string]any, error) {
+	if strings.TrimSpace(payload) == "" {
+		// PATCH endpoints require payload presence; empty object is explicit clear.
+		return map[string]any{}, nil
+	}
+	return parseJSONString(payload)
 }
 
 func parseRawJSON(payload string) (json.RawMessage, error) {
@@ -138,4 +150,45 @@ func matchesLabelFilters(labels map[string]string, filters map[string]string) bo
 		}
 	}
 	return true
+}
+
+func payloadChangeRequiresReplacement(d *schema.ResourceDiff) bool {
+	if d == nil || !d.HasChange("payload") {
+		return false
+	}
+	oldValue, newValue := d.GetChange("payload")
+	if payloadStringsEquivalent(oldValue, newValue) {
+		return false
+	}
+	mutable, ok := d.Get("mutable").(bool)
+	if !ok {
+		// Be conservative when mutable cannot be resolved.
+		return true
+	}
+	return !mutable
+}
+
+func payloadDiffSuppress(_ string, old, new string, _ *schema.ResourceData) bool {
+	return payloadStringsEquivalent(old, new)
+}
+
+func payloadStringsEquivalent(oldValue, newValue any) bool {
+	oldStr, oldOK := oldValue.(string)
+	newStr, newOK := newValue.(string)
+	if !oldOK || !newOK {
+		return false
+	}
+	if oldStr == newStr {
+		return true
+	}
+	return isEmptyPayloadString(oldStr) && isEmptyPayloadString(newStr)
+}
+
+func isEmptyPayloadString(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return true
+	}
+	parsed, err := parseJSONString(trimmed)
+	return err == nil && len(parsed) == 0
 }

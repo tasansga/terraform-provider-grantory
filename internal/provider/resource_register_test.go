@@ -38,6 +38,7 @@ func TestResourceRegisterLifecycle(t *testing.T) {
 		"host_id":    "host-abc",
 		"unique_key": "unique:reg",
 		"payload":    string(registerDataJSON),
+		"mutable":    true,
 		"labels": map[string]any{
 			"env": "testing",
 		},
@@ -47,14 +48,29 @@ func TestResourceRegisterLifecycle(t *testing.T) {
 
 	assert.Equal(t, testRegisterID, data.Id(), "resource id should match server-generated id")
 	assert.Equal(t, "unique:reg", data.Get("unique_key"), "unique_key should be set")
+	assert.Equal(t, true, data.Get("mutable"), "mutable should round-trip")
 
 	assert.False(t, resource.ReadContext(context.Background(), data, client).HasError(), "read diagnostics")
 
+	assert.NoError(t, data.Set("payload", `{"item":"prod"}`), "prepare payload update")
 	assert.NoError(t, data.Set("labels", map[string]any{"env": "prod"}), "prepare label update")
 	assert.False(t, resource.UpdateContext(context.Background(), data, client).HasError(), "update diagnostics")
 
+	updatedPayload, _ := data.Get("payload").(string)
+	var updatedPayloadJSON map[string]any
+	assert.NoError(t, json.Unmarshal([]byte(updatedPayload), &updatedPayloadJSON), "updated payload should decode")
+	assert.Equal(t, "prod", updatedPayloadJSON["item"], "payload should refresh after update")
 	updatedLabels, _ := data.Get("labels").(map[string]any)
 	assert.Equal(t, "prod", updatedLabels["env"], "labels should refresh after update")
+
+	assert.NoError(t, data.Set("payload", ""), "prepare payload clear")
+	assert.False(t, resource.UpdateContext(context.Background(), data, client).HasError(), "payload clear diagnostics")
+	clearedPayload, _ := data.Get("payload").(string)
+	if clearedPayload != "" {
+		var clearedPayloadJSON map[string]any
+		assert.NoError(t, json.Unmarshal([]byte(clearedPayload), &clearedPayloadJSON), "cleared payload should decode")
+		assert.Len(t, clearedPayloadJSON, 0, "cleared payload should be empty object")
+	}
 
 	assert.False(t, resource.DeleteContext(context.Background(), data, client).HasError(), "delete diagnostics")
 
@@ -177,18 +193,24 @@ func (h *registerTestHandler) handleUpdate(w http.ResponseWriter, r *http.Reques
 	}
 
 	var payload struct {
-		Labels *map[string]string `json:"labels"`
+		Payload *map[string]any    `json:"payload"`
+		Labels  *map[string]string `json:"labels"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	if payload.Labels == nil {
-		http.Error(w, "labels are required", http.StatusBadRequest)
+	if payload.Labels == nil && payload.Payload == nil {
+		http.Error(w, "labels or payload are required", http.StatusBadRequest)
 		return
 	}
 
-	reg.Labels = *payload.Labels
+	if payload.Payload != nil {
+		reg.Payload = *payload.Payload
+	}
+	if payload.Labels != nil {
+		reg.Labels = *payload.Labels
+	}
 	reg.UpdatedAt = testRegisterUpdatedAt
 
 	h.mu.Lock()

@@ -17,14 +17,15 @@ func resourceGrant() *schema.Resource {
 				ForceNew:    true,
 			},
 			"payload": {
-				Type:        schema.TypeString,
-				Optional:    true,
-				ForceNew:    true,
-				Description: "JSON-encoded payload delivered by the grant when a request is approved.",
+				Type:             schema.TypeString,
+				Optional:         true,
+				Description:      "JSON-encoded payload delivered by the grant when a request is approved.",
+				DiffSuppressFunc: payloadDiffSuppress,
 			},
 		},
 		CreateContext: resourceGrantCreate,
 		ReadContext:   resourceGrantRead,
+		UpdateContext: resourceGrantUpdate,
 		DeleteContext: resourceGrantDelete,
 	}
 }
@@ -98,6 +99,39 @@ func resourceGrantDelete(ctx context.Context, d *schema.ResourceData, meta any) 
 
 	d.SetId("")
 	return nil
+}
+
+func resourceGrantUpdate(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
+	client := meta.(*grantoryClient)
+	if !d.HasChange("payload") {
+		return nil
+	}
+
+	parsed, err := parseJSONPatchPayload(d.Get("payload").(string))
+	if err != nil {
+		return diag.Diagnostics{{
+			Severity: diag.Error,
+			Summary:  "invalid grant payload",
+			Detail:   err.Error(),
+		}}
+	}
+
+	requestID := d.Get("request_id").(string)
+	req, err := client.GetRequest(ctx, requestID)
+	if err != nil {
+		return diag.FromErr(err)
+	}
+
+	updated, err := client.UpdateGrant(ctx, d.Id(), apiGrantUpdatePayload{
+		RequestVersion: req.Version,
+		Payload:        parsed,
+	})
+	if err != nil {
+		return diag.FromErr(err)
+	}
+
+	d.SetId(updated.ID)
+	return resourceGrantRefresh(ctx, d, updated)
 }
 
 func resourceGrantRefresh(ctx context.Context, d *schema.ResourceData, grant apiGrant) diag.Diagnostics {
