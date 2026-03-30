@@ -128,10 +128,15 @@ func (s *Service) UpdateRegister(ctx context.Context, id string, payload Registe
 	if payload.Payload == nil && payload.Labels == nil {
 		return Register{}, fmt.Errorf("payload and/or labels are required")
 	}
+	var reg Register
 	if payload.Payload != nil {
-		reg, err := s.store.GetRegister(ctx, id)
+		var err error
+		reg, err = s.store.GetRegister(ctx, id)
 		if err != nil {
 			return Register{}, err
+		}
+		if !reg.Mutable {
+			return Register{}, ErrRegisterImmutable
 		}
 		if reg.SchemaDefinitionID != "" {
 			def, err := s.store.GetSchemaDefinition(ctx, reg.SchemaDefinitionID)
@@ -168,6 +173,9 @@ func (s *Service) CreateGrant(ctx context.Context, payload GrantCreatePayload) (
 	req, err := s.store.GetRequest(ctx, payload.RequestID)
 	if err != nil {
 		return Grant{}, err
+	}
+	if payload.RequestVersion != req.Version {
+		return Grant{}, ErrGrantRequestVersionConflict
 	}
 	if req.GrantSchemaDefinitionID != "" {
 		def, err := s.store.GetSchemaDefinition(ctx, req.GrantSchemaDefinitionID)

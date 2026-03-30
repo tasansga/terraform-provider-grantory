@@ -24,7 +24,7 @@ func TestServiceUpdateRegisterValidatesPayloadAgainstSchema(t *testing.T) {
 	schema := json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`)
 	store := &fakeStore{
 		getRegisterFn: func(context.Context, string) (Register, error) {
-			return Register{ID: "reg-1", SchemaDefinitionID: "def-1"}, nil
+			return Register{ID: "reg-1", Mutable: true, SchemaDefinitionID: "def-1"}, nil
 		},
 		getSchemaDefinitionFn: func(context.Context, string) (SchemaDefinition, error) {
 			return SchemaDefinition{ID: "def-1", Schema: schema}, nil
@@ -46,7 +46,7 @@ func TestServiceUpdateRegisterPassesThroughStore(t *testing.T) {
 	labels := map[string]string{"env": "prod"}
 	store := &fakeStore{
 		getRegisterFn: func(context.Context, string) (Register, error) {
-			return Register{ID: "reg-1"}, nil
+			return Register{ID: "reg-1", Mutable: true}, nil
 		},
 		updateRegisterFn: func(_ context.Context, id string, p RegisterUpdatePayload) (Register, error) {
 			if id != "reg-1" {
@@ -127,5 +127,31 @@ func TestServiceUpdateRegisterPropagatesGetRegisterError(t *testing.T) {
 	_, err := svc.UpdateRegister(context.Background(), "reg-1", RegisterUpdatePayload{Payload: &payload})
 	if !errors.Is(err, ErrRegisterNotFound) {
 		t.Fatalf("expected ErrRegisterNotFound, got %v", err)
+	}
+}
+
+func TestServiceUpdateRegisterReturnsImmutableBeforeSchemaValidation(t *testing.T) {
+	t.Parallel()
+
+	schema := json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`)
+	schemaLookups := 0
+	store := &fakeStore{
+		getRegisterFn: func(context.Context, string) (Register, error) {
+			return Register{ID: "reg-1", Mutable: false, SchemaDefinitionID: "def-1"}, nil
+		},
+		getSchemaDefinitionFn: func(context.Context, string) (SchemaDefinition, error) {
+			schemaLookups++
+			return SchemaDefinition{ID: "def-1", Schema: schema}, nil
+		},
+	}
+	svc := New(store)
+
+	payload := map[string]any{"name": 123}
+	_, err := svc.UpdateRegister(context.Background(), "reg-1", RegisterUpdatePayload{Payload: &payload})
+	if !errors.Is(err, ErrRegisterImmutable) {
+		t.Fatalf("expected ErrRegisterImmutable, got %v", err)
+	}
+	if schemaLookups != 0 {
+		t.Fatalf("expected no schema lookup on immutable register, got %d", schemaLookups)
 	}
 }

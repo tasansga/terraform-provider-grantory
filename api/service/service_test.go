@@ -258,7 +258,7 @@ func TestServiceSchemaValidationForRequestRegisterAndGrant(t *testing.T) {
 			return Register{ID: "reg-1"}, nil
 		},
 		getRequestFn: func(context.Context, string) (Request, error) {
-			return Request{ID: "req-1", GrantSchemaDefinitionID: "def-1"}, nil
+			return Request{ID: "req-1", Version: 1, GrantSchemaDefinitionID: "def-1"}, nil
 		},
 		createGrantFn: func(context.Context, GrantCreatePayload) (Grant, error) {
 			return Grant{ID: "gr-1"}, nil
@@ -430,6 +430,35 @@ func TestServiceUpdateGrantReturnsVersionConflictBeforeSchemaValidation(t *testi
 	svc := New(store)
 
 	_, err := svc.UpdateGrant(context.Background(), "grant-1", GrantUpdatePayload{
+		RequestVersion: 1,
+		Payload:        map[string]any{"name": 123},
+	})
+	if !errors.Is(err, ErrGrantRequestVersionConflict) {
+		t.Fatalf("expected ErrGrantRequestVersionConflict, got %v", err)
+	}
+	if schemaLookups != 0 {
+		t.Fatalf("expected no schema lookup on version conflict, got %d", schemaLookups)
+	}
+}
+
+func TestServiceCreateGrantReturnsVersionConflictBeforeSchemaValidation(t *testing.T) {
+	t.Parallel()
+
+	validSchema := json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`)
+	schemaLookups := 0
+	store := &fakeStore{
+		getRequestFn: func(context.Context, string) (Request, error) {
+			return Request{ID: "req-1", Version: 2, GrantSchemaDefinitionID: "def-1"}, nil
+		},
+		getSchemaDefinitionFn: func(context.Context, string) (SchemaDefinition, error) {
+			schemaLookups++
+			return SchemaDefinition{ID: "def-1", Schema: validSchema}, nil
+		},
+	}
+	svc := New(store)
+
+	_, err := svc.CreateGrant(context.Background(), GrantCreatePayload{
+		RequestID:      "req-1",
 		RequestVersion: 1,
 		Payload:        map[string]any{"name": 123},
 	})
