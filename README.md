@@ -104,6 +104,19 @@ provider "grantory" {
 
 `server` and SSH transport settings are mutually exclusive. Configure one mode only.
 
+SSH agent auth (useful for passphrase-protected keys):
+
+```hcl
+provider "grantory" {
+  ssh_address           = "grantory.internal:22"
+  ssh_user              = "grantory"
+  ssh_use_agent         = true
+  ssh_agent_socket_path = "/run/user/1000/ssh-agent.socket" # optional; defaults to SSH_AUTH_SOCK
+  ssh_known_hosts_path  = pathexpand("~/.ssh/known_hosts")
+  ssh_socket_path       = "/run/grantory/server.sock"
+}
+```
+
 ## Kubernetes workflow
 
 **EXPERIMENTAL FEATURE**

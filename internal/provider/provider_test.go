@@ -6,13 +6,17 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/ssh/agent"
 )
 
 func TestConfigureProviderValidServer(t *testing.T) {
@@ -180,13 +184,83 @@ func TestConfigureProviderSSHMissingRequiredFields(t *testing.T) {
 		if d.Summary == "incomplete SSH transport configuration" {
 			found = true
 			assert.Contains(t, d.Detail, sshUserAttr)
-			assert.Contains(t, d.Detail, sshPrivateKeyPathAttr)
+			assert.Contains(t, d.Detail, sshUseAgentAttr)
 			assert.Contains(t, d.Detail, sshSocketPathAttr)
 			assert.Contains(t, d.Detail, sshKnownHostsPathAttr)
 			break
 		}
 	}
 	assert.True(t, found, "expected incomplete SSH transport configuration diagnostic")
+}
+
+func TestConfigureProviderValidSSHWithAgent(t *testing.T) {
+	t.Parallel()
+
+	agentSocketPath := startTestAgentSocket(t, true)
+
+	p := New()
+	data := schema.TestResourceDataRaw(t, p.Schema, map[string]any{
+		sshAddressAttr:         "127.0.0.1:1",
+		sshUserAttr:            "grantory",
+		sshUseAgentAttr:        true,
+		sshAgentSocketPathAttr: agentSocketPath,
+		sshSocketPathAttr:      "/tmp/grantory.sock",
+		sshInsecureHostKeyAttr: true,
+		sshTimeoutSecondsAttr:  1,
+	})
+
+	client, diags := configureProvider(context.Background(), data)
+	assert.False(t, diags.HasError(), "expected no diagnostics")
+
+	c, ok := client.(*grantoryClient)
+	assert.True(t, ok, "expected grantoryClient")
+	assert.Equal(t, sshModeBaseURL, c.BaseAddress(), "SSH mode should use synthetic HTTP base URL")
+}
+
+func TestConfigureProviderSSHAgentSocketImpliesAgent(t *testing.T) {
+	t.Parallel()
+
+	agentSocketPath := startTestAgentSocket(t, true)
+
+	p := New()
+	data := schema.TestResourceDataRaw(t, p.Schema, map[string]any{
+		sshAddressAttr:         "127.0.0.1:1",
+		sshUserAttr:            "grantory",
+		sshAgentSocketPathAttr: agentSocketPath,
+		sshSocketPathAttr:      "/tmp/grantory.sock",
+		sshInsecureHostKeyAttr: true,
+		sshTimeoutSecondsAttr:  1,
+	})
+
+	client, diags := configureProvider(context.Background(), data)
+	assert.False(t, diags.HasError(), "expected no diagnostics")
+	assert.NotNil(t, client, "expected configured client")
+}
+
+func TestConfigureProviderSSHMissingAuthSources(t *testing.T) {
+	t.Parallel()
+
+	p := New()
+	data := schema.TestResourceDataRaw(t, p.Schema, map[string]any{
+		sshAddressAttr:         "127.0.0.1:22",
+		sshUserAttr:            "grantory",
+		sshSocketPathAttr:      "/tmp/grantory.sock",
+		sshInsecureHostKeyAttr: true,
+	})
+
+	client, diags := configureProvider(context.Background(), data)
+	assert.Nil(t, client, "expected nil client when key and agent are missing")
+	assert.True(t, diags.HasError(), "expected diagnostics when key and agent are missing")
+
+	found := false
+	for _, d := range diags {
+		if d.Summary == "incomplete SSH transport configuration" {
+			found = true
+			assert.Contains(t, d.Detail, sshUseAgentAttr)
+			break
+		}
+	}
+	assert.True(t, found, "expected key-or-agent requirement diagnostic")
 }
 
 func TestConfigureProviderSSHKnownHostsRequired(t *testing.T) {
@@ -227,5 +301,42 @@ func writeTestPrivateKey(t *testing.T) string {
 	})
 	path := filepath.Join(t.TempDir(), "id_rsa")
 	require.NoError(t, os.WriteFile(path, pemKey, 0o600))
+	return path
+}
+
+func startTestAgentSocket(t *testing.T, withKey bool) string {
+	t.Helper()
+	keyring := agent.NewKeyring()
+	if withKey {
+		rawKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		require.NoError(t, err)
+		require.NoError(t, keyring.Add(agent.AddedKey{PrivateKey: rawKey}))
+	}
+
+	path := filepath.Join(os.TempDir(), fmt.Sprintf("grantory-provider-agent-%d.sock", time.Now().UnixNano()))
+	_ = os.Remove(path)
+	ln, err := net.Listen("unix", path)
+	require.NoError(t, err)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				_ = agent.ServeAgent(keyring, c)
+				_ = c.Close()
+			}(conn)
+		}
+	}()
+
+	t.Cleanup(func() {
+		_ = ln.Close()
+		<-done
+		_ = os.Remove(path)
+	})
 	return path
 }

@@ -20,6 +20,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/crypto/ssh/knownhosts"
 )
 
@@ -104,6 +105,55 @@ func TestNewHTTPClientBastion(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.Contains(t, string(body), `"backend":"unix-bastion"`)
+}
+
+func TestNewHTTPClientDirectWithAgentOnly(t *testing.T) {
+	t.Parallel()
+
+	unixSocket := startUnixHTTPServer(t, `{"status":"ok","backend":"unix-agent"}`)
+	rawKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	clientSigner, err := ssh.NewSignerFromKey(rawKey)
+	require.NoError(t, err)
+	target := startSSHServer(t, sshServerOptions{
+		authorizedClientKey: clientSigner.PublicKey(),
+	})
+	knownHosts := writeKnownHostsFile(t, knownhosts.Line([]string{target.address()}, target.hostKey()))
+	agentSocket := startTestAgentSocketWithKeys(t, rawKey)
+
+	httpClient, err := NewHTTPClient(Options{
+		Address:         target.address(),
+		User:            "grantory",
+		UseAgent:        true,
+		AgentSocketPath: agentSocket,
+		KnownHostsPath:  knownHosts,
+		SocketPath:      unixSocket,
+		Timeout:         2 * time.Second,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		if tr, ok := httpClient.Transport.(*Transport); ok {
+			tr.CloseIdleConnections()
+		}
+	})
+
+	resp := doReadyz(t, httpClient)
+	defer func() {
+		require.NoError(t, resp.Body.Close())
+	}()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Contains(t, string(body), `"backend":"unix-agent"`)
+
+	// Ensure reconnect remains possible after CloseIdleConnections and invalidation
+	// when using agent auth.
+	if tr, ok := httpClient.Transport.(*Transport); ok {
+		tr.CloseIdleConnections()
+	}
+	target.closeActiveConnections()
+	resp2 := doReadyz(t, httpClient)
+	require.NoError(t, resp2.Body.Close())
 }
 
 func TestKnownHostsValidation(t *testing.T) {
@@ -207,8 +257,6 @@ func TestDialTimeout(t *testing.T) {
 }
 
 func TestNewTransportValidation(t *testing.T) {
-	t.Parallel()
-
 	_, err := NewTransport(Options{})
 	require.Error(t, err)
 
@@ -219,6 +267,29 @@ func TestNewTransportValidation(t *testing.T) {
 		SocketPath:     "/tmp/grantory.sock",
 	})
 	require.Error(t, err)
+
+	t.Setenv("SSH_AUTH_SOCK", "")
+	_, err = NewTransport(Options{
+		Address:         "127.0.0.1:22",
+		User:            "u",
+		UseAgent:        true,
+		InsecureHostKey: true,
+		SocketPath:      "/tmp/grantory.sock",
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "SSH_AUTH_SOCK")
+
+	emptyAgentSocket := startTestAgentSocket(t, false)
+	_, err = NewTransport(Options{
+		Address:         "127.0.0.1:22",
+		User:            "u",
+		UseAgent:        true,
+		AgentSocketPath: emptyAgentSocket,
+		InsecureHostKey: true,
+		SocketPath:      "/tmp/grantory.sock",
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no SSH keys are loaded")
 }
 
 func doReadyz(t *testing.T, httpClient *http.Client) *http.Response {
@@ -486,4 +557,76 @@ func startHangingTCPListener(t *testing.T) string {
 		_ = ln.Close()
 	})
 	return ln.Addr().String()
+}
+
+func startTestAgentSocket(t *testing.T, withKey bool) string {
+	t.Helper()
+	keyring := agent.NewKeyring()
+	if withKey {
+		rawKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		require.NoError(t, err)
+		require.NoError(t, keyring.Add(agent.AddedKey{PrivateKey: rawKey}))
+	}
+
+	path := filepath.Join(os.TempDir(), fmt.Sprintf("grantory-agent-%d.sock", time.Now().UnixNano()))
+	_ = os.Remove(path)
+	ln, err := net.Listen("unix", path)
+	require.NoError(t, err)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				_ = agent.ServeAgent(keyring, c)
+				_ = c.Close()
+			}(conn)
+		}
+	}()
+
+	t.Cleanup(func() {
+		_ = ln.Close()
+		<-done
+		_ = os.Remove(path)
+	})
+	return path
+}
+
+func startTestAgentSocketWithKeys(t *testing.T, keys ...interface{}) string {
+	t.Helper()
+	keyring := agent.NewKeyring()
+	for _, key := range keys {
+		require.NoError(t, keyring.Add(agent.AddedKey{PrivateKey: key}))
+	}
+
+	path := filepath.Join(os.TempDir(), fmt.Sprintf("grantory-agent-%d.sock", time.Now().UnixNano()))
+	_ = os.Remove(path)
+	ln, err := net.Listen("unix", path)
+	require.NoError(t, err)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				_ = agent.ServeAgent(keyring, c)
+				_ = c.Close()
+			}(conn)
+		}
+	}()
+
+	t.Cleanup(func() {
+		_ = ln.Close()
+		<-done
+		_ = os.Remove(path)
+	})
+	return path
 }

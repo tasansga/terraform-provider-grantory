@@ -27,6 +27,8 @@ const (
 	sshAddressAttr               = "ssh_address"
 	sshUserAttr                  = "ssh_user"
 	sshPrivateKeyPathAttr        = "ssh_private_key_path"
+	sshUseAgentAttr              = "ssh_use_agent"
+	sshAgentSocketPathAttr       = "ssh_agent_socket_path"
 	sshKnownHostsPathAttr        = "ssh_known_hosts_path"
 	sshInsecureHostKeyAttr       = "ssh_insecure_host_key"
 	sshSocketPathAttr            = "ssh_socket_path"
@@ -85,6 +87,16 @@ func New() *schema.Provider {
 				Type:        schema.TypeString,
 				Optional:    true,
 				Description: "Path to the SSH private key file used for unix-socket transport mode.",
+			},
+			sshUseAgentAttr: {
+				Type:        schema.TypeBool,
+				Optional:    true,
+				Description: "Enable SSH agent authentication (reads from SSH_AUTH_SOCK by default).",
+			},
+			sshAgentSocketPathAttr: {
+				Type:        schema.TypeString,
+				Optional:    true,
+				Description: "Optional path to SSH agent unix socket (overrides SSH_AUTH_SOCK).",
 			},
 			sshKnownHostsPathAttr: {
 				Type:        schema.TypeString,
@@ -225,6 +237,8 @@ func configureProvider(ctx context.Context, d *schema.ResourceData) (any, diag.D
 			Address:               sshCfg.address,
 			User:                  sshCfg.user,
 			PrivateKeyPath:        sshCfg.privateKeyPath,
+			UseAgent:              sshCfg.useAgent,
+			AgentSocketPath:       sshCfg.agentSocketPath,
 			KnownHostsPath:        sshCfg.knownHostsPath,
 			InsecureHostKey:       sshCfg.insecureHostKey,
 			SocketPath:            sshCfg.socketPath,
@@ -274,6 +288,8 @@ type sshConfig struct {
 	address               string
 	user                  string
 	privateKeyPath        string
+	useAgent              bool
+	agentSocketPath       string
 	knownHostsPath        string
 	insecureHostKey       bool
 	socketPath            string
@@ -284,10 +300,14 @@ type sshConfig struct {
 }
 
 func readSSHConfig(d *schema.ResourceData) sshConfig {
+	agentSocketPath := strings.TrimSpace(d.Get(sshAgentSocketPathAttr).(string))
+	useAgent := d.Get(sshUseAgentAttr).(bool) || agentSocketPath != ""
 	return sshConfig{
 		address:               strings.TrimSpace(d.Get(sshAddressAttr).(string)),
 		user:                  strings.TrimSpace(d.Get(sshUserAttr).(string)),
 		privateKeyPath:        strings.TrimSpace(d.Get(sshPrivateKeyPathAttr).(string)),
+		useAgent:              useAgent,
+		agentSocketPath:       agentSocketPath,
 		knownHostsPath:        strings.TrimSpace(d.Get(sshKnownHostsPathAttr).(string)),
 		insecureHostKey:       d.Get(sshInsecureHostKeyAttr).(bool),
 		socketPath:            strings.TrimSpace(d.Get(sshSocketPathAttr).(string)),
@@ -302,6 +322,8 @@ func (c sshConfig) configured() bool {
 	return c.address != "" ||
 		c.user != "" ||
 		c.privateKeyPath != "" ||
+		c.useAgent ||
+		c.agentSocketPath != "" ||
 		c.knownHostsPath != "" ||
 		c.insecureHostKey ||
 		c.socketPath != "" ||
@@ -318,8 +340,8 @@ func (c sshConfig) missingRequiredFields() []string {
 	if c.user == "" {
 		missing = append(missing, sshUserAttr)
 	}
-	if c.privateKeyPath == "" {
-		missing = append(missing, sshPrivateKeyPathAttr)
+	if c.privateKeyPath == "" && !c.useAgent {
+		missing = append(missing, sshPrivateKeyPathAttr+" (or enable "+sshUseAgentAttr+")")
 	}
 	if c.socketPath == "" {
 		missing = append(missing, sshSocketPathAttr)

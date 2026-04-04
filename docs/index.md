@@ -74,6 +74,19 @@ provider "grantory" {
 
 `server` and SSH transport attributes are mutually exclusive. Configure exactly one mode.
 
+SSH agent auth (supports passphrase-protected keys loaded in the agent):
+
+```terraform
+provider "grantory" {
+  ssh_address          = "grantory.internal:22"
+  ssh_user             = "grantory"
+  ssh_use_agent        = true
+  ssh_agent_socket_path = "/run/user/1000/ssh-agent.socket" # optional; defaults to SSH_AUTH_SOCK
+  ssh_known_hosts_path = pathexpand("~/.ssh/known_hosts")
+  ssh_socket_path      = "/run/grantory/server.sock"
+}
+```
+
 ## Core concepts
 
 - **Hosts** register labels and become the target for requests.
@@ -92,6 +105,7 @@ provider "grantory" {
 - `password` (String, Sensitive) Password for basic auth (env: PASSWORD).
 - `server` (String) URL of the Grantory server (http:// or https://) used for every API interaction. Defaults to http://localhost:8080 when SSH transport is not configured.
 - `ssh_address` (String) SSH target address in host:port format for unix-socket transport mode.
+- `ssh_agent_socket_path` (String) Optional path to SSH agent unix socket (overrides SSH_AUTH_SOCK).
 - `ssh_bastion_address` (String) Optional bastion SSH address in host:port format.
 - `ssh_bastion_private_key_path` (String) Optional bastion private key path (defaults to ssh_private_key_path).
 - `ssh_bastion_user` (String) Optional bastion SSH username (defaults to ssh_user).
@@ -100,6 +114,7 @@ provider "grantory" {
 - `ssh_private_key_path` (String) Path to the SSH private key file used for unix-socket transport mode.
 - `ssh_socket_path` (String) Remote unix socket path on the SSH target host.
 - `ssh_timeout_seconds` (Number) SSH dial and handshake timeout in seconds.
+- `ssh_use_agent` (Boolean) Enable SSH agent authentication (reads from SSH_AUTH_SOCK by default).
 - `ssh_user` (String) SSH username for unix-socket transport mode.
 - `token` (String, Sensitive) Bearer token for API requests (env: TOKEN).
 - `user` (String) Username for basic auth (env: USER).
