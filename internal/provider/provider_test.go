@@ -2,10 +2,17 @@ package provider
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestConfigureProviderValidServer(t *testing.T) {
@@ -88,4 +95,137 @@ func TestGrantoryClientBaseAddressEmpty(t *testing.T) {
 
 	var c *grantoryClient
 	assert.Equal(t, "", c.BaseAddress(), "nil client should return empty base address")
+}
+
+func TestConfigureProviderDefaultServer(t *testing.T) {
+	t.Parallel()
+
+	p := New()
+	data := schema.TestResourceDataRaw(t, p.Schema, map[string]any{})
+
+	client, diags := configureProvider(context.Background(), data)
+	assert.False(t, diags.HasError(), "expected no diagnostics")
+
+	c, ok := client.(*grantoryClient)
+	assert.True(t, ok, "expected grantoryClient")
+	assert.Equal(t, defaultServerURL, c.BaseAddress(), "base address should use default server URL")
+}
+
+func TestConfigureProviderValidSSH(t *testing.T) {
+	t.Parallel()
+
+	privateKeyPath := writeTestPrivateKey(t)
+
+	p := New()
+	data := schema.TestResourceDataRaw(t, p.Schema, map[string]any{
+		sshAddressAttr:         "127.0.0.1:1",
+		sshUserAttr:            "grantory",
+		sshPrivateKeyPathAttr:  privateKeyPath,
+		sshSocketPathAttr:      "/tmp/grantory.sock",
+		sshInsecureHostKeyAttr: true,
+		sshTimeoutSecondsAttr:  1,
+	})
+
+	client, diags := configureProvider(context.Background(), data)
+	assert.False(t, diags.HasError(), "expected no diagnostics")
+
+	c, ok := client.(*grantoryClient)
+	assert.True(t, ok, "expected grantoryClient")
+	assert.Equal(t, sshModeBaseURL, c.BaseAddress(), "SSH mode should use synthetic HTTP base URL")
+	assert.NotNil(t, c.HTTPClient(), "ssh mode should configure a custom HTTP client")
+}
+
+func TestConfigureProviderConflictingTransportModes(t *testing.T) {
+	t.Parallel()
+
+	privateKeyPath := writeTestPrivateKey(t)
+	p := New()
+	data := schema.TestResourceDataRaw(t, p.Schema, map[string]any{
+		serverAttr:             "https://example.com",
+		sshAddressAttr:         "127.0.0.1:22",
+		sshUserAttr:            "grantory",
+		sshPrivateKeyPathAttr:  privateKeyPath,
+		sshSocketPathAttr:      "/tmp/grantory.sock",
+		sshInsecureHostKeyAttr: true,
+	})
+
+	client, diags := configureProvider(context.Background(), data)
+	assert.Nil(t, client, "expected nil client for conflicting transport modes")
+	assert.True(t, diags.HasError(), "expected diagnostics for conflicting transport modes")
+
+	found := false
+	for _, d := range diags {
+		if d.Summary == "conflicting transport settings" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected conflicting transport settings diagnostic")
+}
+
+func TestConfigureProviderSSHMissingRequiredFields(t *testing.T) {
+	t.Parallel()
+
+	p := New()
+	data := schema.TestResourceDataRaw(t, p.Schema, map[string]any{
+		sshAddressAttr: "127.0.0.1:22",
+	})
+
+	client, diags := configureProvider(context.Background(), data)
+	assert.Nil(t, client, "expected nil client for incomplete SSH config")
+	assert.True(t, diags.HasError(), "expected diagnostics for incomplete SSH config")
+
+	found := false
+	for _, d := range diags {
+		if d.Summary == "incomplete SSH transport configuration" {
+			found = true
+			assert.Contains(t, d.Detail, sshUserAttr)
+			assert.Contains(t, d.Detail, sshPrivateKeyPathAttr)
+			assert.Contains(t, d.Detail, sshSocketPathAttr)
+			assert.Contains(t, d.Detail, sshKnownHostsPathAttr)
+			break
+		}
+	}
+	assert.True(t, found, "expected incomplete SSH transport configuration diagnostic")
+}
+
+func TestConfigureProviderSSHKnownHostsRequired(t *testing.T) {
+	t.Parallel()
+
+	privateKeyPath := writeTestPrivateKey(t)
+	p := New()
+	data := schema.TestResourceDataRaw(t, p.Schema, map[string]any{
+		sshAddressAttr:        "127.0.0.1:22",
+		sshUserAttr:           "grantory",
+		sshPrivateKeyPathAttr: privateKeyPath,
+		sshSocketPathAttr:     "/tmp/grantory.sock",
+	})
+
+	client, diags := configureProvider(context.Background(), data)
+	assert.Nil(t, client, "expected nil client when known_hosts path is missing")
+	assert.True(t, diags.HasError(), "expected diagnostics when known_hosts path is missing")
+
+	found := false
+	for _, d := range diags {
+		if d.Summary == "incomplete SSH transport configuration" {
+			found = true
+			assert.Contains(t, d.Detail, sshKnownHostsPathAttr)
+			break
+		}
+	}
+	assert.True(t, found, "expected known_hosts requirement diagnostic")
+}
+
+func writeTestPrivateKey(t *testing.T) string {
+	t.Helper()
+
+	rawKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	pemKey := pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(rawKey),
+	})
+	path := filepath.Join(t.TempDir(), "id_rsa")
+	require.NoError(t, os.WriteFile(path, pemKey, 0o600))
+	return path
 }

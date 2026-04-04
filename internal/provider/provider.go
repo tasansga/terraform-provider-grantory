@@ -7,24 +7,40 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 
-	"github.com/tasansga/terraform-provider-grantory/internal/api"
 	apiclient "github.com/tasansga/terraform-provider-grantory/api/client"
+	"github.com/tasansga/terraform-provider-grantory/internal/api"
+	"github.com/tasansga/terraform-provider-grantory/internal/transport/sshunix"
 )
 
 const (
-	serverAttr   = "server"
-	tokenAttr    = "token"
-	userAttr     = "user"
-	passwordAttr = "password"
-	EnvToken     = "TOKEN"
-	EnvUser      = "USER"
-	EnvPassword  = "PASSWORD"
+	serverAttr                   = "server"
+	tokenAttr                    = "token"
+	userAttr                     = "user"
+	passwordAttr                 = "password"
+	sshAddressAttr               = "ssh_address"
+	sshUserAttr                  = "ssh_user"
+	sshPrivateKeyPathAttr        = "ssh_private_key_path"
+	sshKnownHostsPathAttr        = "ssh_known_hosts_path"
+	sshInsecureHostKeyAttr       = "ssh_insecure_host_key"
+	sshSocketPathAttr            = "ssh_socket_path"
+	sshTimeoutSecondsAttr        = "ssh_timeout_seconds"
+	sshBastionAddressAttr        = "ssh_bastion_address"
+	sshBastionUserAttr           = "ssh_bastion_user"
+	sshBastionPrivateKeyPathAttr = "ssh_bastion_private_key_path"
+
+	defaultServerURL = "http://localhost:8080"
+	sshModeBaseURL   = "http://grantory"
+
+	EnvToken    = "TOKEN"
+	EnvUser     = "USER"
+	EnvPassword = "PASSWORD"
 )
 
 // New constructs the Grantory Terraform/OpenTofu provider with its configuration schema.
@@ -34,8 +50,7 @@ func New() *schema.Provider {
 			serverAttr: {
 				Type:        schema.TypeString,
 				Optional:    true,
-				Default:     "http://localhost:8080",
-				Description: "URL of the Grantory server (http:// or https://) used for every API interaction. (default: http://localhost:8080)",
+				Description: "URL of the Grantory server (http:// or https://) used for every API interaction. Defaults to " + defaultServerURL + " when SSH transport is not configured.",
 			},
 			tokenAttr: {
 				Type:        schema.TypeString,
@@ -55,6 +70,57 @@ func New() *schema.Provider {
 				Sensitive: true,
 				Description: "Password for basic auth (env: " + EnvPassword +
 					").",
+			},
+			sshAddressAttr: {
+				Type:        schema.TypeString,
+				Optional:    true,
+				Description: "SSH target address in host:port format for unix-socket transport mode.",
+			},
+			sshUserAttr: {
+				Type:        schema.TypeString,
+				Optional:    true,
+				Description: "SSH username for unix-socket transport mode.",
+			},
+			sshPrivateKeyPathAttr: {
+				Type:        schema.TypeString,
+				Optional:    true,
+				Description: "Path to the SSH private key file used for unix-socket transport mode.",
+			},
+			sshKnownHostsPathAttr: {
+				Type:        schema.TypeString,
+				Optional:    true,
+				Description: "Path to OpenSSH known_hosts file for SSH host key validation (used for target and bastion).",
+			},
+			sshInsecureHostKeyAttr: {
+				Type:        schema.TypeBool,
+				Optional:    true,
+				Description: "Disable SSH host key validation (not recommended for production).",
+			},
+			sshSocketPathAttr: {
+				Type:        schema.TypeString,
+				Optional:    true,
+				Description: "Remote unix socket path on the SSH target host.",
+			},
+			sshTimeoutSecondsAttr: {
+				Type:        schema.TypeInt,
+				Optional:    true,
+				Default:     10,
+				Description: "SSH dial and handshake timeout in seconds.",
+			},
+			sshBastionAddressAttr: {
+				Type:        schema.TypeString,
+				Optional:    true,
+				Description: "Optional bastion SSH address in host:port format.",
+			},
+			sshBastionUserAttr: {
+				Type:        schema.TypeString,
+				Optional:    true,
+				Description: "Optional bastion SSH username (defaults to ssh_user).",
+			},
+			sshBastionPrivateKeyPathAttr: {
+				Type:        schema.TypeString,
+				Optional:    true,
+				Description: "Optional bastion private key path (defaults to ssh_private_key_path).",
 			},
 		},
 		ConfigureContextFunc: configureProvider,
@@ -82,12 +148,6 @@ func New() *schema.Provider {
 
 func configureProvider(ctx context.Context, d *schema.ResourceData) (any, diag.Diagnostics) {
 	var diags diag.Diagnostics
-
-	server := d.Get(serverAttr).(string)
-	u, parseDiags := parseServerURL(server)
-	if parseDiags.HasError() {
-		return nil, parseDiags
-	}
 
 	token := strings.TrimSpace(d.Get(tokenAttr).(string))
 	user := strings.TrimSpace(d.Get(userAttr).(string))
@@ -130,12 +190,73 @@ func configureProvider(ctx context.Context, d *schema.ResourceData) (any, diag.D
 		return nil, diags
 	}
 
+	sshCfg := readSSHConfig(d)
+	sshMode := sshCfg.configured()
+
+	server := strings.TrimSpace(d.Get(serverAttr).(string))
+	if sshMode && server != "" {
+		diags = append(diags, diag.Diagnostic{
+			Severity: diag.Error,
+			Summary:  "conflicting transport settings",
+			Detail:   "configure either 'server' for HTTP(S) mode or SSH transport attributes, but not both",
+		})
+		return nil, diags
+	}
+	if !sshMode && server == "" {
+		server = defaultServerURL
+	}
+
+	var (
+		baseURL    string
+		httpClient *http.Client
+	)
+	httpClient = http.DefaultClient
+	if sshMode {
+		if missing := sshCfg.missingRequiredFields(); len(missing) > 0 {
+			diags = append(diags, diag.Diagnostic{
+				Severity: diag.Error,
+				Summary:  "incomplete SSH transport configuration",
+				Detail:   "missing required SSH fields: " + strings.Join(missing, ", "),
+			})
+			return nil, diags
+		}
+
+		sshHTTPClient, err := sshunix.NewHTTPClient(sshunix.Options{
+			Address:               sshCfg.address,
+			User:                  sshCfg.user,
+			PrivateKeyPath:        sshCfg.privateKeyPath,
+			KnownHostsPath:        sshCfg.knownHostsPath,
+			InsecureHostKey:       sshCfg.insecureHostKey,
+			SocketPath:            sshCfg.socketPath,
+			Timeout:               time.Duration(sshCfg.timeoutSeconds) * time.Second,
+			BastionAddress:        sshCfg.bastionAddress,
+			BastionUser:           sshCfg.bastionUser,
+			BastionPrivateKeyPath: sshCfg.bastionPrivateKeyPath,
+		})
+		if err != nil {
+			diags = append(diags, diag.Diagnostic{
+				Severity: diag.Error,
+				Summary:  "unable to configure SSH transport",
+				Detail:   err.Error(),
+			})
+			return nil, diags
+		}
+		httpClient = sshHTTPClient
+		baseURL = sshModeBaseURL
+	} else {
+		u, parseDiags := parseServerURL(server)
+		if parseDiags.HasError() {
+			return nil, parseDiags
+		}
+		baseURL = u.String()
+	}
+
 	client, err := apiclient.New(apiclient.Options{
-		BaseURL:    u.String(),
+		BaseURL:    baseURL,
 		Token:      token,
 		User:       user,
 		Password:   password,
-		HTTPClient: http.DefaultClient,
+		HTTPClient: httpClient,
 	})
 	if err != nil {
 		diags = append(diags, diag.Diagnostic{
@@ -147,6 +268,67 @@ func configureProvider(ctx context.Context, d *schema.ResourceData) (any, diag.D
 	}
 	diags = append(diags, warnOnAPIMismatch(ctx, client)...)
 	return client, diags
+}
+
+type sshConfig struct {
+	address               string
+	user                  string
+	privateKeyPath        string
+	knownHostsPath        string
+	insecureHostKey       bool
+	socketPath            string
+	timeoutSeconds        int
+	bastionAddress        string
+	bastionUser           string
+	bastionPrivateKeyPath string
+}
+
+func readSSHConfig(d *schema.ResourceData) sshConfig {
+	return sshConfig{
+		address:               strings.TrimSpace(d.Get(sshAddressAttr).(string)),
+		user:                  strings.TrimSpace(d.Get(sshUserAttr).(string)),
+		privateKeyPath:        strings.TrimSpace(d.Get(sshPrivateKeyPathAttr).(string)),
+		knownHostsPath:        strings.TrimSpace(d.Get(sshKnownHostsPathAttr).(string)),
+		insecureHostKey:       d.Get(sshInsecureHostKeyAttr).(bool),
+		socketPath:            strings.TrimSpace(d.Get(sshSocketPathAttr).(string)),
+		timeoutSeconds:        d.Get(sshTimeoutSecondsAttr).(int),
+		bastionAddress:        strings.TrimSpace(d.Get(sshBastionAddressAttr).(string)),
+		bastionUser:           strings.TrimSpace(d.Get(sshBastionUserAttr).(string)),
+		bastionPrivateKeyPath: strings.TrimSpace(d.Get(sshBastionPrivateKeyPathAttr).(string)),
+	}
+}
+
+func (c sshConfig) configured() bool {
+	return c.address != "" ||
+		c.user != "" ||
+		c.privateKeyPath != "" ||
+		c.knownHostsPath != "" ||
+		c.insecureHostKey ||
+		c.socketPath != "" ||
+		c.bastionAddress != "" ||
+		c.bastionUser != "" ||
+		c.bastionPrivateKeyPath != ""
+}
+
+func (c sshConfig) missingRequiredFields() []string {
+	missing := make([]string, 0, 5)
+	if c.address == "" {
+		missing = append(missing, sshAddressAttr)
+	}
+	if c.user == "" {
+		missing = append(missing, sshUserAttr)
+	}
+	if c.privateKeyPath == "" {
+		missing = append(missing, sshPrivateKeyPathAttr)
+	}
+	if c.socketPath == "" {
+		missing = append(missing, sshSocketPathAttr)
+	}
+	if !c.insecureHostKey && c.knownHostsPath == "" {
+		missing = append(missing, sshKnownHostsPathAttr)
+	}
+	sort.Strings(missing)
+	return missing
 }
 
 func warnOnAPIMismatch(ctx context.Context, client *grantoryClient) diag.Diagnostics {

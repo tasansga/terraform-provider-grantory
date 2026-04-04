@@ -14,7 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"testing"
 	"time"
 
@@ -78,18 +78,16 @@ func TestNewHTTPClientBastion(t *testing.T) {
 	)
 
 	httpClient, err := NewHTTPClient(Options{
-		Address:                target.address(),
-		User:                   "grantory",
-		PrivateKeyPath:         privateKeyPath,
-		KnownHostsPath:         knownHosts,
-		SocketPath:             unixSocket,
-		Timeout:                2 * time.Second,
-		BastionAddress:         bastion.address(),
-		BastionUser:            "grantory",
-		BastionPrivateKeyPath:  privateKeyPath,
-		BastionKnownHostsPath:  knownHosts,
-		BastionInsecureHostKey: false,
-		InsecureHostKey:        false,
+		Address:               target.address(),
+		User:                  "grantory",
+		PrivateKeyPath:        privateKeyPath,
+		KnownHostsPath:        knownHosts,
+		SocketPath:            unixSocket,
+		Timeout:               2 * time.Second,
+		BastionAddress:        bastion.address(),
+		BastionUser:           "grantory",
+		BastionPrivateKeyPath: privateKeyPath,
+		InsecureHostKey:       false,
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -150,8 +148,7 @@ func TestReconnectAfterStaleSSHConnection(t *testing.T) {
 	unixSocket := startUnixHTTPServer(t, `{"status":"ok","backend":"reconnect"}`)
 	clientSigner, privateKeyPath := writeClientKeyFile(t)
 	target := startSSHServer(t, sshServerOptions{
-		authorizedClientKey:     clientSigner.PublicKey(),
-		closeAfterFirstUnixDial: true,
+		authorizedClientKey: clientSigner.PublicKey(),
 	})
 	knownHosts := writeKnownHostsFile(t, knownhosts.Line([]string{target.address()}, target.hostKey()))
 
@@ -172,6 +169,7 @@ func TestReconnectAfterStaleSSHConnection(t *testing.T) {
 
 	resp1 := doReadyz(t, httpClient)
 	require.NoError(t, resp1.Body.Close())
+	target.closeActiveConnections()
 	resp2 := doReadyz(t, httpClient)
 	require.NoError(t, resp2.Body.Close())
 }
@@ -259,8 +257,7 @@ func startUnixHTTPServer(t *testing.T, body string) string {
 }
 
 type sshServerOptions struct {
-	authorizedClientKey     ssh.PublicKey
-	closeAfterFirstUnixDial bool
+	authorizedClientKey ssh.PublicKey
 }
 
 type sshTestServer struct {
@@ -268,7 +265,8 @@ type sshTestServer struct {
 	signer   ssh.Signer
 	opts     sshServerOptions
 
-	unixDialCount atomic.Int32
+	connsMu sync.Mutex
+	conns   map[*ssh.ServerConn]struct{}
 }
 
 func startSSHServer(t *testing.T, opts sshServerOptions) *sshTestServer {
@@ -277,6 +275,7 @@ func startSSHServer(t *testing.T, opts sshServerOptions) *sshTestServer {
 	s := &sshTestServer{
 		opts:   opts,
 		signer: mustHostSigner(t),
+		conns:  make(map[*ssh.ServerConn]struct{}),
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -295,6 +294,14 @@ func (s *sshTestServer) address() string {
 
 func (s *sshTestServer) hostKey() ssh.PublicKey {
 	return s.signer.PublicKey()
+}
+
+func (s *sshTestServer) closeActiveConnections() {
+	s.connsMu.Lock()
+	defer s.connsMu.Unlock()
+	for conn := range s.conns {
+		_ = conn.Close()
+	}
 }
 
 func (s *sshTestServer) serve(t *testing.T) {
@@ -328,6 +335,15 @@ func (s *sshTestServer) handleConn(raw net.Conn, cfg *ssh.ServerConfig) {
 		_ = raw.Close()
 		return
 	}
+	s.connsMu.Lock()
+	s.conns[serverConn] = struct{}{}
+	s.connsMu.Unlock()
+	defer func() {
+		s.connsMu.Lock()
+		delete(s.conns, serverConn)
+		s.connsMu.Unlock()
+	}()
+
 	go ssh.DiscardRequests(reqs)
 
 	for newCh := range chans {
@@ -368,12 +384,6 @@ func (s *sshTestServer) handleDirectStreamlocal(newCh ssh.NewChannel, serverConn
 	}
 	go ssh.DiscardRequests(reqs)
 	proxyConns(ch, targetConn)
-
-	if s.opts.closeAfterFirstUnixDial {
-		if s.unixDialCount.Add(1) == 1 {
-			_ = serverConn.Close()
-		}
-	}
 }
 
 type directTCPIPOpenMessage struct {

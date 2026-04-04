@@ -30,11 +30,9 @@ type Options struct {
 	SocketPath      string
 	Timeout         time.Duration
 
-	BastionAddress         string
-	BastionUser            string
-	BastionPrivateKeyPath  string
-	BastionKnownHostsPath  string
-	BastionInsecureHostKey bool
+	BastionAddress        string
+	BastionUser           string
+	BastionPrivateKeyPath string
 }
 
 // Transport is an HTTP RoundTripper that reaches a remote unix socket via SSH.
@@ -146,14 +144,10 @@ func newDialerConfig(opts Options) (*dialerConfig, error) {
 		if bastionPrivateKeyPath == "" {
 			bastionPrivateKeyPath = privateKeyPath
 		}
-		bastionKnownHostsPath := strings.TrimSpace(opts.BastionKnownHostsPath)
-		if bastionKnownHostsPath == "" {
-			bastionKnownHostsPath = strings.TrimSpace(opts.KnownHostsPath)
-		}
 
 		bastionHostKeyCallback, cbErr := hostKeyCallback(
-			bastionKnownHostsPath,
-			opts.BastionInsecureHostKey,
+			strings.TrimSpace(opts.KnownHostsPath),
+			opts.InsecureHostKey,
 		)
 		if cbErr != nil {
 			return nil, fmt.Errorf("bastion host key policy: %w", cbErr)
