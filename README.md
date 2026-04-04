@@ -58,6 +58,52 @@ provider "grantory" {
 }
 ```
 
+HTTPS endpoint:
+
+```hcl
+provider "grantory" {
+  server = "https://grantory.example.internal"
+}
+```
+
+API auth (when enforced by your proxy/gateway):
+
+```hcl
+provider "grantory" {
+  server = "https://grantory.example.internal"
+  token  = var.grantory_token
+}
+```
+
+SSH transport mode (no external tunnel command required):
+
+```hcl
+provider "grantory" {
+  ssh_address          = "grantory.internal:22"
+  ssh_user             = "grantory"
+  ssh_private_key_path = pathexpand("~/.ssh/id_ed25519")
+  ssh_known_hosts_path = pathexpand("~/.ssh/known_hosts")
+  ssh_socket_path      = "/run/grantory/server.sock"
+}
+```
+
+With bastion/jump host:
+
+```hcl
+provider "grantory" {
+  ssh_address                  = "grantory.internal:22"
+  ssh_user                     = "grantory"
+  ssh_private_key_path         = pathexpand("~/.ssh/id_ed25519")
+  ssh_known_hosts_path         = pathexpand("~/.ssh/known_hosts")
+  ssh_socket_path              = "/run/grantory/server.sock"
+  ssh_bastion_address          = "bastion.internal:22"
+  ssh_bastion_user             = "ops"
+  ssh_bastion_private_key_path = pathexpand("~/.ssh/id_ed25519_ops")
+}
+```
+
+`server` and SSH transport settings are mutually exclusive. Configure one mode only.
+
 ## Kubernetes workflow
 
 **EXPERIMENTAL FEATURE**

@@ -26,5 +26,6 @@ Use this data source to filter Grantory records inside a Terraform/OpenTofu plan
 
 - `host_id` (String) Host identifier that owns the register entry.
 - `id` (String) The ID of this resource.
+- `mutable` (Boolean) Whether register payload updates are allowed in place.
 - `schema_definition_id` (String) Schema definition identifier associated with the register.
 - `unique_key` (String) Unique key used to enforce register uniqueness within a namespace.

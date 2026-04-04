@@ -24,6 +24,56 @@ provider "grantory" {
 }
 ```
 
+## HTTP(S) mode
+
+Use `server` for direct HTTP or HTTPS API access.
+
+```terraform
+provider "grantory" {
+  server = "https://grantory.example.internal"
+}
+```
+
+When your API endpoint is protected by an auth proxy, you can configure bearer or basic auth:
+
+```terraform
+provider "grantory" {
+  server = "https://grantory.example.internal"
+  token  = var.grantory_token
+}
+```
+
+## SSH transport mode
+
+Use SSH mode when Grantory is reachable only via SSH + remote Unix socket.
+
+```terraform
+provider "grantory" {
+  ssh_address          = "grantory.internal:22"
+  ssh_user             = "grantory"
+  ssh_private_key_path = pathexpand("~/.ssh/id_ed25519")
+  ssh_known_hosts_path = pathexpand("~/.ssh/known_hosts")
+  ssh_socket_path      = "/run/grantory/server.sock"
+}
+```
+
+With bastion/jump host:
+
+```terraform
+provider "grantory" {
+  ssh_address                  = "grantory.internal:22"
+  ssh_user                     = "grantory"
+  ssh_private_key_path         = pathexpand("~/.ssh/id_ed25519")
+  ssh_known_hosts_path         = pathexpand("~/.ssh/known_hosts")
+  ssh_socket_path              = "/run/grantory/server.sock"
+  ssh_bastion_address          = "bastion.internal:22"
+  ssh_bastion_user             = "ops"
+  ssh_bastion_private_key_path = pathexpand("~/.ssh/id_ed25519_ops")
+}
+```
+
+`server` and SSH transport attributes are mutually exclusive. Configure exactly one mode.
+
 ## Core concepts
 
 - **Hosts** register labels and become the target for requests.
@@ -40,6 +90,16 @@ provider "grantory" {
 ### Optional
 
 - `password` (String, Sensitive) Password for basic auth (env: PASSWORD).
-- `server` (String) URL of the Grantory server (http:// or https://) used for every API interaction. (default: http://localhost:8080)
+- `server` (String) URL of the Grantory server (http:// or https://) used for every API interaction. Defaults to http://localhost:8080 when SSH transport is not configured.
+- `ssh_address` (String) SSH target address in host:port format for unix-socket transport mode.
+- `ssh_bastion_address` (String) Optional bastion SSH address in host:port format.
+- `ssh_bastion_private_key_path` (String) Optional bastion private key path (defaults to ssh_private_key_path).
+- `ssh_bastion_user` (String) Optional bastion SSH username (defaults to ssh_user).
+- `ssh_insecure_host_key` (Boolean) Disable SSH host key validation (not recommended for production).
+- `ssh_known_hosts_path` (String) Path to OpenSSH known_hosts file for SSH host key validation (used for target and bastion).
+- `ssh_private_key_path` (String) Path to the SSH private key file used for unix-socket transport mode.
+- `ssh_socket_path` (String) Remote unix socket path on the SSH target host.
+- `ssh_timeout_seconds` (Number) SSH dial and handshake timeout in seconds.
+- `ssh_user` (String) SSH username for unix-socket transport mode.
 - `token` (String, Sensitive) Bearer token for API requests (env: TOKEN).
 - `user` (String) Username for basic auth (env: USER).

@@ -30,5 +30,6 @@ Use this data source to filter Grantory records inside a Terraform/OpenTofu plan
 - `has_grant` (Boolean) Indicates whether the server has created a matching grant.
 - `host_id` (String) Host identifier that owns the returned request.
 - `id` (String) The ID of this resource.
+- `mutable` (Boolean) Whether request payload updates are allowed in place.
 - `request_schema_definition_id` (String) Schema definition identifier used to validate request payloads.
 - `unique_key` (String) Unique key used to enforce request uniqueness within a namespace.

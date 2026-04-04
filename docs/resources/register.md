@@ -20,6 +20,7 @@ Manage the lifecycle of the `grantory_register` resource.
 ### Optional
 
 - `labels` (Map of String) Optional labels that tag the register entry.
+- `mutable` (Boolean) Whether register payload updates are allowed in place.
 - `payload` (String) JSON-encoded payload that describes the registered item.
 - `schema_definition_id` (String) Optional schema definition identifier used to validate register payloads.
 - `unique_key` (String) Optional unique key used to enforce register uniqueness within a namespace.

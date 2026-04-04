@@ -17,6 +17,56 @@ Grantory lets teams push requests and approvals through Terraform/OpenTofu, loos
 
 {{ tffile "examples/provider/provider.tf" }}
 
+## HTTP(S) mode
+
+Use `server` for direct HTTP or HTTPS API access.
+
+```terraform
+provider "grantory" {
+  server = "https://grantory.example.internal"
+}
+```
+
+When your API endpoint is protected by an auth proxy, you can configure bearer or basic auth:
+
+```terraform
+provider "grantory" {
+  server = "https://grantory.example.internal"
+  token  = var.grantory_token
+}
+```
+
+## SSH transport mode
+
+Use SSH mode when Grantory is reachable only via SSH + remote Unix socket.
+
+```terraform
+provider "grantory" {
+  ssh_address          = "grantory.internal:22"
+  ssh_user             = "grantory"
+  ssh_private_key_path = pathexpand("~/.ssh/id_ed25519")
+  ssh_known_hosts_path = pathexpand("~/.ssh/known_hosts")
+  ssh_socket_path      = "/run/grantory/server.sock"
+}
+```
+
+With bastion/jump host:
+
+```terraform
+provider "grantory" {
+  ssh_address                  = "grantory.internal:22"
+  ssh_user                     = "grantory"
+  ssh_private_key_path         = pathexpand("~/.ssh/id_ed25519")
+  ssh_known_hosts_path         = pathexpand("~/.ssh/known_hosts")
+  ssh_socket_path              = "/run/grantory/server.sock"
+  ssh_bastion_address          = "bastion.internal:22"
+  ssh_bastion_user             = "ops"
+  ssh_bastion_private_key_path = pathexpand("~/.ssh/id_ed25519_ops")
+}
+```
+
+`server` and SSH transport attributes are mutually exclusive. Configure exactly one mode.
+
 ## Core concepts
 
 - **Hosts** register labels and become the target for requests.
