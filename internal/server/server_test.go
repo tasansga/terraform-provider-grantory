@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -57,6 +59,15 @@ func TestIsTLSEnabled(t *testing.T) {
 			assert.Equal(t, tc.want, IsTLSEnabled(tc.cfg), "IsTLSEnabled result")
 		})
 	}
+}
+
+func TestIsUnixSocketEnabled(t *testing.T) {
+	t.Parallel()
+
+	assert.False(t, isUnixSocketEnabled(""), "empty path should disable unix socket")
+	assert.False(t, isUnixSocketEnabled("off"), "off should disable unix socket")
+	assert.False(t, isUnixSocketEnabled("  OFF  "), "off (case-insensitive) should disable unix socket")
+	assert.True(t, isUnixSocketEnabled("/tmp/grantory.sock"), "path should enable unix socket")
 }
 
 func ptrBool(value bool) *bool {
@@ -171,6 +182,68 @@ func TestValidateTLSFilesSuccess(t *testing.T) {
 		TLSKey:  keyPath,
 	})
 	assert.NoError(t, err, "valid TLS files should not error")
+}
+
+func TestOpenUnixSocketListenerCreatesSocketWithMode(t *testing.T) {
+	t.Parallel()
+
+	socketPath := shortUnixSocketPath(t)
+	listener, cleanup, err := openUnixSocketListener(socketPath, 0o660)
+	assert.NoError(t, err, "open unix socket listener should succeed")
+	if err != nil {
+		return
+	}
+	defer cleanup()
+
+	assert.NotNil(t, listener, "listener should be created")
+	stat, statErr := os.Stat(socketPath)
+	assert.NoError(t, statErr, "socket file should exist")
+	if statErr != nil {
+		return
+	}
+	assert.NotZero(t, stat.Mode()&os.ModeSocket, "path should be a socket")
+	assert.Equal(t, os.FileMode(0o660), stat.Mode().Perm(), "socket mode should match configured mode")
+}
+
+func TestOpenUnixSocketListenerRejectsNonSocketPath(t *testing.T) {
+	t.Parallel()
+
+	socketPath := shortUnixSocketPath(t)
+	assert.NoError(t, os.WriteFile(socketPath, []byte("not a socket"), 0o644))
+	t.Cleanup(func() { _ = os.Remove(socketPath) })
+
+	_, _, err := openUnixSocketListener(socketPath, 0o660)
+	assert.Error(t, err, "non-socket path should fail")
+	assert.Contains(t, err.Error(), "refusing to overwrite non-socket path")
+}
+
+func TestOpenUnixSocketListenerRejectsActiveSocket(t *testing.T) {
+	t.Parallel()
+
+	socketPath := shortUnixSocketPath(t)
+	listener, err := net.Listen("unix", socketPath)
+	assert.NoError(t, err, "setup unix socket should succeed")
+	defer func() {
+		_ = listener.Close()
+		_ = os.Remove(socketPath)
+	}()
+
+	_, _, openErr := openUnixSocketListener(socketPath, 0o660)
+	assert.Error(t, openErr, "active socket should fail")
+	assert.Contains(t, openErr.Error(), "unix socket already in use")
+}
+
+func shortUnixSocketPath(t *testing.T) string {
+	t.Helper()
+
+	file, err := os.CreateTemp("", "g-sock-*")
+	assert.NoError(t, err, "create temp socket path")
+	path := file.Name()
+	_ = file.Close()
+	_ = os.Remove(path)
+	socketPath := fmt.Sprintf("%s.sock", path)
+	t.Cleanup(func() { _ = os.Remove(socketPath) })
+	return socketPath
 }
 
 func TestNamespaceMiddlewareStoresStore(t *testing.T) {

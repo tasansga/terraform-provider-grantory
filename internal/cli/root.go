@@ -73,12 +73,14 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		tlsStatus = "enabled"
 	}
 	fields := logrus.Fields{
-		"http_bind":  cfg.BindAddr,
-		"https_bind": cfg.TLSBind,
-		"tls_cert":   cfg.TLSCert,
-		"tls_key":    cfg.TLSKey,
-		"tls":        tlsStatus,
-		"version":    versionString(),
+		"http_bind":        cfg.BindAddr,
+		"https_bind":       cfg.TLSBind,
+		"tls_cert":         cfg.TLSCert,
+		"tls_key":          cfg.TLSKey,
+		"unix_socket":      cfg.UnixSocket,
+		"unix_socket_mode": cfg.UnixSocketMode,
+		"tls":              tlsStatus,
+		"version":          versionString(),
 	}
 	if storage.IsPostgresDSN(cfg.Database) {
 		fields["database"] = redactPostgresDSN(cfg.Database)

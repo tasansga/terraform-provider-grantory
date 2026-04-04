@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"testing"
 
 	"github.com/sirupsen/logrus"
@@ -20,6 +21,8 @@ func TestFromFlagSetDefaults(t *testing.T) {
 	assert.Equal(t, DefaultTLSBind, cfg.TLSBind, "default tls bind addr")
 	assert.Equal(t, "", cfg.TLSCert, "default tls cert")
 	assert.Equal(t, "", cfg.TLSKey, "default tls key")
+	assert.Equal(t, DefaultUnixSocket, cfg.UnixSocket, "default unix socket")
+	assert.Equal(t, DefaultUnixSocketMode, cfg.UnixSocketMode, "default unix socket mode")
 	assert.Equal(t, DefaultLogLevel, cfg.LogLevel, "default log level")
 }
 
@@ -29,6 +32,8 @@ func TestFromFlagSetEnvOverrides(t *testing.T) {
 	t.Setenv(EnvTLSBind, "127.0.0.1:9443")
 	t.Setenv(EnvTLSCert, "/tmp/cert.pem")
 	t.Setenv(EnvTLSKey, "/tmp/key.pem")
+	t.Setenv(EnvUnixSocket, "/run/grantory/server.sock")
+	t.Setenv(EnvUnixSocketMode, "0666")
 	t.Setenv(EnvLogLevel, "debug")
 
 	fs := newTestFlagSet(t)
@@ -42,6 +47,8 @@ func TestFromFlagSetEnvOverrides(t *testing.T) {
 	assert.Equal(t, "127.0.0.1:9443", cfg.TLSBind, "tls bind addr from env")
 	assert.Equal(t, "/tmp/cert.pem", cfg.TLSCert, "tls cert from env")
 	assert.Equal(t, "/tmp/key.pem", cfg.TLSKey, "tls key from env")
+	assert.Equal(t, "/run/grantory/server.sock", cfg.UnixSocket, "unix socket from env")
+	assert.Equal(t, os.FileMode(0o666), cfg.UnixSocketMode, "unix socket mode from env")
 	assert.Equal(t, logLevelOrDefault("debug"), cfg.LogLevel, "log level from env")
 }
 
@@ -57,6 +64,8 @@ func TestFromFlagSetFlagOverridesEnv(t *testing.T) {
 		"--https-bind=0.0.0.0:8443",
 		"--tls-cert=/etc/server.crt",
 		"--tls-key=/etc/server.key",
+		"--unix-socket=/tmp/grantory.sock",
+		"--unix-socket-mode=0600",
 		"--log-level=warn",
 	}
 	assert.NoError(t, fs.Parse(args), "unable to parse args")
@@ -69,6 +78,8 @@ func TestFromFlagSetFlagOverridesEnv(t *testing.T) {
 	assert.Equal(t, "0.0.0.0:8443", cfg.TLSBind, "tls bind addr from flag")
 	assert.Equal(t, "/etc/server.crt", cfg.TLSCert, "tls cert from flag")
 	assert.Equal(t, "/etc/server.key", cfg.TLSKey, "tls key from flag")
+	assert.Equal(t, "/tmp/grantory.sock", cfg.UnixSocket, "unix socket from flag")
+	assert.Equal(t, os.FileMode(0o600), cfg.UnixSocketMode, "unix socket mode from flag")
 	assert.Equal(t, logLevelOrDefault("warn"), cfg.LogLevel, "log level from flag")
 }
 
@@ -78,6 +89,14 @@ func TestFromFlagSetInvalidLogLevel(t *testing.T) {
 
 	_, err := FromFlagSet(fs)
 	assert.Error(t, err, "expected an error for invalid log level")
+}
+
+func TestFromFlagSetInvalidUnixSocketMode(t *testing.T) {
+	fs := newTestFlagSet(t)
+	assert.NoError(t, fs.Parse([]string{"--unix-socket-mode=nope"}), "unable to parse args")
+
+	_, err := FromFlagSet(fs)
+	assert.Error(t, err, "expected error for invalid unix socket mode")
 }
 
 func newTestFlagSet(t *testing.T) *pflag.FlagSet {

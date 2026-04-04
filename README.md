@@ -69,18 +69,30 @@ An example controller deployment (RBAC + Deployment) lives in `k8s/controller.ya
 
 ## Running the server
 
-Grantory runs as an HTTP server. Configure the database (sqlite directory path or Postgres DSN), HTTP/HTTPS bind addresses, TLS certificates, and log level via flags or the matching environment variables (`DATABASE`, `HTTP_BIND`, `HTTPS_BIND`, `TLS_CERT`, `TLS_KEY`, `LOG_LEVEL`). TLS is only activated if `TLS_CERT` and `TLS_KEY` are set. Set `HTTP_BIND=off` to disable the HTTP listener.
+Grantory runs as an HTTP server and can optionally expose the same API via a Unix domain socket. Configure the database (sqlite directory path or Postgres DSN), HTTP/HTTPS bind addresses, optional Unix socket listener, TLS certificates, and log level via flags or matching environment variables (`DATABASE`, `HTTP_BIND`, `HTTPS_BIND`, `UNIX_SOCKET`, `UNIX_SOCKET_MODE`, `TLS_CERT`, `TLS_KEY`, `LOG_LEVEL`). TLS is only activated if `TLS_CERT` and `TLS_KEY` are set. Set `HTTP_BIND=off` to disable the HTTP listener.
 
 ```bash
 grantory --database ./data --http-bind 127.0.0.1:8080
 ```
 
-Defaults: `HTTP_BIND=0.0.0.0:8080`, `HTTPS_BIND=0.0.0.0:8443`.
+Defaults: `HTTP_BIND=0.0.0.0:8080`, `HTTPS_BIND=0.0.0.0:8443`, `UNIX_SOCKET=""` (disabled), `UNIX_SOCKET_MODE=0660`.
 
 When TLS is enabled, the server listens on both HTTP and HTTPS using those addresses. `HTTPS_BIND` is only evaluated when `TLS_CERT` and `TLS_KEY` are set.
 
 ```bash
 grantory --http-bind 127.0.0.1:8080 --https-bind 127.0.0.1:8443 --tls-cert ./cert.pem --tls-key ./key.pem
+```
+
+To enable a Unix socket listener, set `--unix-socket` (or `UNIX_SOCKET`). This is opt-in and can run alongside HTTP/HTTPS listeners.
+
+```bash
+grantory --unix-socket /run/grantory/server.sock --unix-socket-mode 0660
+```
+
+Unix socket only mode:
+
+```bash
+grantory --http-bind off --https-bind off --unix-socket /run/grantory/server.sock
 ```
 
 ## Docker image
@@ -91,7 +103,7 @@ The Grantory server image is published to Docker Hub as [tasansga/grantory](http
 docker run --rm -p 8080:8080 -v "$PWD/data:/data" tasansga/grantory:latest
 ```
 
-Set `DATABASE`, `HTTP_BIND`, `HTTPS_BIND`, `TLS_CERT`, `TLS_KEY`, and `LOG_LEVEL` as needed to customize server behavior. The image starts as root, fixes ownership of the sqlite directory when `DATABASE` is a path, then drops privileges to the `grantory` user. If you run the container rootless, ensure the mounted sqlite directory is writable by that user.
+Set `DATABASE`, `HTTP_BIND`, `HTTPS_BIND`, `UNIX_SOCKET`, `UNIX_SOCKET_MODE`, `TLS_CERT`, `TLS_KEY`, and `LOG_LEVEL` as needed to customize server behavior. The image starts as root, fixes ownership of the sqlite directory when `DATABASE` is a path, then drops privileges to the `grantory` user. If you run the container rootless, ensure the mounted sqlite directory is writable by that user.
 
 ## CLI
 

@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/sirupsen/logrus"
@@ -69,6 +72,19 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	httpDisabled := isBindDisabled(s.cfg.BindAddr)
 	httpsDisabled := isBindDisabled(s.cfg.TLSBind)
+	unixSocketEnabled := isUnixSocketEnabled(s.cfg.UnixSocket)
+
+	var unixListener net.Listener
+	var unixCleanup func()
+	if unixSocketEnabled {
+		listener, cleanup, err := openUnixSocketListener(s.cfg.UnixSocket, s.cfg.UnixSocketMode)
+		if err != nil {
+			return err
+		}
+		unixListener = listener
+		unixCleanup = cleanup
+		defer unixCleanup()
+	}
 
 	if IsTLSEnabled(s.cfg) {
 		if s.cfg.TLSBind == "" || httpsDisabled {
@@ -82,6 +98,9 @@ func (s *Server) Serve(ctx context.Context) error {
 		if !httpDisabled {
 			errCount = 2
 		}
+		if unixSocketEnabled {
+			errCount++
+		}
 		errCh := make(chan error, errCount)
 		if !httpDisabled {
 			go func() {
@@ -91,6 +110,11 @@ func (s *Server) Serve(ctx context.Context) error {
 		go func() {
 			errCh <- app.ListenTLS(s.cfg.TLSBind, s.cfg.TLSCert, s.cfg.TLSKey)
 		}()
+		if unixSocketEnabled {
+			go func() {
+				errCh <- app.Listener(unixListener)
+			}()
+		}
 
 		err := <-errCh
 		if err != nil {
@@ -99,14 +123,81 @@ func (s *Server) Serve(ctx context.Context) error {
 		return err
 	}
 
-	if httpDisabled {
-		return fmt.Errorf("need at least one listener - http bind address must be enabled when TLS is disabled")
+	if httpDisabled && !unixSocketEnabled {
+		return fmt.Errorf("need at least one listener - enable http bind address or unix socket when TLS is disabled")
 	}
-	return app.Listen(s.cfg.BindAddr)
+	if httpDisabled {
+		return app.Listener(unixListener)
+	}
+	if !unixSocketEnabled {
+		return app.Listen(s.cfg.BindAddr)
+	}
+
+	errCh := make(chan error, 2)
+	go func() {
+		errCh <- app.Listen(s.cfg.BindAddr)
+	}()
+	go func() {
+		errCh <- app.Listener(unixListener)
+	}()
+	err := <-errCh
+	if err != nil {
+		_ = app.Shutdown()
+	}
+	return err
 }
 
 func isBindDisabled(addr string) bool {
 	return strings.EqualFold(strings.TrimSpace(addr), "off")
+}
+
+func isUnixSocketEnabled(path string) bool {
+	trimmed := strings.TrimSpace(path)
+	return trimmed != "" && !strings.EqualFold(trimmed, "off")
+}
+
+func openUnixSocketListener(path string, mode os.FileMode) (net.Listener, func(), error) {
+	socketPath := strings.TrimSpace(path)
+	if socketPath == "" {
+		return nil, nil, fmt.Errorf("unix socket path must not be empty")
+	}
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
+		return nil, nil, fmt.Errorf("create unix socket directory: %w", err)
+	}
+
+	if st, err := os.Lstat(socketPath); err == nil {
+		if st.Mode()&os.ModeSocket == 0 {
+			return nil, nil, fmt.Errorf("refusing to overwrite non-socket path: %s", socketPath)
+		}
+		conn, dialErr := net.DialTimeout("unix", socketPath, 250*time.Millisecond)
+		if dialErr == nil {
+			_ = conn.Close()
+			return nil, nil, fmt.Errorf("unix socket already in use: %s", socketPath)
+		}
+		if !errors.Is(dialErr, os.ErrNotExist) && !strings.Contains(strings.ToLower(dialErr.Error()), "connection refused") {
+			return nil, nil, fmt.Errorf("check existing unix socket: %w", dialErr)
+		}
+		if err := os.Remove(socketPath); err != nil {
+			return nil, nil, fmt.Errorf("remove stale unix socket: %w", err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, nil, fmt.Errorf("stat unix socket path: %w", err)
+	}
+
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("listen on unix socket: %w", err)
+	}
+	if err := os.Chmod(socketPath, mode); err != nil {
+		_ = listener.Close()
+		return nil, nil, fmt.Errorf("chmod unix socket: %w", err)
+	}
+
+	cleanup := func() {
+		_ = listener.Close()
+		_ = os.Remove(socketPath)
+	}
+	return listener, cleanup, nil
 }
 
 func requestLoggingMiddleware() fiber.Handler {
