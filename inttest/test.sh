@@ -43,35 +43,9 @@ export TF_CLI_CONFIG_FILE="$CLI_CONFIG"
 export TOFU_CLI_CONFIG_FILE="$CLI_CONFIG"
 export TF_IN_AUTOMATION=1
 
-resolve_tf_bin() {
-  if [[ -n "${TF_BIN:-}" ]]; then
-    printf '%s\n' "$TF_BIN"
-    return 0
-  fi
-
-  if command -v tofu >/dev/null 2>&1; then
-    command -v tofu
-    return 0
-  fi
-
-  for tofu_path in /opt/homebrew/bin/tofu /usr/local/bin/tofu; do
-    if [[ -x "$tofu_path" ]]; then
-      printf '%s\n' "$tofu_path"
-      return 0
-    fi
-  done
-
-  if command -v terraform >/dev/null 2>&1; then
-    command -v terraform
-    return 0
-  fi
-
-  return 1
-}
-
-TF_BIN="$(resolve_tf_bin || true)"
+TF_BIN="$(command -v tofu)"
 if [[ -z "$TF_BIN" ]]; then
-  echo "neither tofu nor terraform is installed" >&2
+  echo "tofu is required but was not found in PATH" >&2
   exit 1
 fi
 echo "using IaC binary: $TF_BIN"
