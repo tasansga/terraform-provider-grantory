@@ -224,6 +224,15 @@ func configureProvider(ctx context.Context, d *schema.ResourceData) (any, diag.D
 	)
 	httpClient = http.DefaultClient
 	if sshMode {
+		if sshCfg.timeoutSeconds < 1 {
+			diags = append(diags, diag.Diagnostic{
+				Severity: diag.Error,
+				Summary:  "invalid SSH timeout",
+				Detail:   fmt.Sprintf("%s must be at least 1 second", sshTimeoutSecondsAttr),
+			})
+			return nil, diags
+		}
+
 		if missing := sshCfg.missingRequiredFields(); len(missing) > 0 {
 			diags = append(diags, diag.Diagnostic{
 				Severity: diag.Error,

@@ -263,6 +263,35 @@ func TestConfigureProviderSSHMissingAuthSources(t *testing.T) {
 	assert.True(t, found, "expected key-or-agent requirement diagnostic")
 }
 
+func TestConfigureProviderInvalidSSHTimeout(t *testing.T) {
+	t.Parallel()
+
+	privateKeyPath := writeTestPrivateKey(t)
+	p := New()
+	data := schema.TestResourceDataRaw(t, p.Schema, map[string]any{
+		sshAddressAttr:         "127.0.0.1:22",
+		sshUserAttr:            "grantory",
+		sshPrivateKeyPathAttr:  privateKeyPath,
+		sshSocketPathAttr:      "/tmp/grantory.sock",
+		sshInsecureHostKeyAttr: true,
+		sshTimeoutSecondsAttr:  0,
+	})
+
+	client, diags := configureProvider(context.Background(), data)
+	assert.Nil(t, client, "expected nil client for invalid SSH timeout")
+	assert.True(t, diags.HasError(), "expected diagnostics for invalid SSH timeout")
+
+	found := false
+	for _, d := range diags {
+		if d.Summary == "invalid SSH timeout" {
+			found = true
+			assert.Contains(t, d.Detail, sshTimeoutSecondsAttr)
+			break
+		}
+	}
+	assert.True(t, found, "expected invalid SSH timeout diagnostic")
+}
+
 func TestConfigureProviderSSHKnownHostsRequired(t *testing.T) {
 	t.Parallel()
 

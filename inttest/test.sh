@@ -44,11 +44,7 @@ export TOFU_CLI_CONFIG_FILE="$CLI_CONFIG"
 export TF_IN_AUTOMATION=1
 
 TF_BIN="$(command -v tofu)"
-if [[ -z "$TF_BIN" ]]; then
-  echo "tofu is required but was not found in PATH" >&2
-  exit 1
-fi
-echo "using IaC binary: $TF_BIN"
+echo "using tofu binary: $TF_BIN"
 
 COMMAND="${1:-apply}"
 case "$COMMAND" in
