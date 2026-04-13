@@ -9,6 +9,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRequestLoggingMiddlewareRecordsErrorStatus(t *testing.T) {
@@ -22,10 +23,7 @@ func TestRequestLoggingMiddlewareRecordsErrorStatus(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/missing", nil)
 	res, err := app.Test(req, 100)
-	if err != nil {
-		assert.NoError(t, err, "unexpected app error")
-		t.FailNow()
-	}
+	require.NoError(t, err, "unexpected app error")
 	assert.Equal(t, http.StatusNotFound, res.StatusCode, "expected 404 status")
 
 	var logged *logrus.Entry
@@ -39,9 +37,7 @@ func TestRequestLoggingMiddlewareRecordsErrorStatus(t *testing.T) {
 		}
 	}
 
-	if logged == nil {
-		t.Fatalf("expected a log entry for Server.request")
-	}
+	require.NotNil(t, logged, "expected a log entry for Server.request")
 
 	status, ok := logged.Data["status"].(int)
 	assert.True(t, ok, "status should be int")

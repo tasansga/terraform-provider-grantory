@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM golang:1.25.5-bookworm AS build
+FROM golang:1.26.2-bookworm AS build
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends gcc libc6-dev libsqlite3-dev \
