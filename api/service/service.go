@@ -18,6 +18,10 @@ func New(store Store) *Service {
 	return &Service{store: store}
 }
 
+func (s *Service) Store() Store {
+	return s.store
+}
+
 func (s *Service) CreateHost(ctx context.Context, payload HostCreatePayload) (Host, error) {
 	return s.store.CreateHost(ctx, payload)
 }

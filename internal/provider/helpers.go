@@ -1,10 +1,13 @@
 package provider
 
 import (
+	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
@@ -12,6 +15,46 @@ import (
 
 	apiclient "github.com/tasansga/terraform-provider-grantory/api/client"
 )
+
+func contextWithPrivateKey(ctx context.Context, d *schema.ResourceData) (context.Context, error) {
+	var keyHex string
+
+	if v, ok := d.GetOk("ed25519_private_key"); ok {
+		keyHex = v.(string)
+	}
+	if v, ok := d.GetOk("ed25519_private_key_file"); ok {
+		path := strings.TrimSpace(v.(string))
+		if path != "" {
+			content, err := os.ReadFile(path)
+			if err != nil {
+				return ctx, fmt.Errorf("failed to read ed25519_private_key_file: %w", err)
+			}
+			keyHex = string(content)
+		}
+	}
+	if v, ok := d.GetOk("ed25519_private_key_env"); ok {
+		envVar := strings.TrimSpace(v.(string))
+		if envVar != "" {
+			if envVal := os.Getenv(envVar); envVal != "" {
+				keyHex = envVal
+			}
+		}
+	}
+
+	keyHex = strings.TrimSpace(keyHex)
+	if keyHex == "" {
+		return ctx, nil
+	}
+
+	keyBytes, err := hex.DecodeString(keyHex)
+	if err != nil {
+		return ctx, fmt.Errorf("failed to decode hex ed25519_private_key: %w", err)
+	}
+	if len(keyBytes) != ed25519.PrivateKeySize {
+		return ctx, fmt.Errorf("invalid ed25519_private_key size: expected %d bytes, got %d", ed25519.PrivateKeySize, len(keyBytes))
+	}
+	return apiclient.WithPrivateKey(ctx, ed25519.PrivateKey(keyBytes)), nil
+}
 
 func isNotFound(err error) bool {
 	return apiclient.IsNotFound(err)

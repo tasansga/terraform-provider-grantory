@@ -87,6 +87,39 @@ provider "grantory" {
 }
 ```
 
+## Signed Payloads
+
+Grantory supports Ed25519-based public-private signing of payloads to ensure that requests and registers come from the host they claim to be.
+
+### Enabling Signatures
+
+1. **Register a Public Key**: Add the `public_key` attribute (hex-encoded) to your `grantory_host` resource.
+2. **Sign Requests**: Provide the corresponding private key to `grantory_request` or `grantory_register` using `ed25519_private_key`, `ed25519_private_key_file`, or `ed25519_private_key_env`.
+
+```terraform
+resource "grantory_host" "secure" {
+  unique_key = "my-host"
+  public_key = "e59390f8..." # 32-byte Ed25519 public key in hex
+}
+
+resource "grantory_request" "signed" {
+  host_id             = grantory_host.secure.host_id
+  ed25519_private_key = var.host_private_key
+  payload             = jsonencode({ action = "deploy" })
+}
+```
+
+### Security Considerations
+
+- **Immutability**: Once a host is registered with a public key, the key cannot be changed. Updating the `public_key` in Terraform will result in a **destroy and recreate** of the host resource.
+- **State Security**: Private keys provided via the `ed25519_private_key` attribute will be stored in the Terraform state. **Always use encrypted state backends** (e.g., S3 with SSE, Terraform Cloud, or GitLab managed state) and harden access to your state files.
+- **Key Ergonomics**: Prefer `ed25519_private_key_file` or `ed25519_private_key_env` to avoid persisting the literal key in your HCL files or state, though the provider must still have access to it at runtime.
+- **Anti-Replay**: The provider autonomously includes a timestamp and a unique nonce in every signed request. The server rejects reused nonces and regressed timestamps to prevent replay attacks.
+
+### Server Enforcement
+
+The server can be configured to enforce signatures for **all** write operations by setting `REQUIRE_SIGNATURES=true` in the environment or `--require-signatures` via CLI flags. In this mode, any unsigned request or host creation without a public key will be rejected.
+
 ## Core concepts
 
 - **Hosts** register labels and become the target for requests.

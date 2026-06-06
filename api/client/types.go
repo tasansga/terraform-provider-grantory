@@ -11,6 +11,8 @@ type Host struct {
 	ID string `json:"id"`
 	// UniqueKey is a caller-provided idempotency key.
 	UniqueKey string `json:"unique_key,omitempty"`
+	// PublicKey is an optional Ed25519 public key in hex format.
+	PublicKey string `json:"public_key,omitempty"`
 	// Labels stores arbitrary host labels.
 	Labels map[string]string `json:"labels,omitempty"`
 	// CreatedAt is the resource creation timestamp.
@@ -84,6 +86,7 @@ type SchemaDefinition struct {
 // HostCreatePayload is the request body for creating a host.
 type HostCreatePayload struct {
 	UniqueKey string            `json:"unique_key"`
+	PublicKey string            `json:"public_key,omitempty"`
 	Labels    map[string]string `json:"labels"`
 }
 

@@ -6,10 +6,12 @@ import (
 )
 
 type Host struct {
-	ID        string            `json:"id"`
-	UniqueKey string            `json:"unique_key,omitempty"`
-	Labels    map[string]string `json:"labels,omitempty"`
-	CreatedAt time.Time         `json:"created_at"`
+	ID                     string            `json:"id"`
+	UniqueKey              string            `json:"unique_key,omitempty"`
+	PublicKey              string            `json:"public_key,omitempty"`
+	LastSignatureTimestamp int64             `json:"last_signature_timestamp,omitempty"`
+	Labels                 map[string]string `json:"labels,omitempty"`
+	CreatedAt              time.Time         `json:"created_at"`
 }
 
 type Request struct {
@@ -71,6 +73,7 @@ type SchemaDefinition struct {
 
 type HostCreatePayload struct {
 	UniqueKey string            `json:"unique_key"`
+	PublicKey string            `json:"public_key,omitempty"`
 	Labels    map[string]string `json:"labels"`
 }
 

@@ -3,6 +3,10 @@ package client
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +15,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Options configures a Client.
@@ -40,6 +45,16 @@ type Client struct {
 	user       string
 	password   string
 	namespace  string
+}
+
+type contextKey string
+
+const privateKeyCtxKey contextKey = "grantory-private-key"
+
+// WithPrivateKey returns a copy of parent in which the Ed25519 private key is set.
+// The client will use this key to sign outgoing requests if provided.
+func WithPrivateKey(parent context.Context, key ed25519.PrivateKey) context.Context {
+	return context.WithValue(parent, privateKeyCtxKey, key)
 }
 
 // APIError is returned for non-2xx HTTP responses.
@@ -394,11 +409,13 @@ func (c *Client) doJSON(ctx context.Context, method, endpoint string, reqBody an
 	}
 
 	var payload io.Reader
+	var bodyBytes []byte
 	if reqBody != nil {
 		data, err := json.Marshal(reqBody)
 		if err != nil {
 			return fmt.Errorf("marshal %s request: %w", endpoint, err)
 		}
+		bodyBytes = data
 		payload = bytes.NewReader(data)
 	}
 
@@ -422,6 +439,22 @@ func (c *Client) doJSON(ctx context.Context, method, endpoint string, reqBody an
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	} else if c.user != "" && c.password != "" {
 		req.SetBasicAuth(c.user, c.password)
+	}
+
+	if privKey, ok := ctx.Value(privateKeyCtxKey).(ed25519.PrivateKey); ok && privKey != nil {
+		timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+
+		nonceBytes := make([]byte, 16)
+		if _, err := rand.Read(nonceBytes); err != nil {
+			return fmt.Errorf("generate nonce: %w", err)
+		}
+		nonce := hex.EncodeToString(nonceBytes)
+
+		content := fmt.Sprintf("%s:%s:%s:%s:%s", timestamp, nonce, method, target.Path, string(bodyBytes))
+		sig := ed25519.Sign(privKey, []byte(content))
+		req.Header.Set("X-Grantory-Timestamp", timestamp)
+		req.Header.Set("X-Grantory-Nonce", nonce)
+		req.Header.Set("X-Grantory-Signature", base64.StdEncoding.EncodeToString(sig))
 	}
 
 	res, err := c.httpClient.Do(req)

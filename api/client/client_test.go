@@ -2,9 +2,11 @@ package client
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -159,6 +161,50 @@ func TestListRequestsEncodesFilters(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("list requests: %v", err)
+	}
+}
+
+func TestClientSetsSignatureHeader(t *testing.T) {
+	t.Parallel()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sigBase64 := r.Header.Get("X-Grantory-Signature")
+		timestamp := r.Header.Get("X-Grantory-Timestamp")
+		nonce := r.Header.Get("X-Grantory-Nonce")
+
+		if sigBase64 == "" || timestamp == "" || nonce == "" {
+			t.Errorf("missing signature, timestamp or nonce headers")
+		}
+
+		body, _ := io.ReadAll(r.Body)
+		content := fmt.Sprintf("%s:%s:%s:%s:%s", timestamp, nonce, r.Method, r.URL.Path, string(body))
+		sig, _ := base64.StdEncoding.DecodeString(sigBase64)
+
+		if !ed25519.Verify(pub, []byte(content), sig) {
+			t.Errorf("signature verification failed")
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode([]Host{})
+	}))
+	defer server.Close()
+
+	c, err := New(Options{
+		BaseURL:    server.URL,
+		HTTPClient: server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	ctx := WithPrivateKey(context.Background(), priv)
+	if _, err := c.ListHosts(ctx); err != nil {
+		t.Fatalf("list hosts: %v", err)
 	}
 }
 

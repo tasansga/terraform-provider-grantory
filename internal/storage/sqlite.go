@@ -114,7 +114,16 @@ const (
 CREATE TABLE IF NOT EXISTS hosts (
 	id TEXT PRIMARY KEY,
 	unique_key TEXT,
+	public_key TEXT,
+	last_signature_timestamp INTEGER,
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+)`
+	noncesTableStatement = `
+CREATE TABLE IF NOT EXISTS nonces (
+	host_id TEXT NOT NULL,
+	nonce TEXT NOT NULL,
+	expires_at DATETIME NOT NULL,
+	PRIMARY KEY (host_id, nonce)
 )`
 	requestsTableStatement = `
 CREATE TABLE IF NOT EXISTS requests (
@@ -288,6 +297,7 @@ func (s *sqliteStore) Migrate(ctx context.Context) error {
 		fn   func(context.Context, *sql.Tx) error
 	}{
 		{"hosts", s.ensureHostsTable},
+		{"nonces", s.ensureNoncesTable},
 		{"schema definitions", s.ensureSchemaDefinitionsTable},
 		{"requests", s.ensureRequestsTable},
 		{"registers", s.ensureRegistersTable},
@@ -321,8 +331,21 @@ func (s *sqliteStore) ensureHostsTable(ctx context.Context, tx *sql.Tx) error {
 	if err := ensureSQLiteColumn(ctx, tx, "hosts", "unique_key", "TEXT"); err != nil {
 		return fmt.Errorf("add hosts unique_key column: %w", err)
 	}
+	if err := ensureSQLiteColumn(ctx, tx, "hosts", "public_key", "TEXT"); err != nil {
+		return fmt.Errorf("add hosts public_key column: %w", err)
+	}
+	if err := ensureSQLiteColumn(ctx, tx, "hosts", "last_signature_timestamp", "INTEGER"); err != nil {
+		return fmt.Errorf("add hosts last_signature_timestamp column: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS hosts_unique_key_idx ON hosts(unique_key) WHERE unique_key IS NOT NULL`); err != nil {
 		return fmt.Errorf("create hosts unique_key index: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteStore) ensureNoncesTable(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, noncesTableStatement); err != nil {
+		return fmt.Errorf("create nonces table: %w", err)
 	}
 	return nil
 }
@@ -620,6 +643,7 @@ func (s *sqliteStore) CreateHost(ctx context.Context, host Host) (Host, error) {
 	s.logDBOperation("hosts", "create", logrus.Fields{
 		"host_id":    host.ID,
 		"unique_key": host.UniqueKey,
+		"public_key": host.PublicKey,
 		"labels":     host.Labels,
 	})
 
@@ -627,10 +651,14 @@ func (s *sqliteStore) CreateHost(ctx context.Context, host Host) (Host, error) {
 	if host.UniqueKey != "" {
 		uniqueKey = host.UniqueKey
 	}
+	var publicKey any
+	if host.PublicKey != "" {
+		publicKey = host.PublicKey
+	}
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO hosts (id, unique_key)
-VALUES (?, ?)
-`, host.ID, uniqueKey); err != nil {
+INSERT INTO hosts (id, unique_key, public_key)
+VALUES (?, ?, ?)
+`, host.ID, uniqueKey, publicKey); err != nil {
 		if isUniqueConstraintError(err) {
 			if isUniqueHostKeyConstraintError(err) {
 				return Host{}, ErrHostUniqueKeyConflict
@@ -662,7 +690,7 @@ func (s *sqliteStore) GetHost(ctx context.Context, id string) (Host, error) {
 	})
 
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, unique_key, created_at
+SELECT id, unique_key, public_key, last_signature_timestamp, created_at
 FROM hosts
 WHERE id = ?
 `, id)
@@ -686,7 +714,7 @@ func (s *sqliteStore) ListHosts(ctx context.Context) ([]Host, error) {
 	s.logDBOperation("hosts", "list", nil)
 
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, unique_key, created_at
+SELECT id, unique_key, public_key, last_signature_timestamp, created_at
 FROM hosts
 ORDER BY created_at ASC
 `)
@@ -769,6 +797,65 @@ func (s *sqliteStore) UpdateHostLabels(ctx context.Context, id string, labels ma
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit host labels transaction: %w", err)
+	}
+
+	return nil
+}
+
+// RecordSignature records a signature timestamp and nonce to prevent replay attacks.
+func (s *sqliteStore) RecordSignature(ctx context.Context, hostID string, timestamp int64, nonce string, expiresAt time.Time) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("store not initialized")
+	}
+
+	s.logDBOperation("signatures", "record", logrus.Fields{
+		"host_id":   hostID,
+		"timestamp": timestamp,
+		"nonce":     nonce,
+	})
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin record signature transaction: %w", err)
+	}
+	defer rollbackTx(tx, "rollback record signature transaction")
+
+	// 1. Check monotonic timestamp
+	var lastTs sql.NullInt64
+	err = tx.QueryRowContext(ctx, `SELECT last_signature_timestamp FROM hosts WHERE id = ?`, hostID).Scan(&lastTs)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrHostNotFound
+		}
+		return fmt.Errorf("fetch last timestamp: %w", err)
+	}
+
+	if lastTs.Valid && timestamp < lastTs.Int64 {
+		return ErrTimestampRegressed
+	}
+
+	// 2. Try insert nonce
+	_, err = tx.ExecContext(ctx, `INSERT INTO nonces (host_id, nonce, expires_at) VALUES (?, ?, ?)`, hostID, nonce, expiresAt)
+	if err != nil {
+		if isUniqueConstraintError(err) {
+			return ErrReplayDetected
+		}
+		return fmt.Errorf("insert nonce: %w", err)
+	}
+
+	// 3. Update host timestamp
+	_, err = tx.ExecContext(ctx, `UPDATE hosts SET last_signature_timestamp = ? WHERE id = ?`, timestamp, hostID)
+	if err != nil {
+		return fmt.Errorf("update last timestamp: %w", err)
+	}
+
+	// 4. Cleanup expired nonces (occasional)
+	if timestamp%10 == 0 {
+		_, _ = tx.ExecContext(ctx, `DELETE FROM nonces WHERE expires_at < CURRENT_TIMESTAMP`)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit record signature transaction: %w", err)
 	}
 
 	return nil
@@ -2014,21 +2101,23 @@ type rowScanner interface {
 
 func scanHost(scanner rowScanner) (Host, error) {
 	var (
-		host      Host
-		uniqueKey sql.NullString
-		createdAt any
+		host          Host
+		uniqueKey     sql.NullString
+		publicKey     sql.NullString
+		lastSigTs     sql.NullInt64
+		createdAt     any
 	)
 
-	if err := scanner.Scan(&host.ID, &uniqueKey, &createdAt); err != nil {
+	if err := scanner.Scan(&host.ID, &uniqueKey, &publicKey, &lastSigTs, &createdAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Host{}, ErrHostNotFound
 		}
 		return Host{}, err
 	}
 
-	if uniqueKey.Valid {
-		host.UniqueKey = uniqueKey.String
-	}
+	host.UniqueKey = uniqueKey.String
+	host.PublicKey = publicKey.String
+	host.LastSignatureTimestamp = lastSigTs.Int64
 
 	t, err := parseDBTime(createdAt)
 	if err != nil {

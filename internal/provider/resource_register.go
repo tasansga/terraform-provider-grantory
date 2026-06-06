@@ -49,6 +49,25 @@ func resourceRegister() *schema.Resource {
 					Type: schema.TypeString,
 				},
 			},
+			"ed25519_private_key": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				Sensitive:   true,
+				ForceNew:    true,
+				Description: "Optional Ed25519 private key in hex format for signing requests. Required if the host has a public key registered. Consider using ed25519_private_key_file or ed25519_private_key_env for better security.",
+			},
+			"ed25519_private_key_file": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				ForceNew:    true,
+				Description: "Optional path to a file containing the hex-encoded Ed25519 private key.",
+			},
+			"ed25519_private_key_env": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				ForceNew:    true,
+				Description: "Optional environment variable name containing the hex-encoded Ed25519 private key.",
+			},
 		},
 		CreateContext: resourceRegisterCreate,
 		ReadContext:   resourceRegisterRead,
@@ -85,6 +104,11 @@ func resourceRegisterCreate(ctx context.Context, d *schema.ResourceData, meta an
 		Payload:            registerPayload,
 		Mutable:            d.Get("mutable").(bool),
 		Labels:             expandStringMap(extractMap(d.Get("labels"))),
+	}
+
+	ctx, err := contextWithPrivateKey(ctx, d)
+	if err != nil {
+		return diag.FromErr(err)
 	}
 
 	created, err := client.CreateRegister(ctx, payload)
@@ -140,6 +164,11 @@ func resourceRegisterUpdate(ctx context.Context, d *schema.ResourceData, meta an
 		return nil
 	}
 
+	ctx, err := contextWithPrivateKey(ctx, d)
+	if err != nil {
+		return diag.FromErr(err)
+	}
+
 	updated, err := client.UpdateRegister(ctx, d.Id(), payload)
 	if err != nil {
 		return diag.FromErr(err)
@@ -151,6 +180,12 @@ func resourceRegisterUpdate(ctx context.Context, d *schema.ResourceData, meta an
 
 func resourceRegisterDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	client := meta.(*grantoryClient)
+
+	ctx, err := contextWithPrivateKey(ctx, d)
+	if err != nil {
+		return diag.FromErr(err)
+	}
+
 	if err := client.DeleteRegister(ctx, d.Id()); err != nil {
 		if isNotFound(err) {
 			d.SetId("")

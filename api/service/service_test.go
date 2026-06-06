@@ -40,6 +40,7 @@ type fakeStore struct {
 	listSchemaDefinitionsFn        func(context.Context) ([]SchemaDefinition, error)
 	updateSchemaDefinitionLabelsFn func(context.Context, string, map[string]string) (SchemaDefinition, error)
 	deleteSchemaDefinitionFn       func(context.Context, string) error
+	recordSignatureFn              func(context.Context, string, int64, string, time.Time) error
 }
 
 func (f *fakeStore) Close() error {
@@ -216,6 +217,13 @@ func (f *fakeStore) DeleteSchemaDefinition(ctx context.Context, id string) error
 		return fmt.Errorf("unexpected DeleteSchemaDefinition")
 	}
 	return f.deleteSchemaDefinitionFn(ctx, id)
+}
+
+func (f *fakeStore) RecordSignature(ctx context.Context, hostID string, timestamp int64, nonce string, expiresAt time.Time) error {
+	if f.recordSignatureFn == nil {
+		return nil
+	}
+	return f.recordSignatureFn(ctx, hostID, timestamp, nonce, expiresAt)
 }
 
 func TestServiceValidationRequiredFields(t *testing.T) {

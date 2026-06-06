@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM golang:1.26.2-bookworm AS build
+FROM golang:1.26.4-bookworm AS build
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends gcc libc6-dev libsqlite3-dev \
@@ -23,8 +23,8 @@ RUN GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
 FROM debian:bookworm-slim
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates libsqlite3-0 gosu \
-  && rm -rf /var/lib/apt/lists/*
+    && apt-get install -y --no-install-recommends ca-certificates libsqlite3-0 gosu \
+    && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -r grantory && useradd -r -g grantory -u 10001 grantory
 RUN mkdir -p /data && chown -R grantory:grantory /data

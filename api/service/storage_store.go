@@ -54,6 +54,7 @@ func (a storageStore) Close() error {
 func (a storageStore) CreateHost(ctx context.Context, payload HostCreatePayload) (Host, error) {
 	host, err := a.store.CreateHost(ctx, storage.Host{
 		UniqueKey: payload.UniqueKey,
+		PublicKey: payload.PublicKey,
 		Labels:    payload.Labels,
 	})
 	if err != nil {
@@ -309,6 +310,10 @@ func (a storageStore) DeleteSchemaDefinition(ctx context.Context, id string) err
 	return mapStorageError(a.store.DeleteSchemaDefinition(ctx, id))
 }
 
+func (a storageStore) RecordSignature(ctx context.Context, hostID string, timestamp int64, nonce string, expiresAt time.Time) error {
+	return mapStorageError(a.store.RecordSignature(ctx, hostID, timestamp, nonce, expiresAt))
+}
+
 func (a storageStore) requestWithGrant(ctx context.Context, req storage.Request) (Request, error) {
 	out := requestFromStorage(req)
 	grant, found, err := a.store.GetGrantForRequest(ctx, req.ID)
@@ -331,10 +336,12 @@ func (a storageStore) requestWithGrant(ctx context.Context, req storage.Request)
 
 func hostFromStorage(host storage.Host) Host {
 	return Host{
-		ID:        host.ID,
-		UniqueKey: host.UniqueKey,
-		Labels:    host.Labels,
-		CreatedAt: host.CreatedAt,
+		ID:                     host.ID,
+		UniqueKey:              host.UniqueKey,
+		PublicKey:              host.PublicKey,
+		LastSignatureTimestamp: host.LastSignatureTimestamp,
+		Labels:                 host.Labels,
+		CreatedAt:              host.CreatedAt,
 	}
 }
 
@@ -445,6 +452,10 @@ func mapStorageError(err error) error {
 		return ErrReferencedHostNotFound
 	case errors.Is(err, storage.ErrReferencedRequestNotFound):
 		return ErrReferencedRequestNotFound
+	case errors.Is(err, storage.ErrReplayDetected):
+		return ErrReplayDetected
+	case errors.Is(err, storage.ErrTimestampRegressed):
+		return ErrTimestampRegressed
 	default:
 		return err
 	}

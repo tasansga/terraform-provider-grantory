@@ -24,4 +24,8 @@ var (
 	ErrSchemaDefinitionUniqueKeyConflict = errors.New("schema definition unique key already exists")
 	ErrReferencedHostNotFound            = errors.New("referenced host not found")
 	ErrReferencedRequestNotFound         = errors.New("referenced request not found")
+
+	// Signature and security errors.
+	ErrReplayDetected     = errors.New("replay detected")
+	ErrTimestampRegressed = errors.New("timestamp regressed")
 )

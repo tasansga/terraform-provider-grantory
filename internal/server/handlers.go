@@ -2,6 +2,9 @@ package server
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +12,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/sirupsen/logrus"
@@ -31,6 +35,7 @@ type hostHandler struct{}
 
 type hostPayload struct {
 	UniqueKey string            `json:"unique_key"`
+	PublicKey string            `json:"public_key"`
 	Labels    map[string]string `json:"labels"`
 }
 
@@ -76,7 +81,21 @@ func (h hostHandler) create(c *fiber.Ctx) error {
 		return err
 	}
 
-	host, err := svc.CreateHost(c.Context(), apiservice.HostCreatePayload{UniqueKey: payload.UniqueKey, Labels: payload.Labels})
+	if payload.PublicKey != "" {
+		pubKey, err := hex.DecodeString(payload.PublicKey)
+		if err != nil {
+			return fiber.NewError(fiber.StatusBadRequest, "invalid public key format: must be hex")
+		}
+		if len(pubKey) != ed25519.PublicKeySize {
+			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("invalid public key size: expected %d bytes", ed25519.PublicKeySize))
+		}
+	}
+
+	host, err := svc.CreateHost(c.Context(), apiservice.HostCreatePayload{
+		UniqueKey: payload.UniqueKey,
+		PublicKey: payload.PublicKey,
+		Labels:    payload.Labels,
+	})
 	if err != nil {
 		switch {
 		case errors.Is(err, apiservice.ErrHostAlreadyExists):
@@ -137,6 +156,10 @@ func (h hostHandler) delete(c *fiber.Ctx) error {
 		return err
 	}
 
+	if err := verifySignature(c, svc, hostID); err != nil {
+		return err
+	}
+
 	if err := svc.DeleteHost(c.Context(), hostID); err != nil {
 		if errors.Is(err, apiservice.ErrHostNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "host not found")
@@ -161,6 +184,10 @@ func (h hostHandler) updateLabels(c *fiber.Ctx) error {
 
 	svc, namespace, err := resolveNamespaceService(c)
 	if err != nil {
+		return err
+	}
+
+	if err := verifySignature(c, svc, hostID); err != nil {
 		return err
 	}
 
@@ -259,6 +286,10 @@ func (h requestHandler) create(c *fiber.Ctx) error {
 		return err
 	}
 
+	if err := verifySignature(c, svc, payload.HostID); err != nil {
+		return err
+	}
+
 	created, err := svc.CreateRequest(c.Context(), apiservice.RequestCreatePayload{
 		HostID:                    payload.HostID,
 		RequestSchemaDefinitionID: payload.RequestSchemaDefinitionID,
@@ -346,6 +377,19 @@ func (h requestHandler) delete(c *fiber.Ctx) error {
 
 	svc, namespace, err := resolveNamespaceService(c)
 	if err != nil {
+		return err
+	}
+
+	current, err := svc.GetRequest(c.Context(), requestID)
+	if err != nil {
+		if errors.Is(err, apiservice.ErrRequestNotFound) {
+			return fiber.NewError(fiber.StatusNotFound, "request not found")
+		}
+		logrus.WithError(err).WithField("namespace", namespace).Error("get request for signature verification")
+		return fiber.NewError(fiber.StatusInternalServerError, "unable to fetch request")
+	}
+
+	if err := verifySignature(c, svc, current.HostID); err != nil {
 		return err
 	}
 
@@ -443,6 +487,19 @@ func (h requestHandler) update(c *fiber.Ctx) error {
 		return err
 	}
 
+	current, err := svc.GetRequest(c.Context(), reqID)
+	if err != nil {
+		if errors.Is(err, apiservice.ErrRequestNotFound) {
+			return fiber.NewError(fiber.StatusNotFound, "request not found")
+		}
+		logrus.WithError(err).WithField("namespace", namespace).Error("get request for signature verification")
+		return fiber.NewError(fiber.StatusInternalServerError, "unable to fetch request")
+	}
+
+	if err := verifySignature(c, svc, current.HostID); err != nil {
+		return err
+	}
+
 	updated, err := svc.UpdateRequest(c.Context(), reqID, apiservice.RequestUpdatePayload{
 		Payload: payload.Payload,
 		Labels:  payload.Labels,
@@ -498,6 +555,10 @@ func (h registerHandler) create(c *fiber.Ctx) error {
 
 	svc, namespace, err := resolveNamespaceService(c)
 	if err != nil {
+		return err
+	}
+
+	if err := verifySignature(c, svc, payload.HostID); err != nil {
 		return err
 	}
 
@@ -589,6 +650,19 @@ func (h registerHandler) update(c *fiber.Ctx) error {
 		return err
 	}
 
+	current, err := svc.GetRegister(c.Context(), registerID)
+	if err != nil {
+		if errors.Is(err, apiservice.ErrRegisterNotFound) {
+			return fiber.NewError(fiber.StatusNotFound, "register not found")
+		}
+		logrus.WithError(err).WithField("namespace", namespace).Error("get register for signature verification")
+		return fiber.NewError(fiber.StatusInternalServerError, "unable to fetch register")
+	}
+
+	if err := verifySignature(c, svc, current.HostID); err != nil {
+		return err
+	}
+
 	updated, err := svc.UpdateRegister(c.Context(), registerID, apiservice.RegisterUpdatePayload{
 		Payload: payload.Payload,
 		Labels:  payload.Labels,
@@ -635,6 +709,19 @@ func (h registerHandler) delete(c *fiber.Ctx) error {
 
 	svc, namespace, err := resolveNamespaceService(c)
 	if err != nil {
+		return err
+	}
+
+	current, err := svc.GetRegister(c.Context(), registerID)
+	if err != nil {
+		if errors.Is(err, apiservice.ErrRegisterNotFound) {
+			return fiber.NewError(fiber.StatusNotFound, "register not found")
+		}
+		logrus.WithError(err).WithField("namespace", namespace).Error("get register for signature verification")
+		return fiber.NewError(fiber.StatusInternalServerError, "unable to fetch register")
+	}
+
+	if err := verifySignature(c, svc, current.HostID); err != nil {
 		return err
 	}
 
@@ -1016,4 +1103,85 @@ func resolveMissingRequestSchemaID(ctx context.Context, svc *apiservice.Service,
 		}
 	}
 	return "", nil
+}
+
+func verifySignature(c *fiber.Ctx, svc *apiservice.Service, hostID string) error {
+	requireSigs, _ := c.Locals(requireSignaturesCtxKey).(bool)
+
+	if hostID == "" {
+		if requireSigs {
+			return fiber.NewError(fiber.StatusUnauthorized, "signature required but host_id is missing")
+		}
+		return nil
+	}
+	host, err := svc.GetHost(c.Context(), hostID)
+	if err != nil {
+		if errors.Is(err, apiservice.ErrHostNotFound) {
+			if requireSigs {
+				return fiber.NewError(fiber.StatusUnauthorized, "signature required but host not found")
+			}
+			return nil
+		}
+		return err
+	}
+
+	if host.PublicKey == "" {
+		if requireSigs {
+			return fiber.NewError(fiber.StatusUnauthorized, "signature required but host has no public key registered")
+		}
+		return nil
+	}
+
+	sigBase64 := c.Get("X-Grantory-Signature")
+	timestamp := c.Get("X-Grantory-Timestamp")
+	nonce := c.Get("X-Grantory-Nonce")
+
+	if sigBase64 == "" || timestamp == "" || nonce == "" {
+		return fiber.NewError(fiber.StatusUnauthorized, "missing signature, timestamp or nonce")
+	}
+
+	ts, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil {
+		return fiber.NewError(fiber.StatusUnauthorized, "invalid timestamp")
+	}
+	now := time.Now().Unix()
+	if now-ts > 300 || ts-now > 300 {
+		return fiber.NewError(fiber.StatusUnauthorized, "timestamp out of range")
+	}
+
+	sig, err := base64.StdEncoding.DecodeString(sigBase64)
+	if err != nil {
+		return fiber.NewError(fiber.StatusUnauthorized, "invalid signature format")
+	}
+
+	pubKey, err := hex.DecodeString(host.PublicKey)
+	if err != nil {
+		logrus.WithError(err).Error("decode stored public key")
+		return fiber.NewError(fiber.StatusInternalServerError, "invalid stored public key")
+	}
+
+	if len(pubKey) != ed25519.PublicKeySize {
+		return fiber.NewError(fiber.StatusInternalServerError, "invalid stored public key size")
+	}
+
+	content := fmt.Sprintf("%s:%s:%s:%s:%s", timestamp, nonce, c.Method(), c.Path(), string(c.Body()))
+	if !ed25519.Verify(pubKey, []byte(content), sig) {
+		return fiber.NewError(fiber.StatusUnauthorized, "invalid signature")
+	}
+
+	// Anti-replay and monotonicity check
+	expiresAt := time.Unix(ts, 0).Add(6 * time.Minute)
+	if err := svc.Store().RecordSignature(c.Context(), hostID, ts, nonce, expiresAt); err != nil {
+		switch {
+		case errors.Is(err, apiservice.ErrReplayDetected):
+			return fiber.NewError(fiber.StatusUnauthorized, "replay detected: nonce already used")
+		case errors.Is(err, apiservice.ErrTimestampRegressed):
+			return fiber.NewError(fiber.StatusUnauthorized, "timestamp regressed")
+		default:
+			logrus.WithError(err).Error("record signature")
+			return fiber.NewError(fiber.StatusInternalServerError, "unable to verify anti-replay state")
+		}
+	}
+
+	return nil
 }

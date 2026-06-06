@@ -51,14 +51,19 @@ type Store interface {
 	ListSchemaDefinitions(ctx context.Context) ([]SchemaDefinition, error)
 	UpdateSchemaDefinitionLabels(ctx context.Context, id string, labels map[string]string) error
 	DeleteSchemaDefinition(ctx context.Context, id string) error
+
+	// RecordSignature records a signature timestamp and nonce to prevent replay attacks.
+	RecordSignature(ctx context.Context, hostID string, timestamp int64, nonce string, expiresAt time.Time) error
 }
 
 // Host describes the persisted labels for a registered host.
 type Host struct {
-	ID        string            `json:"id"`
-	UniqueKey string            `json:"unique_key,omitempty"`
-	Labels    map[string]string `json:"labels,omitempty"`
-	CreatedAt time.Time         `json:"created_at"`
+	ID                     string            `json:"id"`
+	UniqueKey              string            `json:"unique_key,omitempty"`
+	PublicKey              string            `json:"public_key,omitempty"`
+	LastSignatureTimestamp int64             `json:"last_signature_timestamp,omitempty"`
+	Labels                 map[string]string `json:"labels,omitempty"`
+	CreatedAt              time.Time         `json:"created_at"`
 }
 
 // Request describes the persisted state for a resource request.
@@ -171,6 +176,11 @@ var (
 	// ErrSchemaDefinitionUniqueKeyConflict is returned when a schema definition with the same unique key exists.
 	ErrSchemaDefinitionUniqueKeyConflict = errors.New("schema definition unique key already exists")
 	// ErrReferencedHostNotFound is returned when a request/register refers to a host that does not exist.
-	ErrReferencedHostNotFound    = errors.New("referenced host not found")
+	ErrReferencedHostNotFound = errors.New("referenced host not found")
 	ErrReferencedRequestNotFound = errors.New("referenced request not found")
+
+	// ErrReplayDetected is returned when a nonce is reused for the same host.
+	ErrReplayDetected = errors.New("replay detected")
+	// ErrTimestampRegressed is returned when a signature timestamp is older than the last recorded one.
+	ErrTimestampRegressed = errors.New("timestamp regressed")
 )

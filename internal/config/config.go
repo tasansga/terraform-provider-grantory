@@ -19,6 +19,7 @@ const (
 	EnvUnixSocket     = "UNIX_SOCKET"
 	EnvUnixSocketMode = "UNIX_SOCKET_MODE"
 	EnvLogLevel       = "LOG_LEVEL"
+	EnvRequireSignatures = "REQUIRE_SIGNATURES"
 )
 
 const (
@@ -41,6 +42,7 @@ type Config struct {
 	UnixSocket     string
 	UnixSocketMode os.FileMode
 	LogLevel       logrus.Level
+	RequireSignatures bool
 	ServerVersion  string
 }
 
@@ -54,6 +56,7 @@ func RegisterFlags(fs *pflag.FlagSet) {
 	fs.String("unix-socket", "", "path to a unix domain socket listener (env: "+EnvUnixSocket+"); leave empty or set to 'off' to disable")
 	fs.String("unix-socket-mode", "", "unix socket file mode in octal (env: "+EnvUnixSocketMode+", default: 0660)")
 	fs.String("log-level", "", "log level for the server (env: "+EnvLogLevel+")")
+	fs.Bool("require-signatures", false, "enforce Ed25519 signatures for all write operations (env: "+EnvRequireSignatures+")")
 }
 
 // FromFlagSet builds a Config from the flag set and environment variables.
@@ -76,16 +79,39 @@ func FromFlagSet(fs *pflag.FlagSet) (Config, error) {
 		return Config{}, fmt.Errorf("invalid log level %q: %w", levelStr, err)
 	}
 
+	requireSignatures := boolValue(fs, "require-signatures", EnvRequireSignatures, false)
+
 	return Config{
-		Database:       database,
-		BindAddr:       bind,
-		TLSBind:        tlsBind,
-		TLSCert:        tlsCert,
-		TLSKey:         tlsKey,
-		UnixSocket:     unixSocket,
-		UnixSocketMode: unixSocketMode,
-		LogLevel:       level,
+		Database:          database,
+		BindAddr:          bind,
+		TLSBind:           tlsBind,
+		TLSCert:           tlsCert,
+		TLSKey:            tlsKey,
+		UnixSocket:        unixSocket,
+		UnixSocketMode:    unixSocketMode,
+		LogLevel:          level,
+		RequireSignatures: requireSignatures,
 	}, nil
+}
+
+func boolValue(fs *pflag.FlagSet, name, envKey string, defaultValue bool) bool {
+	if fs != nil {
+		if fs.Changed(name) {
+			val, err := fs.GetBool(name)
+			if err == nil {
+				return val
+			}
+		}
+	}
+
+	if v := os.Getenv(envKey); v != "" {
+		parsed, err := strconv.ParseBool(v)
+		if err == nil {
+			return parsed
+		}
+	}
+
+	return defaultValue
 }
 
 func parseFileMode(raw string) (os.FileMode, error) {

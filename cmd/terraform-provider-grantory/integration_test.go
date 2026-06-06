@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -151,6 +153,51 @@ output "register_mutable_payload" {
   value = grantory_register.mutable.payload
 }
 `))
+
+	terraformSignaturesTemplate = template.Must(template.New("signatures").Parse(`
+terraform {
+  required_providers {
+    grantory = {
+      source  = "tasansga/grantory"
+      version = "{{ .ProviderVersion }}"
+    }
+  }
+}
+
+provider "grantory" {
+  server = "{{ .ServerURL }}"
+}
+
+resource "grantory_host" "signed" {
+  unique_key = "host-signed-{{ .SuiteKey }}"
+  public_key = "{{ .PublicKey }}"
+  labels = {
+    env = "secure"
+  }
+}
+
+resource "grantory_request" "signed" {
+  host_id             = grantory_host.signed.host_id
+  unique_key          = "req-signed-{{ .SuiteKey }}"
+  ed25519_private_key = "{{ .PrivateKey }}"
+  payload             = jsonencode({ data = "secret" })
+}
+
+resource "grantory_register" "signed" {
+  host_id             = grantory_host.signed.host_id
+  unique_key          = "reg-signed-{{ .SuiteKey }}"
+  ed25519_private_key = "{{ .PrivateKey }}"
+  payload             = jsonencode({ item = "confidential" })
+}
+
+output "request_id" {
+  value = grantory_request.signed.id
+}
+
+output "register_id" {
+  value = grantory_register.signed.id
+}
+`))
 )
 
 type terraformTemplateData struct {
@@ -175,6 +222,121 @@ type grantTemplateData struct {
 	ServerURL       string
 	RequestLabels   []labelEntry
 	RegisterLabels  []labelEntry
+}
+
+type signaturesTemplateData struct {
+	ProviderVersion string
+	ServerURL       string
+	SuiteKey        string
+	PublicKey       string
+	PrivateKey      string
+}
+
+func TestIntegrationTerraformSignatures(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test that runs Terraform/OpenTofu")
+	}
+
+	tofuPath, err := exec.LookPath("tofu")
+	if err != nil {
+		t.Skipf("tofu binary not found; %v", err)
+	}
+
+	workspace := t.TempDir()
+	buildDir := filepath.Join(workspace, "provider-bin")
+	require.NoError(t, os.MkdirAll(buildDir, 0o755))
+	providerBin := filepath.Join(buildDir, "terraform-provider-grantory")
+	buildProviderBinary(t, providerBin)
+
+	devDir := filepath.Join(workspace, "terraform-provider-dev")
+	require.NoError(t, os.MkdirAll(devDir, 0o755))
+	copyFile(t, providerBin, filepath.Join(devDir, "terraform-provider-grantory"))
+
+	serverDataDir := filepath.Join(workspace, "data")
+	require.NoError(t, os.MkdirAll(serverDataDir, 0o755))
+	serverURL, stopServer := startIntegrationServer(t, serverDataDir)
+	t.Cleanup(stopServer)
+
+	tfDir := filepath.Join(workspace, "terraform")
+	require.NoError(t, os.MkdirAll(tfDir, 0o755))
+
+	cliConfigPath := filepath.Join(workspace, "terraform.rc")
+	writeCLIConfig(t, devDir, cliConfigPath)
+
+	suiteKey := strings.ReplaceAll(t.Name(), "/", "-")
+
+	// 1. Generate keys
+	pub, priv, err := ed25519.GenerateKey(nil)
+	require.NoError(t, err)
+	pubHex := hex.EncodeToString(pub)
+	privHex := hex.EncodeToString(priv)
+
+	// 2. Successful apply with correct keys
+	writeSignaturesTerraformConfig(t, tfDir, signaturesTemplateData{
+		ProviderVersion: integrationProviderVersion,
+		ServerURL:       serverURL,
+		SuiteKey:        suiteKey,
+		PublicKey:       pubHex,
+		PrivateKey:      privHex,
+	})
+	runTofuCommand(t, tofuPath, tfDir, cliConfigPath, "apply", "-input=false", "-auto-approve")
+	outputs := runTofuOutput(t, tofuPath, tfDir, cliConfigPath)
+	require.NotEmpty(t, outputString(t, outputs, "request_id"))
+	require.NotEmpty(t, outputString(t, outputs, "register_id"))
+
+	// 3. Failed apply with WRONG private key (fails on update/refresh if we change it)
+	_, wrongPriv, _ := ed25519.GenerateKey(nil)
+	wrongPrivHex := hex.EncodeToString(wrongPriv)
+	writeSignaturesTerraformConfig(t, tfDir, signaturesTemplateData{
+		ProviderVersion: integrationProviderVersion,
+		ServerURL:       serverURL,
+		SuiteKey:        suiteKey,
+		PublicKey:       pubHex,
+		PrivateKey:      wrongPrivHex,
+	})
+
+	// Tofu should fail during the update or refresh because it uses the wrong signature
+	runTofuCommandExpectError(t, tofuPath, tfDir, cliConfigPath, "apply", "-input=false", "-auto-approve")
+
+	// 4. Failed apply with MISSING private key
+	writeSignaturesTerraformConfig(t, tfDir, signaturesTemplateData{
+		ProviderVersion: integrationProviderVersion,
+		ServerURL:       serverURL,
+		SuiteKey:        suiteKey,
+		PublicKey:       pubHex,
+		PrivateKey:      "",
+	})
+	runTofuCommandExpectError(t, tofuPath, tfDir, cliConfigPath, "apply", "-input=false", "-auto-approve")
+
+	// 5. Test RequireSignatures mode on server
+	serverDataDir2 := filepath.Join(workspace, "data-reqsig")
+	require.NoError(t, os.MkdirAll(serverDataDir2, 0o755))
+	require.NoError(t, os.Setenv("REQUIRE_SIGNATURES", "true"))
+	t.Cleanup(func() { _ = os.Unsetenv("REQUIRE_SIGNATURES") })
+	serverURL2, stopServer2 := startIntegrationServer(t, serverDataDir2)
+	t.Cleanup(stopServer2)
+
+	tfDir2 := filepath.Join(workspace, "terraform-reqsig")
+	require.NoError(t, os.MkdirAll(tfDir2, 0o755))
+
+	// Host creation should SUCCEED even if unsigned (bootstrap)
+	// But subsequent requests will be signed because we provide the key.
+	writeSignaturesTerraformConfig(t, tfDir2, signaturesTemplateData{
+		ProviderVersion: integrationProviderVersion,
+		ServerURL:       serverURL2,
+		SuiteKey:        suiteKey + "-reqsig",
+		PublicKey:       pubHex,
+		PrivateKey:      privHex,
+	})
+	runTofuCommand(t, tofuPath, tfDir2, cliConfigPath, "apply", "-input=false", "-auto-approve")
+}
+
+func writeSignaturesTerraformConfig(t *testing.T, dir string, data signaturesTemplateData) {
+	t.Helper()
+	var buf bytes.Buffer
+	require.NoError(t, terraformSignaturesTemplate.Execute(&buf, data), "render signatures Terraform template")
+	path := filepath.Join(dir, "main.tf")
+	require.NoError(t, os.WriteFile(path, buf.Bytes(), 0o644))
 }
 
 type mutabilityTemplateData struct {
@@ -519,6 +681,25 @@ func runTofuCommand(t *testing.T, tofuPath, tfDir, cliConfig string, args ...str
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("tofu %s failed: %v\nstdout:\n%s\nstderr:\n%s",
 			strings.Join(args, " "), err, stdout.String(), stderr.String())
+	}
+}
+
+func runTofuCommandExpectError(t *testing.T, tofuPath, tfDir, cliConfig string, args ...string) {
+	t.Helper()
+	cmd := exec.Command(tofuPath, args...)
+	cmd.Dir = tfDir
+	cmd.Env = append(os.Environ(),
+		"TF_IN_AUTOMATION=1",
+		fmt.Sprintf("TF_CLI_CONFIG_FILE=%s", cliConfig),
+		fmt.Sprintf("TOFU_CLI_CONFIG_FILE=%s", cliConfig),
+	)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err == nil {
+		t.Fatalf("tofu %s should have failed but succeeded\nstdout:\n%s\nstderr:\n%s",
+			strings.Join(args, " "), stdout.String(), stderr.String())
 	}
 }
 

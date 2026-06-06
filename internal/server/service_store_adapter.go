@@ -22,7 +22,11 @@ func (a serviceStoreAdapter) Close() error {
 }
 
 func (a serviceStoreAdapter) CreateHost(ctx context.Context, payload apiservice.HostCreatePayload) (apiservice.Host, error) {
-	host, err := a.store.CreateHost(ctx, storage.Host{UniqueKey: payload.UniqueKey, Labels: payload.Labels})
+	host, err := a.store.CreateHost(ctx, storage.Host{
+		UniqueKey: payload.UniqueKey,
+		PublicKey: payload.PublicKey,
+		Labels:    payload.Labels,
+	})
 	if err != nil {
 		return apiservice.Host{}, mapStorageError(err)
 	}
@@ -261,6 +265,10 @@ func (a serviceStoreAdapter) DeleteSchemaDefinition(ctx context.Context, id stri
 	return mapStorageError(a.store.DeleteSchemaDefinition(ctx, id))
 }
 
+func (a serviceStoreAdapter) RecordSignature(ctx context.Context, hostID string, timestamp int64, nonce string, expiresAt time.Time) error {
+	return mapStorageError(a.store.RecordSignature(ctx, hostID, timestamp, nonce, expiresAt))
+}
+
 func (a serviceStoreAdapter) requestWithGrant(ctx context.Context, req storage.Request) (apiservice.Request, error) {
 	out := requestFromStorage(req)
 	grant, found, err := a.store.GetGrantForRequest(ctx, req.ID)
@@ -282,7 +290,13 @@ func (a serviceStoreAdapter) requestWithGrant(ctx context.Context, req storage.R
 }
 
 func hostFromStorage(host storage.Host) apiservice.Host {
-	return apiservice.Host{ID: host.ID, UniqueKey: host.UniqueKey, Labels: host.Labels, CreatedAt: host.CreatedAt}
+	return apiservice.Host{
+		ID:        host.ID,
+		UniqueKey: host.UniqueKey,
+		PublicKey: host.PublicKey,
+		Labels:    host.Labels,
+		CreatedAt: host.CreatedAt,
+	}
 }
 
 func requestFromStorage(req storage.Request) apiservice.Request {
@@ -369,6 +383,10 @@ func mapStorageError(err error) error {
 		return apiservice.ErrReferencedHostNotFound
 	case errors.Is(err, storage.ErrReferencedRequestNotFound):
 		return apiservice.ErrReferencedRequestNotFound
+	case errors.Is(err, storage.ErrReplayDetected):
+		return apiservice.ErrReplayDetected
+	case errors.Is(err, storage.ErrTimestampRegressed):
+		return apiservice.ErrTimestampRegressed
 	default:
 		return err
 	}

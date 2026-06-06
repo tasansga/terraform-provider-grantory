@@ -1,6 +1,9 @@
 package service
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Store is the persistence contract used by Service.
 // Applications can implement this interface for custom storage backends.
@@ -39,4 +42,7 @@ type Store interface {
 	ListSchemaDefinitions(ctx context.Context) ([]SchemaDefinition, error)
 	UpdateSchemaDefinitionLabels(ctx context.Context, id string, labels map[string]string) (SchemaDefinition, error)
 	DeleteSchemaDefinition(ctx context.Context, id string) error
+
+	// RecordSignature records a signature timestamp and nonce to prevent replay attacks.
+	RecordSignature(ctx context.Context, hostID string, timestamp int64, nonce string, expiresAt time.Time) error
 }

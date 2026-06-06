@@ -19,6 +19,9 @@ Manage the lifecycle of the `grantory_register` resource.
 
 ### Optional
 
+- `ed25519_private_key` (String, Sensitive) Optional Ed25519 private key in hex format for signing requests. Required if the host has a public key registered. Consider using ed25519_private_key_file or ed25519_private_key_env for better security.
+- `ed25519_private_key_env` (String) Optional environment variable name containing the hex-encoded Ed25519 private key.
+- `ed25519_private_key_file` (String) Optional path to a file containing the hex-encoded Ed25519 private key.
 - `labels` (Map of String) Optional labels that tag the register entry.
 - `mutable` (Boolean) Whether register payload updates are allowed in place.
 - `payload` (String) JSON-encoded payload that describes the registered item.

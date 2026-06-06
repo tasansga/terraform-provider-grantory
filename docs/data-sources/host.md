@@ -24,4 +24,5 @@ Use this data source to filter Grantory records inside a Terraform/OpenTofu plan
 ### Read-Only
 
 - `id` (String) The ID of this resource.
+- `public_key` (String) Ed25519 public key in hex format for signing requests.
 - `unique_key` (String) Unique key used to enforce host uniqueness within a namespace.

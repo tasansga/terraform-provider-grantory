@@ -21,6 +21,12 @@ func resourceHost() *schema.Resource {
 				ForceNew:    true,
 				Description: "Optional unique key used to enforce host uniqueness within a namespace.",
 			},
+			"public_key": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				ForceNew:    true,
+				Description: "Optional Ed25519 public key in hex format for signing requests.",
+			},
 			"labels": {
 				Type:        schema.TypeMap,
 				Optional:    true,
@@ -28,6 +34,25 @@ func resourceHost() *schema.Resource {
 				Elem: &schema.Schema{
 					Type: schema.TypeString,
 				},
+			},
+			"ed25519_private_key": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				Sensitive:   true,
+				ForceNew:    true,
+				Description: "Optional Ed25519 private key in hex format for signing requests. Required if the host has a public key registered. Consider using ed25519_private_key_file or ed25519_private_key_env for better security.",
+			},
+			"ed25519_private_key_file": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				ForceNew:    true,
+				Description: "Optional path to a file containing the hex-encoded Ed25519 private key.",
+			},
+			"ed25519_private_key_env": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				ForceNew:    true,
+				Description: "Optional environment variable name containing the hex-encoded Ed25519 private key.",
 			},
 		},
 		CreateContext: resourceHostCreate,
@@ -46,6 +71,7 @@ func resourceHostCreate(ctx context.Context, d *schema.ResourceData, meta any) d
 
 	payload := apiHostCreatePayload{
 		UniqueKey: d.Get("unique_key").(string),
+		PublicKey: d.Get("public_key").(string),
 		Labels:    expandStringMap(rawLabels),
 	}
 
@@ -83,6 +109,12 @@ func resourceHostUpdate(ctx context.Context, d *schema.ResourceData, meta any) d
 	if !d.HasChange("labels") {
 		return nil
 	}
+
+	ctx, err := contextWithPrivateKey(ctx, d)
+	if err != nil {
+		return diag.FromErr(err)
+	}
+
 	labels := expandStringMap(extractMap(d.Get("labels")))
 	updated, err := client.UpdateHostLabels(ctx, d.Id(), labels)
 	if err != nil {
@@ -94,6 +126,12 @@ func resourceHostUpdate(ctx context.Context, d *schema.ResourceData, meta any) d
 
 func resourceHostDelete(ctx context.Context, d *schema.ResourceData, meta any) diag.Diagnostics {
 	client := meta.(*grantoryClient)
+
+	ctx, err := contextWithPrivateKey(ctx, d)
+	if err != nil {
+		return diag.FromErr(err)
+	}
+
 	if err := client.DeleteHost(ctx, d.Id()); err != nil {
 		if isNotFound(err) {
 			d.SetId("")
@@ -113,6 +151,9 @@ func resourceHostRefresh(ctx context.Context, d *schema.ResourceData, host apiHo
 		diags = append(diags, diag.FromErr(err)...)
 	}
 	if err := d.Set("unique_key", host.UniqueKey); err != nil {
+		diags = append(diags, diag.FromErr(err)...)
+	}
+	if err := d.Set("public_key", host.PublicKey); err != nil {
 		diags = append(diags, diag.FromErr(err)...)
 	}
 	if host.Labels != nil {

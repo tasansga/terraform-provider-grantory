@@ -20,6 +20,11 @@ func dataHost() *schema.Resource {
 				Computed:    true,
 				Description: "Unique key used to enforce host uniqueness within a namespace.",
 			},
+			"public_key": {
+				Type:        schema.TypeString,
+				Computed:    true,
+				Description: "Ed25519 public key in hex format for signing requests.",
+			},
 			"labels": {
 				Type:        schema.TypeMap,
 				Computed:    true,
@@ -58,6 +63,9 @@ func dataHostRead(ctx context.Context, d *schema.ResourceData, meta any) diag.Di
 		return diag.FromErr(err)
 	}
 	if err := d.Set("unique_key", host.UniqueKey); err != nil {
+		return diag.FromErr(err)
+	}
+	if err := d.Set("public_key", host.PublicKey); err != nil {
 		return diag.FromErr(err)
 	}
 	if host.Labels != nil {

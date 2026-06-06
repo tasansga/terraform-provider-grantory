@@ -19,8 +19,9 @@ import (
 )
 
 const (
-	storeCtxKey     = "grantory:store"
-	namespaceCtxKey = "grantory:namespace"
+	storeCtxKey             = "grantory:store"
+	namespaceCtxKey         = "grantory:namespace"
+	requireSignaturesCtxKey = "grantory:require-signatures"
 )
 
 type localStore struct {
@@ -240,6 +241,7 @@ func (s *Server) namespaceMiddleware() fiber.Handler {
 
 		c.Locals(storeCtxKey, localStore{store: store})
 		c.Locals(namespaceCtxKey, namespace)
+		c.Locals(requireSignaturesCtxKey, s.cfg.RequireSignatures)
 		return c.Next()
 	}
 }

@@ -23,6 +23,9 @@ type Config struct {
 	// When empty, the default server log level is used.
 	LogLevel string
 
+	// RequireSignatures enforces Ed25519 signatures for all write operations.
+	RequireSignatures bool
+
 	ServerVersion string
 }
 
@@ -64,14 +67,15 @@ func (c Config) toInternalConfig() (internalconfig.Config, error) {
 	}
 
 	return internalconfig.Config{
-		Database:       cfg.Database,
-		BindAddr:       cfg.BindAddr,
-		TLSBind:        cfg.TLSBind,
-		TLSCert:        cfg.TLSCert,
-		TLSKey:         cfg.TLSKey,
-		UnixSocket:     cfg.UnixSocket,
-		UnixSocketMode: os.FileMode(cfg.UnixSocketMode),
-		LogLevel:       level,
-		ServerVersion:  cfg.ServerVersion,
+		Database:          cfg.Database,
+		BindAddr:          cfg.BindAddr,
+		TLSBind:           cfg.TLSBind,
+		TLSCert:           cfg.TLSCert,
+		TLSKey:            cfg.TLSKey,
+		UnixSocket:        cfg.UnixSocket,
+		UnixSocketMode:    os.FileMode(cfg.UnixSocketMode),
+		LogLevel:          level,
+		RequireSignatures: cfg.RequireSignatures,
+		ServerVersion:     cfg.ServerVersion,
 	}, nil
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/sirupsen/logrus"
@@ -130,6 +131,7 @@ func (s *postgresStore) Migrate(ctx context.Context) error {
 		fn   func(context.Context, *sql.Tx) error
 	}{
 		{"hosts", s.ensureHostsTable},
+		{"nonces", s.ensureNoncesTable},
 		{"schema definitions", s.ensureSchemaDefinitionsTable},
 		{"requests", s.ensureRequestsTable},
 		{"registers", s.ensureRegistersTable},
@@ -165,6 +167,8 @@ func (s *postgresStore) ensureHostsTable(ctx context.Context, tx *sql.Tx) error 
 CREATE TABLE IF NOT EXISTS %s (
 	id TEXT PRIMARY KEY,
 	unique_key TEXT,
+	public_key TEXT,
+	last_signature_timestamp BIGINT,
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 )`, s.table("hosts"))
 	if _, err := tx.ExecContext(ctx, stmt); err != nil {
@@ -173,8 +177,28 @@ CREATE TABLE IF NOT EXISTS %s (
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS unique_key TEXT`, s.table("hosts"))); err != nil {
 		return fmt.Errorf("add hosts unique_key column: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS public_key TEXT`, s.table("hosts"))); err != nil {
+		return fmt.Errorf("add hosts public_key column: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS last_signature_timestamp BIGINT`, s.table("hosts"))); err != nil {
+		return fmt.Errorf("add hosts last_signature_timestamp column: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`CREATE UNIQUE INDEX IF NOT EXISTS hosts_unique_key_idx ON %s (unique_key) WHERE unique_key IS NOT NULL`, s.table("hosts"))); err != nil {
 		return fmt.Errorf("create hosts unique_key index: %w", err)
+	}
+	return nil
+}
+
+func (s *postgresStore) ensureNoncesTable(ctx context.Context, tx *sql.Tx) error {
+	stmt := fmt.Sprintf(`
+CREATE TABLE IF NOT EXISTS %s (
+	host_id TEXT NOT NULL,
+	nonce TEXT NOT NULL,
+	expires_at TIMESTAMPTZ NOT NULL,
+	PRIMARY KEY (host_id, nonce)
+)`, s.table("nonces"))
+	if _, err := tx.ExecContext(ctx, stmt); err != nil {
+		return fmt.Errorf("create nonces table: %w", err)
 	}
 	return nil
 }
@@ -498,15 +522,20 @@ func (s *postgresStore) CreateHost(ctx context.Context, host Host) (Host, error)
 	s.logDBOperation("hosts", "create", logrus.Fields{
 		"host_id":    host.ID,
 		"unique_key": host.UniqueKey,
+		"public_key": host.PublicKey,
 		"labels":     host.Labels,
 	})
 
-	stmt := fmt.Sprintf(`INSERT INTO %s (id, unique_key) VALUES ($1, $2)`, s.table("hosts"))
+	stmt := fmt.Sprintf(`INSERT INTO %s (id, unique_key, public_key) VALUES ($1, $2, $3)`, s.table("hosts"))
 	var uniqueKey any
 	if host.UniqueKey != "" {
 		uniqueKey = host.UniqueKey
 	}
-	if _, err := tx.ExecContext(ctx, stmt, host.ID, uniqueKey); err != nil {
+	var publicKey any
+	if host.PublicKey != "" {
+		publicKey = host.PublicKey
+	}
+	if _, err := tx.ExecContext(ctx, stmt, host.ID, uniqueKey, publicKey); err != nil {
 		if isUniqueConstraintError(err) {
 			if isUniqueHostKeyConstraintError(err) {
 				return Host{}, ErrHostUniqueKeyConflict
@@ -537,7 +566,7 @@ func (s *postgresStore) GetHost(ctx context.Context, id string) (Host, error) {
 		"host_id": id,
 	})
 
-	query := fmt.Sprintf(`SELECT id, unique_key, created_at FROM %s WHERE id = $1`, s.table("hosts"))
+	query := fmt.Sprintf(`SELECT id, unique_key, public_key, last_signature_timestamp, created_at FROM %s WHERE id = $1`, s.table("hosts"))
 	row := s.db.QueryRowContext(ctx, query, id)
 	host, err := scanHost(row)
 	if err != nil {
@@ -558,7 +587,7 @@ func (s *postgresStore) ListHosts(ctx context.Context) ([]Host, error) {
 
 	s.logDBOperation("hosts", "list", nil)
 
-	query := fmt.Sprintf(`SELECT id, unique_key, created_at FROM %s ORDER BY created_at ASC`, s.table("hosts"))
+	query := fmt.Sprintf(`SELECT id, unique_key, public_key, last_signature_timestamp, created_at FROM %s ORDER BY created_at ASC`, s.table("hosts"))
 	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("query hosts: %w", err)
@@ -640,6 +669,67 @@ func (s *postgresStore) UpdateHostLabels(ctx context.Context, id string, labels 
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit host labels transaction: %w", err)
+	}
+
+	return nil
+}
+
+// RecordSignature records a signature timestamp and nonce to prevent replay attacks.
+func (s *postgresStore) RecordSignature(ctx context.Context, hostID string, timestamp int64, nonce string, expiresAt time.Time) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("store not initialized")
+	}
+
+	s.logDBOperation("signatures", "record", logrus.Fields{
+		"host_id":   hostID,
+		"timestamp": timestamp,
+		"nonce":     nonce,
+	})
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin record signature transaction: %w", err)
+	}
+	defer rollbackTx(tx, "rollback record signature transaction")
+
+	// 1. Check monotonic timestamp
+	var lastTs sql.NullInt64
+	query := fmt.Sprintf(`SELECT last_signature_timestamp FROM %s WHERE id = $1`, s.table("hosts"))
+	err = tx.QueryRowContext(ctx, query, hostID).Scan(&lastTs)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrHostNotFound
+		}
+		return fmt.Errorf("fetch last timestamp: %w", err)
+	}
+
+	if lastTs.Valid && timestamp < lastTs.Int64 {
+		return ErrTimestampRegressed
+	}
+
+	// 2. Try insert nonce
+	stmt := fmt.Sprintf(`INSERT INTO %s (host_id, nonce, expires_at) VALUES ($1, $2, $3)`, s.table("nonces"))
+	if _, err = tx.ExecContext(ctx, stmt, hostID, nonce, expiresAt); err != nil {
+		if isUniqueConstraintError(err) {
+			return ErrReplayDetected
+		}
+		return fmt.Errorf("insert nonce: %w", err)
+	}
+
+	// 3. Update host timestamp
+	stmt = fmt.Sprintf(`UPDATE %s SET last_signature_timestamp = $1 WHERE id = $2`, s.table("hosts"))
+	if _, err = tx.ExecContext(ctx, stmt, timestamp, hostID); err != nil {
+		return fmt.Errorf("update last timestamp: %w", err)
+	}
+
+	// 4. Cleanup expired nonces (occasional)
+	if timestamp%10 == 0 {
+		stmt = fmt.Sprintf(`DELETE FROM %s WHERE expires_at < NOW()`, s.table("nonces"))
+		_, _ = tx.ExecContext(ctx, stmt)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit record signature transaction: %w", err)
 	}
 
 	return nil

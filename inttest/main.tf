@@ -46,10 +46,12 @@ resource "grantory_host" "without_labels" {}
 
 output "grantory_host_with_labels" {
   value = grantory_host.with_labels
+  sensitive = true
 }
 
 output "grantory_host_without_labels" {
   value = grantory_host.without_labels
+  sensitive = true
 }
 
 resource "grantory_request" "with_labels_payload" {
@@ -68,10 +70,12 @@ resource "grantory_request" "without_labels_payload" {
 
 output "grantory_request_with_labels_payload" {
   value = grantory_request.with_labels_payload
+  sensitive = true
 }
 
 output "grantory_request_without_labels_payload" {
   value = grantory_request.without_labels_payload
+  sensitive = true
 }
 
 resource "grantory_schema_definition" "basic" {
@@ -113,6 +117,7 @@ output "grantory_schema_definition_grant" {
 
 output "grantory_request_with_schema" {
   value = grantory_request.with_schema
+  sensitive = true
 }
 
 resource "grantory_register" "with_labels_payload" {
@@ -132,10 +137,12 @@ resource "grantory_register" "without_labels_payload" {
 
 output "grantory_register_with_labels_payload" {
   value = grantory_register.with_labels_payload
+  sensitive = true
 }
 
 output "grantory_register_without_labels_payload" {
   value = grantory_register.without_labels_payload
+  sensitive = true
 }
 
 resource "grantory_grant" "with_payload" {
