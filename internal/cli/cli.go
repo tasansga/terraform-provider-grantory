@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	apiclient "github.com/tasansga/terraform-provider-grantory/api/client"
 	"github.com/tasansga/terraform-provider-grantory/internal/config"
 	"github.com/tasansga/terraform-provider-grantory/internal/server"
 	"github.com/tasansga/terraform-provider-grantory/internal/storage"
@@ -47,6 +50,30 @@ func runWithBackend(cmd *cobra.Command, action func(context.Context, cliBackend)
 	}
 
 	ctx := cmd.Context()
+
+	privKeyFile, _ := cmd.Root().PersistentFlags().GetString(FlagPrivateKeyFile)
+	if privKeyFile == "" {
+		privKeyFile = os.Getenv(EnvPrivateKeyFile)
+	}
+
+	if privKeyFile != "" {
+		keyHex, err := os.ReadFile(privKeyFile)
+		if err != nil {
+			return fmt.Errorf("read private key file: %w", err)
+		}
+
+		keyBytes, err := hex.DecodeString(strings.TrimSpace(string(keyHex)))
+		if err != nil {
+			return fmt.Errorf("decode private key hex: %w", err)
+		}
+
+		if len(keyBytes) != ed25519.PrivateKeySize {
+			return fmt.Errorf("invalid private key size: expected %d bytes, got %d", ed25519.PrivateKeySize, len(keyBytes))
+		}
+
+		ctx = apiclient.WithPrivateKey(ctx, ed25519.PrivateKey(keyBytes))
+	}
+
 	switch backendCfg.mode {
 	case backendModeDirect:
 		var store storage.Store
