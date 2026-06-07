@@ -18,6 +18,8 @@ const (
 	EnvGrantoryControllerUser      = "GRANTORY_CONTROLLER_USER"
 	EnvGrantoryControllerPassword  = "GRANTORY_CONTROLLER_PASSWORD"
 	EnvGrantoryControllerNamespace = "GRANTORY_CONTROLLER_NAMESPACE"
+	FlagPrivateKeyFile             = "private-key-file"
+	EnvPrivateKeyFile              = "PRIVATE_KEY_FILE"
 )
 
 type backendMode string
