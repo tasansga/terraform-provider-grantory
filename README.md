@@ -104,6 +104,37 @@ provider "grantory" {
 
 `server` and SSH transport settings are mutually exclusive. Configure one mode only.
 
+### Host signing with `tls_private_key`
+
+Grantory supports request signing for enhanced security. You can wire the `hashicorp/tls` provider directly into `grantory_host` to manage host keys:
+
+```hcl
+resource "tls_private_key" "host_key" {
+  algorithm = "ED25519"
+}
+
+resource "grantory_host" "app" {
+  key_format          = "pem"
+  public_key          = tls_private_key.host_key.public_key_pem
+  ed25519_private_key = tls_private_key.host_key.private_key_pem
+
+  labels = {
+    env = "prod"
+  }
+}
+
+# Subsequent requests for this host must also use the private key
+resource "grantory_request" "signed_request" {
+  host_id             = grantory_host.app.host_id
+  key_format          = "pem"
+  ed25519_private_key = tls_private_key.host_key.private_key_pem
+
+  payload = jsonencode({
+    action = "restart"
+  })
+}
+```
+
 SSH agent auth (useful for passphrase-protected keys):
 
 ```hcl

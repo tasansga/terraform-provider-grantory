@@ -38,6 +38,7 @@ resource "grantory_request" "database" {
 - `ed25519_private_key_env` (String) Optional environment variable name containing the hex-encoded Ed25519 private key.
 - `ed25519_private_key_file` (String) Optional path to a file containing the hex-encoded Ed25519 private key.
 - `grant_schema_definition_id` (String) Optional schema definition identifier used to validate grant payloads.
+- `key_format` (String) Format of the private key provided as input. Use "pem" for PKCS#8 PEM format.
 - `labels` (Map of String) Optional labels that tag the request.
 - `mutable` (Boolean) Whether request payload updates are allowed in place.
 - `payload` (String) JSON-encoded payload that describes the requested resource.

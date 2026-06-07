@@ -24,8 +24,12 @@ resource "grantory_host" "app" {
 
 ### Optional
 
+- `ed25519_private_key` (String, Sensitive) Optional Ed25519 private key in hex or PEM format for signing requests. Required if the host has a public key registered. Consider using ed25519_private_key_file or ed25519_private_key_env for better security.
+- `ed25519_private_key_env` (String) Optional environment variable name containing the hex or PEM-encoded Ed25519 private key.
+- `ed25519_private_key_file` (String) Optional path to a file containing the hex or PEM-encoded Ed25519 private key.
+- `key_format` (String) Format of the public and private keys provided as input. Use "pem" for PKCS#8 (private) and SPKI (public) PEM formats.
 - `labels` (Map of String) Optional labels that accompany the host registration.
-- `public_key` (String) Optional Ed25519 public key in hex format for signing requests.
+- `public_key` (String) Optional Ed25519 public key in hex or PEM format for signing requests.
 - `unique_key` (String) Optional unique key used to enforce host uniqueness within a namespace.
 
 ### Read-Only
