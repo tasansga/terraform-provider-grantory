@@ -5,6 +5,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 )
 
 func resourceHost() *schema.Resource {
@@ -20,6 +21,14 @@ func resourceHost() *schema.Resource {
 				Optional:    true,
 				ForceNew:    true,
 				Description: "Optional unique key used to enforce host uniqueness within a namespace.",
+			},
+			"key_format": {
+				Type:         schema.TypeString,
+				Optional:     true,
+				Default:      "hex",
+				ForceNew:     true,
+				Description:  "Format of the public and private keys provided as input. Use \"pem\" for PKCS#8 (private) and SPKI (public) PEM formats.",
+				ValidateFunc: validation.StringInSlice([]string{"hex", "pem"}, false),
 			},
 			"public_key": {
 				Type:        schema.TypeString,
