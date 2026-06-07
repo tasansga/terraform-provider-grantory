@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"os"
 	"strings"
@@ -56,6 +58,52 @@ func contextWithPrivateKey(ctx context.Context, d *schema.ResourceData) (context
 	return apiclient.WithPrivateKey(ctx, ed25519.PrivateKey(keyBytes)), nil
 }
 
+func decodeKey(input, format string, isPrivate bool) ([]byte, error) {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return nil, nil
+	}
+
+	if format == "hex" {
+		keyBytes, err := hex.DecodeString(input)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode hex key: %w", err)
+		}
+		return keyBytes, nil
+	}
+
+	if format == "pem" {
+		block, _ := pem.Decode([]byte(input))
+		if block == nil {
+			return nil, fmt.Errorf("failed to decode PEM block: no PEM data found")
+		}
+
+		if isPrivate {
+			key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse PKCS#8 private key: %w", err)
+			}
+			priv, ok := key.(ed25519.PrivateKey)
+			if !ok {
+				return nil, fmt.Errorf("expected Ed25519 private key, got %T", key)
+			}
+			return []byte(priv), nil
+		} else {
+			key, err := x509.ParsePKIXPublicKey(block.Bytes)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse SPKI public key: %w", err)
+			}
+			pub, ok := key.(ed25519.PublicKey)
+			if !ok {
+				return nil, fmt.Errorf("expected Ed25519 public key, got %T", key)
+			}
+			return []byte(pub), nil
+		}
+	}
+
+	return nil, fmt.Errorf("unsupported key format: %s", format)
+}
+
 func isNotFound(err error) bool {
 	return apiclient.IsNotFound(err)
 }
@@ -85,23 +133,6 @@ func flattenStringMap(input map[string]string) map[string]any {
 	}
 	output := make(map[string]any, len(input))
 	for key, value := range input {
-		output[key] = value
-	}
-	if len(output) == 0 {
-		return nil
-	}
-	return output
-}
-
-func expandAnyMap(input map[string]any) map[string]any {
-	if len(input) == 0 {
-		return nil
-	}
-	output := make(map[string]any, len(input))
-	for key, value := range input {
-		if value == nil {
-			continue
-		}
 		output[key] = value
 	}
 	if len(output) == 0 {

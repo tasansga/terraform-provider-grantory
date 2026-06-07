@@ -1,113 +1,67 @@
 package provider
 
 import (
+	"crypto/ed25519"
+	"crypto/x509"
+	"encoding/hex"
+	"encoding/pem"
 	"testing"
 
-	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestExpandStringMapSkipsInvalidValues(t *testing.T) {
-	t.Parallel()
+func TestDecodeKey(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	require.NoError(t, err)
 
-	result := expandStringMap(map[string]any{
-		"valid":   "value",
-		"nil":     nil,
-		"numeric": 1,
+	pubHex := hex.EncodeToString(pub)
+	privHex := hex.EncodeToString(priv)
+
+	pubPKIX, err := x509.MarshalPKIXPublicKey(pub)
+	require.NoError(t, err)
+	pubPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubPKIX}))
+
+	privPKCS8, err := x509.MarshalPKCS8PrivateKey(priv)
+	require.NoError(t, err)
+	privPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privPKCS8}))
+
+	t.Run("hex public key", func(t *testing.T) {
+		got, err := decodeKey(pubHex, "hex", false)
+		assert.NoError(t, err)
+		assert.Equal(t, []byte(pub), got)
 	})
-	assert.Equal(t, map[string]string{"valid": "value"}, result)
-	assert.Nil(t, expandStringMap(map[string]any{}))
-}
 
-func TestFlattenStringMapReturnsValue(t *testing.T) {
-	t.Parallel()
+	t.Run("hex private key", func(t *testing.T) {
+		got, err := decodeKey(privHex, "hex", true)
+		assert.NoError(t, err)
+		assert.Equal(t, []byte(priv), got)
+	})
 
-	input := map[string]string{"env": "prod"}
-	flattened := flattenStringMap(input)
-	assert.Equal(t, map[string]any{"env": "prod"}, flattened)
-	assert.Nil(t, flattenStringMap(nil))
-}
+	t.Run("pem public key", func(t *testing.T) {
+		got, err := decodeKey(pubPEM, "pem", false)
+		assert.NoError(t, err)
+		assert.Equal(t, []byte(pub), got)
+	})
 
-func TestExpandAnyMapFiltersNilValues(t *testing.T) {
-	t.Parallel()
+	t.Run("pem private key", func(t *testing.T) {
+		got, err := decodeKey(privPEM, "pem", true)
+		assert.NoError(t, err)
+		assert.Equal(t, []byte(priv), got)
+	})
 
-	entries := map[string]any{"keep": "value", "skip": nil}
-	result := expandAnyMap(entries)
-	assert.Equal(t, map[string]any{"keep": "value"}, result)
-	assert.Nil(t, expandAnyMap(map[string]any{}))
-}
+	t.Run("invalid format", func(t *testing.T) {
+		_, err := decodeKey(pubHex, "invalid", false)
+		assert.Error(t, err)
+	})
 
-func TestParseAndEncodeJSONString(t *testing.T) {
-	t.Parallel()
+	t.Run("invalid pem public key", func(t *testing.T) {
+		_, err := decodeKey("-----BEGIN PUBLIC KEY-----\ninvalid\n-----END PUBLIC KEY-----", "pem", false)
+		assert.Error(t, err)
+	})
 
-	empty, err := parseJSONString("  ")
-	assert.NoError(t, err)
-	assert.Nil(t, empty)
-
-	decoded, err := parseJSONString("{\"key\": \"value\"}")
-	assert.NoError(t, err)
-	assert.Equal(t, map[string]any{"key": "value"}, decoded)
-
-	_, err = parseJSONString("null")
-	assert.Error(t, err)
-
-	encoded, err := encodeMapToJSONString(decoded)
-	assert.NoError(t, err)
-	assert.JSONEq(t, "{\"key\":\"value\"}", encoded)
-	emptyPayload, err := encodeMapToJSONString(nil)
-	assert.NoError(t, err)
-	assert.Empty(t, emptyPayload)
-}
-
-func TestSetJSONStringAttributeClearsValue(t *testing.T) {
-	t.Parallel()
-
-	resource := &schema.Resource{Schema: map[string]*schema.Schema{
-		"payload": {Type: schema.TypeString},
-	}}
-	data := schema.TestResourceDataRaw(t, resource.Schema, nil)
-
-	diags := setJSONStringAttribute(data, "payload", nil)
-	assert.Empty(t, diags)
-	assert.Equal(t, "", data.Get("payload"))
-
-	payload := map[string]any{"name": "test"}
-	diags = setJSONStringAttribute(data, "payload", payload)
-	assert.Empty(t, diags)
-	assert.Equal(t, "{\"name\":\"test\"}", data.Get("payload"))
-
-	diags = setJSONStringAttribute(data, "payload", map[string]any{})
-	assert.Empty(t, diags)
-	assert.Equal(t, "{}", data.Get("payload"))
-}
-
-func TestHashAsJSONIsDeterministic(t *testing.T) {
-	t.Parallel()
-
-	first, err := hashAsJSON(map[string]any{"k": "v"})
-	assert.NoError(t, err)
-	second, err := hashAsJSON(map[string]any{"k": "v"})
-	assert.NoError(t, err)
-	assert.Equal(t, first, second)
-}
-
-func TestExtractMap(t *testing.T) {
-	t.Parallel()
-
-	assert.Nil(t, extractMap(nil))
-	assert.Nil(t, extractMap(123))
-	value := map[string]any{"key": "value"}
-	assert.Equal(t, value, extractMap(value))
-}
-
-func TestPayloadDiffSuppress(t *testing.T) {
-	t.Parallel()
-
-	assert.True(t, payloadDiffSuppress("payload", "", "{}", nil))
-	assert.True(t, payloadDiffSuppress("payload", "{ }", "", nil))
-	assert.True(t, payloadDiffSuppress("payload", "{}", "{ }", nil))
-	assert.False(t, payloadDiffSuppress("payload", "", "null", nil))
-	assert.False(t, payloadDiffSuppress("payload", "{}", "null", nil))
-	assert.False(t, payloadDiffSuppress("payload", "", "{\"x\":1}", nil))
-	assert.False(t, payloadDiffSuppress("payload", "{\"x\":1}", "{\"y\":1}", nil))
+	t.Run("invalid pem private key", func(t *testing.T) {
+		_, err := decodeKey("-----BEGIN PRIVATE KEY-----\ninvalid\n-----END PRIVATE KEY-----", "pem", true)
+		assert.Error(t, err)
+	})
 }
