@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/hex"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -34,7 +35,16 @@ func resourceHost() *schema.Resource {
 				Type:        schema.TypeString,
 				Optional:    true,
 				ForceNew:    true,
-				Description: "Optional Ed25519 public key in hex format for signing requests.",
+				Description: "Optional Ed25519 public key in hex or PEM format for signing requests.",
+				DiffSuppressFunc: func(k, old, new string, d *schema.ResourceData) bool {
+					format := d.Get("key_format").(string)
+					oldBytes, err1 := decodeKey(old, format, false)
+					newBytes, err2 := decodeKey(new, format, false)
+					if err1 != nil || err2 != nil {
+						return false
+					}
+					return string(oldBytes) == string(newBytes)
+				},
 			},
 			"labels": {
 				Type:        schema.TypeMap,
@@ -49,19 +59,19 @@ func resourceHost() *schema.Resource {
 				Optional:    true,
 				Sensitive:   true,
 				ForceNew:    true,
-				Description: "Optional Ed25519 private key in hex format for signing requests. Required if the host has a public key registered. Consider using ed25519_private_key_file or ed25519_private_key_env for better security.",
+				Description: "Optional Ed25519 private key in hex or PEM format for signing requests. Required if the host has a public key registered. Consider using ed25519_private_key_file or ed25519_private_key_env for better security.",
 			},
 			"ed25519_private_key_file": {
 				Type:        schema.TypeString,
 				Optional:    true,
 				ForceNew:    true,
-				Description: "Optional path to a file containing the hex-encoded Ed25519 private key.",
+				Description: "Optional path to a file containing the hex or PEM-encoded Ed25519 private key.",
 			},
 			"ed25519_private_key_env": {
 				Type:        schema.TypeString,
 				Optional:    true,
 				ForceNew:    true,
-				Description: "Optional environment variable name containing the hex-encoded Ed25519 private key.",
+				Description: "Optional environment variable name containing the hex or PEM-encoded Ed25519 private key.",
 			},
 		},
 		CreateContext: resourceHostCreate,
@@ -78,9 +88,21 @@ func resourceHostCreate(ctx context.Context, d *schema.ResourceData, meta any) d
 		rawLabels = value
 	}
 
+	format := d.Get("key_format").(string)
+	publicKeyInput := d.Get("public_key").(string)
+
+	var publicKeyHex string
+	if publicKeyInput != "" {
+		pubBytes, err := decodeKey(publicKeyInput, format, false)
+		if err != nil {
+			return diag.FromErr(err)
+		}
+		publicKeyHex = hex.EncodeToString(pubBytes)
+	}
+
 	payload := apiHostCreatePayload{
 		UniqueKey: d.Get("unique_key").(string),
-		PublicKey: d.Get("public_key").(string),
+		PublicKey: publicKeyHex,
 		Labels:    expandStringMap(rawLabels),
 	}
 

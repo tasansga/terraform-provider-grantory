@@ -6,6 +6,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/customdiff"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 )
 
 func resourceRequest() *schema.Resource {
@@ -22,6 +23,14 @@ func resourceRequest() *schema.Resource {
 				Optional:    true,
 				ForceNew:    true,
 				Description: "Optional unique key used to enforce request uniqueness within a namespace.",
+			},
+			"key_format": {
+				Type:         schema.TypeString,
+				Optional:     true,
+				Default:      "hex",
+				ForceNew:     true,
+				Description:  "Format of the private key provided as input. Use \"pem\" for PKCS#8 PEM format.",
+				ValidateFunc: validation.StringInSlice([]string{"hex", "pem"}, false),
 			},
 			"request_schema_definition_id": {
 				Type:        schema.TypeString,

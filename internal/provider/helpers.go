@@ -19,10 +19,14 @@ import (
 )
 
 func contextWithPrivateKey(ctx context.Context, d *schema.ResourceData) (context.Context, error) {
-	var keyHex string
+	var keyInput string
+	format := "hex"
+	if v, ok := d.GetOk("key_format"); ok {
+		format = v.(string)
+	}
 
 	if v, ok := d.GetOk("ed25519_private_key"); ok {
-		keyHex = v.(string)
+		keyInput = v.(string)
 	}
 	if v, ok := d.GetOk("ed25519_private_key_file"); ok {
 		path := strings.TrimSpace(v.(string))
@@ -31,27 +35,28 @@ func contextWithPrivateKey(ctx context.Context, d *schema.ResourceData) (context
 			if err != nil {
 				return ctx, fmt.Errorf("failed to read ed25519_private_key_file: %w", err)
 			}
-			keyHex = string(content)
+			keyInput = string(content)
 		}
 	}
 	if v, ok := d.GetOk("ed25519_private_key_env"); ok {
 		envVar := strings.TrimSpace(v.(string))
 		if envVar != "" {
 			if envVal := os.Getenv(envVar); envVal != "" {
-				keyHex = envVal
+				keyInput = envVal
 			}
 		}
 	}
 
-	keyHex = strings.TrimSpace(keyHex)
-	if keyHex == "" {
+	keyInput = strings.TrimSpace(keyInput)
+	if keyInput == "" {
 		return ctx, nil
 	}
 
-	keyBytes, err := hex.DecodeString(keyHex)
+	keyBytes, err := decodeKey(keyInput, format, true)
 	if err != nil {
-		return ctx, fmt.Errorf("failed to decode hex ed25519_private_key: %w", err)
+		return ctx, err
 	}
+
 	if len(keyBytes) != ed25519.PrivateKeySize {
 		return ctx, fmt.Errorf("invalid ed25519_private_key size: expected %d bytes, got %d", ed25519.PrivateKeySize, len(keyBytes))
 	}
