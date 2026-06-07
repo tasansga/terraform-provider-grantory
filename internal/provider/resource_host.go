@@ -38,10 +38,19 @@ func resourceHost() *schema.Resource {
 				Description: "Optional Ed25519 public key in hex or PEM format for signing requests.",
 				DiffSuppressFunc: func(k, old, new string, d *schema.ResourceData) bool {
 					format := d.Get("key_format").(string)
-					oldBytes, err1 := decodeKey(old, format, false)
-					newBytes, err2 := decodeKey(new, format, false)
-					if err1 != nil || err2 != nil {
-						return false
+					oldBytes, _ := decodeKey(old, format, false)
+					newBytes, _ := decodeKey(new, format, false)
+
+					// Fallback to hex for server-side values or vice versa
+					if oldBytes == nil {
+						oldBytes, _ = decodeKey(old, "hex", false)
+					}
+					if newBytes == nil {
+						newBytes, _ = decodeKey(new, "hex", false)
+					}
+
+					if oldBytes == nil || newBytes == nil {
+						return old == new
 					}
 					return string(oldBytes) == string(newBytes)
 				},
@@ -184,7 +193,18 @@ func resourceHostRefresh(ctx context.Context, d *schema.ResourceData, host apiHo
 	if err := d.Set("unique_key", host.UniqueKey); err != nil {
 		diags = append(diags, diag.FromErr(err)...)
 	}
-	if err := d.Set("public_key", host.PublicKey); err != nil {
+
+	newPublicKey := host.PublicKey
+	if oldPublicKey, ok := d.Get("public_key").(string); ok && oldPublicKey != "" {
+		format := d.Get("key_format").(string)
+		oldBytes, _ := decodeKey(oldPublicKey, format, false)
+		newBytes, _ := decodeKey(host.PublicKey, "hex", false)
+		if oldBytes != nil && newBytes != nil && string(oldBytes) == string(newBytes) {
+			newPublicKey = oldPublicKey
+		}
+	}
+
+	if err := d.Set("public_key", newPublicKey); err != nil {
 		diags = append(diags, diag.FromErr(err)...)
 	}
 	if host.Labels != nil {

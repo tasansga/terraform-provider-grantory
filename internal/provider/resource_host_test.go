@@ -2,7 +2,11 @@ package provider
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +16,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	clienttest "github.com/tasansga/terraform-provider-grantory/api/client/testutil"
 )
 
@@ -50,6 +55,43 @@ func TestResourceHostLifecycle(t *testing.T) {
 	assert.False(t, resource.DeleteContext(context.Background(), data, client).HasError(), "delete diagnostics")
 
 	assert.Empty(t, data.Id(), "id should be cleared after delete")
+}
+
+func TestResourceHostPEM(t *testing.T) {
+	t.Parallel()
+
+	pub, _, err := ed25519.GenerateKey(nil)
+	require.NoError(t, err)
+	pubPKIX, err := x509.MarshalPKIXPublicKey(pub)
+	require.NoError(t, err)
+	pubPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubPKIX}))
+	pubHex := hex.EncodeToString(pub)
+
+	server := newHostTestServer()
+	defer server.Close()
+
+	client := clienttest.New(t, server, "", "", "")
+
+	resource := resourceHost()
+	data := schema.TestResourceDataRaw(t, resource.Schema, map[string]any{
+		"key_format": "pem",
+		"public_key": pubPEM,
+	})
+
+	// Create should succeed and convert PEM to hex for the API
+	assert.False(t, resource.CreateContext(context.Background(), data, client).HasError(), "create diagnostics")
+	assert.Equal(t, pubPEM, data.Get("public_key"), "public_key should stay as PEM in state")
+
+	// Verify what was "sent" to the server (mock server stores it)
+	// We can check it via ReadContext because our mock returns what was stored
+	assert.False(t, resource.ReadContext(context.Background(), data, client).HasError(), "read diagnostics")
+	// The mock server stores the hex version because that's what CreateContext sends
+	// resourceHostRefresh will Set it back, and DiffSuppressFunc should keep it as PEM if it matches
+	assert.Equal(t, pubPEM, data.Get("public_key"), "public_key should remain PEM after refresh if DiffSuppressFunc works")
+
+	// Test DiffSuppressFunc directly
+	diffSuppress := resource.Schema["public_key"].DiffSuppressFunc
+	assert.True(t, diffSuppress("public_key", pubPEM, pubHex, data), "DiffSuppress should match PEM against its hex equivalent")
 }
 
 func TestResourceHostUpdatesLabels(t *testing.T) {
