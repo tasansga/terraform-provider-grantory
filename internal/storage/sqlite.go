@@ -851,7 +851,7 @@ func (s *sqliteStore) RecordSignature(ctx context.Context, hostID string, timest
 
 	// 4. Cleanup expired nonces (occasional)
 	if timestamp%10 == 0 {
-		_, _ = tx.ExecContext(ctx, `DELETE FROM nonces WHERE expires_at < CURRENT_TIMESTAMP`)
+		_, _ = tx.ExecContext(ctx, `DELETE FROM nonces WHERE expires_at < (strftime('%Y-%m-%d %H:%M:%S', 'now'))`)
 	}
 
 	if err := tx.Commit(); err != nil {

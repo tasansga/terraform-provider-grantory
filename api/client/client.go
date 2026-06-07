@@ -450,7 +450,12 @@ func (c *Client) doJSON(ctx context.Context, method, endpoint string, reqBody an
 		}
 		nonce := hex.EncodeToString(nonceBytes)
 
-		content := fmt.Sprintf("%s:%s:%s:%s:%s", timestamp, nonce, method, target.Path, string(bodyBytes))
+		pathWithQuery := target.Path
+		if target.RawQuery != "" {
+			pathWithQuery = target.Path + "?" + target.RawQuery
+		}
+
+		content := fmt.Sprintf("%s:%s:%s:%s:%s", timestamp, nonce, method, pathWithQuery, string(bodyBytes))
 		sig := ed25519.Sign(privKey, []byte(content))
 		req.Header.Set("X-Grantory-Timestamp", timestamp)
 		req.Header.Set("X-Grantory-Nonce", nonce)

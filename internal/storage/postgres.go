@@ -724,7 +724,7 @@ func (s *postgresStore) RecordSignature(ctx context.Context, hostID string, time
 
 	// 4. Cleanup expired nonces (occasional)
 	if timestamp%10 == 0 {
-		stmt = fmt.Sprintf(`DELETE FROM %s WHERE expires_at < NOW()`, s.table("nonces"))
+		stmt = fmt.Sprintf(`DELETE FROM %s WHERE expires_at < (NOW() AT TIME ZONE 'UTC')`, s.table("nonces"))
 		_, _ = tx.ExecContext(ctx, stmt)
 	}
 

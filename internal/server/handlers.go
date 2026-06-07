@@ -1164,13 +1164,18 @@ func verifySignature(c *fiber.Ctx, svc *apiservice.Service, hostID string) error
 		return fiber.NewError(fiber.StatusInternalServerError, "invalid stored public key size")
 	}
 
-	content := fmt.Sprintf("%s:%s:%s:%s:%s", timestamp, nonce, c.Method(), c.Path(), string(c.Body()))
+	pathWithQuery := c.Path()
+	if qs := c.Context().QueryArgs().String(); qs != "" {
+		pathWithQuery = pathWithQuery + "?" + qs
+	}
+
+	content := fmt.Sprintf("%s:%s:%s:%s:%s", timestamp, nonce, c.Method(), pathWithQuery, string(c.Body()))
 	if !ed25519.Verify(pubKey, []byte(content), sig) {
 		return fiber.NewError(fiber.StatusUnauthorized, "invalid signature")
 	}
 
 	// Anti-replay and monotonicity check
-	expiresAt := time.Unix(ts, 0).Add(6 * time.Minute)
+	expiresAt := time.Unix(ts, 0).UTC().Add(6 * time.Minute)
 	if err := svc.Store().RecordSignature(c.Context(), hostID, ts, nonce, expiresAt); err != nil {
 		switch {
 		case errors.Is(err, apiservice.ErrReplayDetected):
