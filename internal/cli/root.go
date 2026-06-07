@@ -40,6 +40,7 @@ func NewRootCommand() *cobra.Command {
 	root.PersistentFlags().String(FlagUser, "", "Username for basic auth (env: "+EnvUser+")")
 	root.PersistentFlags().String(FlagPassword, "", "Password for basic auth (env: "+EnvPassword+")")
 	root.PersistentFlags().String(FlagNamespace, "", "namespace to target for CLI commands (env: "+EnvNamespace+")")
+	root.PersistentFlags().String(FlagPrivateKeyFile, "", "path to a file containing a hex-encoded Ed25519 private key (env: "+EnvPrivateKeyFile+")")
 	root.PersistentFlags().SortFlags = false
 	root.SilenceUsage = true
 
