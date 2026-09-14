@@ -56,17 +56,33 @@ plan|apply|destroy|output) ;;
 esac
 
 SERVER_PID=""
+RAFT_PIDS=()
 POSTGRES_CONTAINER=""
 
-cleanup() {
+cleanup_services() {
   if [[ -n "${SERVER_PID}" ]]; then
     kill "${SERVER_PID}" 2>/dev/null || true
     wait "${SERVER_PID}" 2>/dev/null || true
     SERVER_PID=""
   fi
+  if [[ ${#RAFT_PIDS[@]} -gt 0 ]]; then
+    for pid in "${RAFT_PIDS[@]}"; do
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+    done
+    RAFT_PIDS=()
+  fi
   if [[ -n "${POSTGRES_CONTAINER}" ]]; then
     docker rm -f "${POSTGRES_CONTAINER}" >/dev/null 2>&1 || true
     POSTGRES_CONTAINER=""
+  fi
+}
+
+cleanup() {
+  local exit_code=$?
+  cleanup_services
+  if [[ $exit_code -eq 0 && -n "${WORKDIR:-}" && -d "${WORKDIR}" ]]; then
+    rm -rf "$WORKDIR"
   fi
 }
 trap cleanup EXIT
@@ -309,7 +325,7 @@ run_sqlite() {
   mkdir -p "$sqlite_dir"
   start_server "$sqlite_dir" "$server_port" "$log_file"
   run_tf "$tf_dir" "http://127.0.0.1:${server_port}" "sqlite"
-  cleanup
+  cleanup_services
 }
 
 run_postgres() {
@@ -352,8 +368,112 @@ run_postgres() {
   POSTGRES_DSN="$dsn" "$GO_CMD" test -tags=postgres ./internal/storage
   start_server "$dsn" "$server_port" "$log_file"
   run_tf "$tf_dir" "http://127.0.0.1:${server_port}" "postgres"
-  cleanup
+  cleanup_services
 }
 
-run_sqlite
-run_postgres
+run_raft() {
+  local base_dir="$WORKDIR/raft-data"
+  local tf_dir="$TF_BASE_DIR/raft"
+  local log_file_prefix="$WORKDIR/server-raft"
+  local base_port="${RAFT_BASE_PORT:-18080}"
+
+  local node1_http=$((base_port + 2))
+  local node1_raft=$((base_port + 3))
+  local node2_http=$((base_port + 4))
+  local node2_raft=$((base_port + 5))
+  local node3_http=$((base_port + 6))
+  local node3_raft=$((base_port + 7))
+
+  mkdir -p "$base_dir/node1" "$base_dir/node2" "$base_dir/node3"
+  local peers="node-1=127.0.0.1:${node1_raft},node-2=127.0.0.1:${node2_raft},node-3=127.0.0.1:${node3_raft}"
+  local peer_http_addrs="node-1=http://127.0.0.1:${node1_http},node-2=http://127.0.0.1:${node2_http},node-3=http://127.0.0.1:${node3_http},127.0.0.1:${node1_raft}=http://127.0.0.1:${node1_http},127.0.0.1:${node2_raft}=http://127.0.0.1:${node2_http},127.0.0.1:${node3_raft}=http://127.0.0.1:${node3_http}"
+
+  for i in 1 2 3; do
+    local node_http_port=$((base_port + 2 * i))
+    local node_raft_port=$((base_port + 1 + 2 * i))
+    DATABASE="$base_dir/node${i}" "$BIN_DIR/grantory" serve \
+      --http-bind "127.0.0.1:${node_http_port}" \
+      --raft-bind "127.0.0.1:${node_raft_port}" \
+      --raft-advertise "127.0.0.1:${node_raft_port}" \
+      --raft-node-id "node-${i}" \
+      --raft-bootstrap-expect 3 \
+      --raft-peers "$peers" \
+      --raft-peer-http-addrs "$peer_http_addrs" \
+      >"${log_file_prefix}-node${i}.log" 2>&1 &
+    RAFT_PIDS+=($!)
+  done
+
+  # Wait for all nodes to become ready
+  for i in 1 2 3; do
+    local node_http_port=$((base_port + 2 * i))
+    if ! wait_for_ready "http://127.0.0.1:${node_http_port}"; then
+      echo "raft node ${i} failed to become ready (log: ${log_file_prefix}-node${i}.log)" >&2
+      cleanup_services
+      return 1
+    fi
+  done
+
+  # Wait for cluster leader election and find a follower node to target with OpenTofu/Terraform
+  local leader_url=""
+  local follower_url=""
+  local attempts=60
+  for _ in $(seq 1 "$attempts"); do
+    local leaders=0
+    local f_url=""
+    local l_url=""
+    for i in 1 2 3; do
+      local node_http_port=$((base_port + 2 * i))
+      local node_url="http://127.0.0.1:${node_http_port}"
+      local status_json
+      if status_json="$(curl -fsS "${node_url}/api/v1/cluster/status" 2>/dev/null)"; then
+        local is_leader
+        is_leader="$(echo "$status_json" | jq -r '.is_leader')"
+        if [[ "$is_leader" == "true" ]]; then
+          leaders=$((leaders + 1))
+          l_url="$node_url"
+        else
+          f_url="$node_url"
+        fi
+      fi
+    done
+    if [[ "$leaders" -eq 1 && -n "$f_url" && -n "$l_url" ]]; then
+      leader_url="$l_url"
+      follower_url="$f_url"
+      break
+    fi
+    sleep 0.5
+  done
+
+  if [[ -z "$follower_url" ]]; then
+    echo "raft cluster failed to elect leader and stabilize (logs in $WORKDIR)" >&2
+    cleanup_services
+    return 1
+  fi
+
+  echo "raft cluster online: leader=$leader_url, targeting follower=$follower_url"
+  run_tf "$tf_dir" "$follower_url" "sqlite"
+  cleanup_services
+}
+
+TARGET="${TARGET:-all}"
+
+case "$TARGET" in
+sqlite)
+  run_sqlite
+  ;;
+raft)
+  run_raft
+  ;;
+postgres)
+  run_postgres
+  ;;
+all)
+  run_sqlite
+  run_raft
+  run_postgres
+  ;;
+*)
+  echo "unknown TARGET $TARGET (supported: sqlite, raft, postgres, all)" >&2
+  exit 1
+  ;;
+esac

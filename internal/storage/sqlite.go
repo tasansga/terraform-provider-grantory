@@ -8,9 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -19,6 +19,7 @@ import (
 // sqliteStore wraps an sqlite database connection for the provisioner server.
 type sqliteStore struct {
 	db        *sql.DB
+	nsMu      sync.RWMutex
 	namespace string
 }
 
@@ -29,6 +30,8 @@ func (s *sqliteStore) SetNamespace(namespace string) {
 	if s == nil {
 		return
 	}
+	s.nsMu.Lock()
+	defer s.nsMu.Unlock()
 	if ns := strings.TrimSpace(namespace); ns != "" {
 		s.namespace = ns
 		return
@@ -40,6 +43,8 @@ func (s *sqliteStore) namespaceForLog() string {
 	if s == nil {
 		return unknownNamespace
 	}
+	s.nsMu.RLock()
+	defer s.nsMu.RUnlock()
 	if ns := strings.TrimSpace(s.namespace); ns != "" {
 		return ns
 	}
@@ -107,7 +112,25 @@ func (s *sqliteStore) ensureRequestExists(ctx context.Context, requestID string)
 	return nil
 }
 
-const createdAtLayout = "2006-01-02 15:04:05"
+// DBTimeLayout is the standard SQLite UTC timestamp format with millisecond precision.
+const DBTimeLayout = "2006-01-02 15:04:05.000"
+
+const createdAtLayout = DBTimeLayout
+
+// FormatDBTime formats a time.Time in UTC according to DBTimeLayout.
+func FormatDBTime(t time.Time) string {
+	return t.UTC().Format(DBTimeLayout)
+}
+
+// nullableDBTime returns FormatDBTime(t) when non-zero, or nil when zero.
+func nullableDBTime(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return FormatDBTime(t)
+}
+
+
 
 const (
 	hostsTableStatement = `
@@ -116,7 +139,7 @@ CREATE TABLE IF NOT EXISTS hosts (
 	unique_key TEXT,
 	public_key TEXT,
 	last_signature_timestamp INTEGER,
-	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
 )`
 	noncesTableStatement = `
 CREATE TABLE IF NOT EXISTS nonces (
@@ -135,8 +158,8 @@ CREATE TABLE IF NOT EXISTS requests (
 	data TEXT,
 	mutable INTEGER NOT NULL DEFAULT 0,
 	version INTEGER NOT NULL DEFAULT 1,
-	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
+	updated_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
 	FOREIGN KEY(host_id) REFERENCES hosts(id) ON DELETE CASCADE,
 	FOREIGN KEY(request_schema_definition_id) REFERENCES schema_definitions(id) ON DELETE SET NULL,
 	FOREIGN KEY(grant_schema_definition_id) REFERENCES schema_definitions(id) ON DELETE SET NULL
@@ -146,7 +169,7 @@ CREATE TABLE IF NOT EXISTS schema_definitions (
 	id TEXT PRIMARY KEY,
 	unique_key TEXT,
 	schema TEXT,
-	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
 )`
 	registersTableStatement = `
 CREATE TABLE IF NOT EXISTS registers (
@@ -156,8 +179,8 @@ CREATE TABLE IF NOT EXISTS registers (
 	unique_key TEXT,
 	data TEXT,
 	mutable INTEGER NOT NULL DEFAULT 0,
-	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
+	updated_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
 	FOREIGN KEY(host_id) REFERENCES hosts(id) ON DELETE CASCADE,
 	FOREIGN KEY(schema_definition_id) REFERENCES schema_definitions(id) ON DELETE SET NULL
 )`
@@ -171,7 +194,7 @@ CREATE TABLE IF NOT EXISTS resource_events (
 	new_payload TEXT,
 	old_labels TEXT,
 	new_labels TEXT,
-	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
 )`
 	grantsTableStatement = `
 CREATE TABLE IF NOT EXISTS grants (
@@ -179,8 +202,8 @@ CREATE TABLE IF NOT EXISTS grants (
 	request_id TEXT NOT NULL,
 	payload TEXT,
 	request_version INTEGER NOT NULL DEFAULT 1,
-	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
+	updated_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
 	FOREIGN KEY(request_id) REFERENCES requests(id) ON DELETE CASCADE,
 	UNIQUE(request_id)
 )`
@@ -214,6 +237,7 @@ CREATE TABLE IF NOT EXISTS register_labels (
 	CHECK(length(key) <= 256),
 	CHECK(length(value) <= 256)
 )`
+	// grant_labels is reserved schema for forward compatibility and future grant label querying capabilities.
 	grantLabelsTableStatement = `
 CREATE TABLE IF NOT EXISTS grant_labels (
 	grant_id TEXT NOT NULL,
@@ -262,7 +286,22 @@ func New(ctx context.Context, path string) (Store, error) {
 		return nil, fmt.Errorf("enable foreign keys: %w", err)
 	}
 
+	if _, err := db.ExecContext(ctx, `PRAGMA journal_mode = WAL`); err != nil {
+		if cerr := db.Close(); cerr != nil {
+			logrus.WithError(cerr).Warn("close sqlite database after journal_mode setup failure")
+		}
+		return nil, fmt.Errorf("enable WAL journal mode: %w", err)
+	}
+
+	if _, err := db.ExecContext(ctx, `PRAGMA busy_timeout = 5000`); err != nil {
+		if cerr := db.Close(); cerr != nil {
+			logrus.WithError(cerr).Warn("close sqlite database after busy_timeout setup failure")
+		}
+		return nil, fmt.Errorf("configure busy_timeout: %w", err)
+	}
+
 	return &sqliteStore{db: db, namespace: unknownNamespace}, nil
+
 }
 
 // Close tears down the underlying database connection.
@@ -279,6 +318,12 @@ func (s *sqliteStore) DB() *sql.DB {
 		return nil
 	}
 	return s.db
+}
+
+// SupportsSignatureBundling indicates that sqliteStore bundles anti-replay signature
+// records atomically within mutation transactions.
+func (s *sqliteStore) SupportsSignatureBundling() bool {
+	return true
 }
 
 // Migrate ensures the schema for hosts, requests, and grants exists.
@@ -612,7 +657,7 @@ WHERE schema_definition_id IS NOT NULL
 		if remaining == 0 {
 			continue
 		}
-		grantDefID := generateID()
+		grantDefID := GenerateID()
 		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_definitions (id, schema) VALUES (?, ?)`, grantDefID, entry.grantValue); err != nil {
 			return fmt.Errorf("create grant schema definition: %w", err)
 		}
@@ -632,7 +677,7 @@ func (s *sqliteStore) CreateHost(ctx context.Context, host Host) (Host, error) {
 	if s == nil || s.db == nil {
 		return Host{}, fmt.Errorf("store not initialized")
 	}
-	host.ID = generateID()
+	normalizeEntityIDAndTimestamps(ctx, &host.ID, &host.CreatedAt, nil)
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -655,21 +700,29 @@ func (s *sqliteStore) CreateHost(ctx context.Context, host Host) (Host, error) {
 	if host.PublicKey != "" {
 		publicKey = host.PublicKey
 	}
+	createdAt := nullableDBTime(host.CreatedAt)
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO hosts (id, unique_key, public_key)
-VALUES (?, ?, ?)
-`, host.ID, uniqueKey, publicKey); err != nil {
-		if isUniqueConstraintError(err) {
-			if isUniqueHostKeyConstraintError(err) {
-				return Host{}, ErrHostUniqueKeyConflict
-			}
-			return Host{}, ErrHostAlreadyExists
+INSERT INTO hosts (id, unique_key, public_key, created_at)
+VALUES (?, ?, ?, COALESCE(?, (strftime('%Y-%m-%d %H:%M:%f', 'now'))))
+`, host.ID, uniqueKey, publicKey, createdAt); err != nil {
+		switch TranslateConstraintError(err) {
+		case ErrKeyAlreadyExists:
+			return Host{}, fmt.Errorf("%w: %w", ErrHostUniqueKeyConflict, err)
+		case ErrAlreadyExists:
+			return Host{}, fmt.Errorf("%w: %w", ErrHostAlreadyExists, err)
+		default:
+			return Host{}, fmt.Errorf("insert host: %w", err)
 		}
-		return Host{}, fmt.Errorf("insert host: %w", err)
 	}
 
 	if err := insertLabels(ctx, tx, hostLabelsTable, "host_id", host.ID, host.Labels); err != nil {
 		return Host{}, fmt.Errorf("insert host labels: %w", err)
+	}
+
+	if sp, ok := SignatureParamsFromContext(ctx); ok && sp.HostID != "" {
+		if err := s.recordSignatureTx(ctx, tx, sp.HostID, sp.Timestamp, sp.Nonce, sp.ExpiresAt); err != nil {
+			return Host{}, err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -754,7 +807,19 @@ func (s *sqliteStore) DeleteHost(ctx context.Context, id string) error {
 		"host_id": id,
 	})
 
-	res, err := s.db.ExecContext(ctx, `DELETE FROM hosts WHERE id = ?`, id)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin delete host transaction: %w", err)
+	}
+	defer rollbackTx(tx, "rollback delete host transaction")
+
+	if sp, ok := SignatureParamsFromContext(ctx); ok && sp.HostID != "" {
+		if err := s.recordSignatureTx(ctx, tx, sp.HostID, sp.Timestamp, sp.Nonce, sp.ExpiresAt); err != nil {
+			return err
+		}
+	}
+
+	res, err := tx.ExecContext(ctx, `DELETE FROM hosts WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete host: %w", err)
 	}
@@ -765,6 +830,10 @@ func (s *sqliteStore) DeleteHost(ctx context.Context, id string) error {
 	}
 	if count == 0 {
 		return ErrHostNotFound
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit delete host transaction: %w", err)
 	}
 
 	return nil
@@ -791,12 +860,58 @@ func (s *sqliteStore) UpdateHostLabels(ctx context.Context, id string, labels ma
 	}
 	defer rollbackTx(tx, "rollback host labels transaction")
 
+	if sp, ok := SignatureParamsFromContext(ctx); ok && sp.HostID != "" {
+		if err := s.recordSignatureTx(ctx, tx, sp.HostID, sp.Timestamp, sp.Nonce, sp.ExpiresAt); err != nil {
+			return err
+		}
+	}
+
 	if err := replaceLabels(ctx, tx, hostLabelsTable, "host_id", id, labels); err != nil {
 		return fmt.Errorf("replace host labels: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit host labels transaction: %w", err)
+	}
+
+	return nil
+}
+
+func (s *sqliteStore) recordSignatureTx(ctx context.Context, tx *sql.Tx, hostID string, timestamp int64, nonce string, expiresAt time.Time) error {
+	// 1. Check monotonic timestamp
+	var lastTs sql.NullInt64
+	err := tx.QueryRowContext(ctx, `SELECT last_signature_timestamp FROM hosts WHERE id = ?`, hostID).Scan(&lastTs)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrHostNotFound
+		}
+		return fmt.Errorf("fetch last timestamp: %w", err)
+	}
+
+	if lastTs.Valid && timestamp < (lastTs.Int64-SignatureTimestampGracePeriodSeconds) {
+		return ErrTimestampRegressed
+	}
+
+	// 2. Try insert nonce
+	_, err = tx.ExecContext(ctx, `INSERT INTO nonces (host_id, nonce, expires_at) VALUES (?, ?, ?)`, hostID, nonce, FormatDBTime(expiresAt))
+	if err != nil {
+		if IsUniqueConstraintError(err) {
+			return ErrReplayDetected
+		}
+		return fmt.Errorf("insert nonce: %w", err)
+	}
+
+	// 3. Update host timestamp (only advance if incoming timestamp is newer)
+	if !lastTs.Valid || timestamp > lastTs.Int64 {
+		_, err = tx.ExecContext(ctx, `UPDATE hosts SET last_signature_timestamp = ? WHERE id = ?`, timestamp, hostID)
+		if err != nil {
+			return fmt.Errorf("update last timestamp: %w", err)
+		}
+	}
+
+	// 4. Cleanup expired nonces (occasional)
+	if timestamp%10 == 0 {
+		_, _ = tx.ExecContext(ctx, `DELETE FROM nonces WHERE expires_at < ?`, FormatDBTime(time.Unix(timestamp, 0).UTC()))
 	}
 
 	return nil
@@ -820,40 +935,8 @@ func (s *sqliteStore) RecordSignature(ctx context.Context, hostID string, timest
 	}
 	defer rollbackTx(tx, "rollback record signature transaction")
 
-	// 1. Check monotonic timestamp
-	var lastTs sql.NullInt64
-	err = tx.QueryRowContext(ctx, `SELECT last_signature_timestamp FROM hosts WHERE id = ?`, hostID).Scan(&lastTs)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrHostNotFound
-		}
-		return fmt.Errorf("fetch last timestamp: %w", err)
-	}
-
-	if lastTs.Valid && timestamp < (lastTs.Int64-SignatureTimestampGracePeriodSeconds) {
-		return ErrTimestampRegressed
-	}
-
-	// 2. Try insert nonce
-	_, err = tx.ExecContext(ctx, `INSERT INTO nonces (host_id, nonce, expires_at) VALUES (?, ?, ?)`, hostID, nonce, expiresAt)
-	if err != nil {
-		if isUniqueConstraintError(err) {
-			return ErrReplayDetected
-		}
-		return fmt.Errorf("insert nonce: %w", err)
-	}
-
-	// 3. Update host timestamp (only advance if incoming timestamp is newer)
-	if !lastTs.Valid || timestamp > lastTs.Int64 {
-		_, err = tx.ExecContext(ctx, `UPDATE hosts SET last_signature_timestamp = ? WHERE id = ?`, timestamp, hostID)
-		if err != nil {
-			return fmt.Errorf("update last timestamp: %w", err)
-		}
-	}
-
-	// 4. Cleanup expired nonces (occasional)
-	if timestamp%10 == 0 {
-		_, _ = tx.ExecContext(ctx, `DELETE FROM nonces WHERE expires_at < (strftime('%Y-%m-%d %H:%M:%S', 'now'))`)
+	if err := s.recordSignatureTx(ctx, tx, hostID, timestamp, nonce, expiresAt); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -875,7 +958,7 @@ func (s *sqliteStore) CreateRequest(ctx context.Context, req Request) (Request, 
 		return Request{}, err
 	}
 
-	req.ID = generateID()
+	normalizeEntityIDAndTimestamps(ctx, &req.ID, &req.CreatedAt, &req.UpdatedAt)
 
 	s.logDBOperation("requests", "create", logrus.Fields{
 		"request_id":                   req.ID,
@@ -903,6 +986,12 @@ func (s *sqliteStore) CreateRequest(ctx context.Context, req Request) (Request, 
 	}
 	defer rollbackTx(tx, "rollback create request transaction")
 
+	if sp, ok := SignatureParamsFromContext(ctx); ok && sp.HostID != "" {
+		if err := s.recordSignatureTx(ctx, tx, sp.HostID, sp.Timestamp, sp.Nonce, sp.ExpiresAt); err != nil {
+			return Request{}, err
+		}
+	}
+
 	var uniqueKey any
 	if req.UniqueKey != "" {
 		uniqueKey = req.UniqueKey
@@ -915,23 +1004,33 @@ func (s *sqliteStore) CreateRequest(ctx context.Context, req Request) (Request, 
 	if req.GrantSchemaDefinitionID != "" {
 		grantSchemaID = req.GrantSchemaDefinitionID
 	}
+	createdAt := nullableDBTime(req.CreatedAt)
+	updatedAt := nullableDBTime(req.UpdatedAt)
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO requests (id, host_id, request_schema_definition_id, grant_schema_definition_id, unique_key, data, mutable, version)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-`, req.ID, req.HostID, requestSchemaID, grantSchemaID, uniqueKey, payloadValue, req.Mutable, req.Version); err != nil {
-		if isUniqueConstraintError(err) {
-			if isUniqueKeyConstraintError(err) {
-				return Request{}, fmt.Errorf("%w: %w", ErrRequestUniqueKeyConflict, err)
-			}
+INSERT INTO requests (id, host_id, request_schema_definition_id, grant_schema_definition_id, unique_key, data, mutable, version, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, (strftime('%Y-%m-%d %H:%M:%f', 'now'))), COALESCE(?, (strftime('%Y-%m-%d %H:%M:%f', 'now'))))
+`, req.ID, req.HostID, requestSchemaID, grantSchemaID, uniqueKey, payloadValue, req.Mutable, req.Version, createdAt, updatedAt); err != nil {
+		switch TranslateConstraintError(err) {
+		case ErrKeyAlreadyExists:
+			return Request{}, fmt.Errorf("%w: %w", ErrRequestUniqueKeyConflict, err)
+		case ErrAlreadyExists:
 			return Request{}, fmt.Errorf("%w: %w", ErrRequestAlreadyExists, err)
+		default:
+			return Request{}, fmt.Errorf("insert request: %w", err)
 		}
-		return Request{}, fmt.Errorf("insert request: %w", err)
 	}
 
 	if err := insertLabels(ctx, tx, requestLabelsTable, "request_id", req.ID, req.Labels); err != nil {
 		return Request{}, fmt.Errorf("insert request labels: %w", err)
 	}
-	if err := insertResourceEventSQLite(ctx, tx, "request", req.ID, "created", nil, req.Payload, nil, req.Labels); err != nil {
+	if err := insertResourceEventSQLite(ctx, tx, ResourceEventParams{
+		ResourceType:  "request",
+		ResourceID:    req.ID,
+		EventType:     "created",
+		NewPayloadMap: req.Payload,
+		NewLabelsMap:  req.Labels,
+		Timestamp:     req.CreatedAt,
+	}); err != nil {
 		return Request{}, fmt.Errorf("insert request event: %w", err)
 	}
 
@@ -1115,6 +1214,12 @@ func (s *sqliteStore) UpdateRequest(ctx context.Context, id string, payload *map
 	}
 	defer rollbackTx(tx, "rollback request update transaction")
 
+	if sp, ok := SignatureParamsFromContext(ctx); ok && sp.HostID != "" {
+		if err := s.recordSignatureTx(ctx, tx, sp.HostID, sp.Timestamp, sp.Nonce, sp.ExpiresAt); err != nil {
+			return err
+		}
+	}
+
 	if labels != nil {
 		if err := replaceLabels(ctx, tx, requestLabelsTable, "request_id", id, *labels); err != nil {
 			return fmt.Errorf("replace request labels: %w", err)
@@ -1125,13 +1230,22 @@ func (s *sqliteStore) UpdateRequest(ctx context.Context, id string, payload *map
 		if err != nil {
 			return fmt.Errorf("encode request payload: %w", err)
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE requests SET data = ?, version = version + 1 WHERE id = ?`, payloadValue, id); err != nil {
+		var stmt string
+		var args []any
+		if t, ok := DeterministicTimeFromContext(ctx); ok {
+			stmt = `UPDATE requests SET data = ?, version = version + 1, updated_at = ? WHERE id = ?`
+			args = []any{payloadValue, FormatDBTime(t), id}
+		} else {
+			stmt = `UPDATE requests SET data = ?, version = version + 1, updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE id = ?`
+			args = []any{payloadValue, id}
+		}
+		if _, err := tx.ExecContext(ctx, stmt, args...); err != nil {
 			return fmt.Errorf("update request payload: %w", err)
 		}
-	}
-
-	if err := setUpdatedAt(ctx, tx, "requests", "id", id, "strftime('%Y-%m-%d %H:%M:%f', 'now')"); err != nil {
-		return fmt.Errorf("refresh request timestamp: %w", err)
+	} else {
+		if err := setUpdatedAt(ctx, tx, "requests", "id", id); err != nil {
+			return fmt.Errorf("refresh request timestamp: %w", err)
+		}
 	}
 
 	updatedLabels := current.Labels
@@ -1149,7 +1263,15 @@ func (s *sqliteStore) UpdateRequest(ctx context.Context, id string, payload *map
 	if labels != nil && payload == nil {
 		eventType = "labels_updated"
 	}
-	if err := insertResourceEventSQLite(ctx, tx, "request", id, eventType, current.Payload, updatedPayload, current.Labels, updatedLabels); err != nil {
+	if err := insertResourceEventSQLite(ctx, tx, ResourceEventParams{
+		ResourceType:  "request",
+		ResourceID:    id,
+		EventType:     eventType,
+		OldPayloadMap: current.Payload,
+		NewPayloadMap: updatedPayload,
+		OldLabelsMap:  current.Labels,
+		NewLabelsMap:  updatedLabels,
+	}); err != nil {
 		return fmt.Errorf("insert request event: %w", err)
 	}
 
@@ -1185,6 +1307,12 @@ func (s *sqliteStore) DeleteRequest(ctx context.Context, id string) error {
 	}
 	defer rollbackTx(tx, "rollback request delete transaction")
 
+	if sp, ok := SignatureParamsFromContext(ctx); ok && sp.HostID != "" {
+		if err := s.recordSignatureTx(ctx, tx, sp.HostID, sp.Timestamp, sp.Nonce, sp.ExpiresAt); err != nil {
+			return err
+		}
+	}
+
 	res, err := tx.ExecContext(ctx, `DELETE FROM requests WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete request: %w", err)
@@ -1197,7 +1325,13 @@ func (s *sqliteStore) DeleteRequest(ctx context.Context, id string) error {
 	if count == 0 {
 		return ErrRequestNotFound
 	}
-	if err := insertResourceEventSQLite(ctx, tx, "request", id, "deleted", current.Payload, nil, current.Labels, nil); err != nil {
+	if err := insertResourceEventSQLite(ctx, tx, ResourceEventParams{
+		ResourceType:  "request",
+		ResourceID:    id,
+		EventType:     "deleted",
+		OldPayloadMap: current.Payload,
+		OldLabelsMap:  current.Labels,
+	}); err != nil {
 		return fmt.Errorf("insert request event: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -1219,7 +1353,7 @@ func (s *sqliteStore) CreateRegister(ctx context.Context, reg Register) (Registe
 		return Register{}, err
 	}
 
-	reg.ID = generateID()
+	normalizeEntityIDAndTimestamps(ctx, &reg.ID, &reg.CreatedAt, &reg.UpdatedAt)
 
 	s.logDBOperation("registers", "create", logrus.Fields{
 		"register_id":          reg.ID,
@@ -1242,6 +1376,12 @@ func (s *sqliteStore) CreateRegister(ctx context.Context, reg Register) (Registe
 	}
 	defer rollbackTx(tx, "rollback create register transaction")
 
+	if sp, ok := SignatureParamsFromContext(ctx); ok && sp.HostID != "" {
+		if err := s.recordSignatureTx(ctx, tx, sp.HostID, sp.Timestamp, sp.Nonce, sp.ExpiresAt); err != nil {
+			return Register{}, err
+		}
+	}
+
 	var uniqueKey any
 	if reg.UniqueKey != "" {
 		uniqueKey = reg.UniqueKey
@@ -1250,23 +1390,33 @@ func (s *sqliteStore) CreateRegister(ctx context.Context, reg Register) (Registe
 	if reg.SchemaDefinitionID != "" {
 		schemaDefinitionID = reg.SchemaDefinitionID
 	}
+	createdAt := nullableDBTime(reg.CreatedAt)
+	updatedAt := nullableDBTime(reg.UpdatedAt)
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO registers (id, host_id, schema_definition_id, unique_key, data, mutable)
-VALUES (?, ?, ?, ?, ?, ?)
-`, reg.ID, reg.HostID, schemaDefinitionID, uniqueKey, payloadValue, reg.Mutable); err != nil {
-		if isUniqueConstraintError(err) {
-			if isUniqueRegisterKeyConstraintError(err) {
-				return Register{}, fmt.Errorf("%w: %w", ErrRegisterUniqueKeyConflict, err)
-			}
+INSERT INTO registers (id, host_id, schema_definition_id, unique_key, data, mutable, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, (strftime('%Y-%m-%d %H:%M:%f', 'now'))), COALESCE(?, (strftime('%Y-%m-%d %H:%M:%f', 'now'))))
+`, reg.ID, reg.HostID, schemaDefinitionID, uniqueKey, payloadValue, reg.Mutable, createdAt, updatedAt); err != nil {
+		switch TranslateConstraintError(err) {
+		case ErrKeyAlreadyExists:
+			return Register{}, fmt.Errorf("%w: %w", ErrRegisterUniqueKeyConflict, err)
+		case ErrAlreadyExists:
 			return Register{}, fmt.Errorf("%w: %w", ErrRegisterAlreadyExists, err)
+		default:
+			return Register{}, fmt.Errorf("insert register: %w", err)
 		}
-		return Register{}, fmt.Errorf("insert register: %w", err)
 	}
 
 	if err := insertLabels(ctx, tx, registerLabelsTable, "register_id", reg.ID, reg.Labels); err != nil {
 		return Register{}, fmt.Errorf("insert register labels: %w", err)
 	}
-	if err := insertResourceEventSQLite(ctx, tx, "register", reg.ID, "created", nil, reg.Payload, nil, reg.Labels); err != nil {
+	if err := insertResourceEventSQLite(ctx, tx, ResourceEventParams{
+		ResourceType:  "register",
+		ResourceID:    reg.ID,
+		EventType:     "created",
+		NewPayloadMap: reg.Payload,
+		NewLabelsMap:  reg.Labels,
+		Timestamp:     reg.CreatedAt,
+	}); err != nil {
 		return Register{}, fmt.Errorf("insert register event: %w", err)
 	}
 
@@ -1405,6 +1555,12 @@ func (s *sqliteStore) UpdateRegister(ctx context.Context, id string, payload *ma
 	}
 	defer rollbackTx(tx, "rollback register update transaction")
 
+	if sp, ok := SignatureParamsFromContext(ctx); ok && sp.HostID != "" {
+		if err := s.recordSignatureTx(ctx, tx, sp.HostID, sp.Timestamp, sp.Nonce, sp.ExpiresAt); err != nil {
+			return err
+		}
+	}
+
 	if labels != nil {
 		if err := replaceLabels(ctx, tx, registerLabelsTable, "register_id", id, *labels); err != nil {
 			return fmt.Errorf("replace register labels: %w", err)
@@ -1415,13 +1571,22 @@ func (s *sqliteStore) UpdateRegister(ctx context.Context, id string, payload *ma
 		if err != nil {
 			return fmt.Errorf("encode register payload: %w", err)
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE registers SET data = ? WHERE id = ?`, payloadValue, id); err != nil {
+		var stmt string
+		var args []any
+		if t, ok := DeterministicTimeFromContext(ctx); ok {
+			stmt = `UPDATE registers SET data = ?, updated_at = ? WHERE id = ?`
+			args = []any{payloadValue, FormatDBTime(t), id}
+		} else {
+			stmt = `UPDATE registers SET data = ?, updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE id = ?`
+			args = []any{payloadValue, id}
+		}
+		if _, err := tx.ExecContext(ctx, stmt, args...); err != nil {
 			return fmt.Errorf("update register payload: %w", err)
 		}
-	}
-
-	if err := setUpdatedAt(ctx, tx, "registers", "id", id, "strftime('%Y-%m-%d %H:%M:%f', 'now')"); err != nil {
-		return fmt.Errorf("refresh register timestamp: %w", err)
+	} else {
+		if err := setUpdatedAt(ctx, tx, "registers", "id", id); err != nil {
+			return fmt.Errorf("refresh register timestamp: %w", err)
+		}
 	}
 
 	updatedLabels := current.Labels
@@ -1439,7 +1604,15 @@ func (s *sqliteStore) UpdateRegister(ctx context.Context, id string, payload *ma
 	if labels != nil && payload == nil {
 		eventType = "labels_updated"
 	}
-	if err := insertResourceEventSQLite(ctx, tx, "register", id, eventType, current.Payload, updatedPayload, current.Labels, updatedLabels); err != nil {
+	if err := insertResourceEventSQLite(ctx, tx, ResourceEventParams{
+		ResourceType:  "register",
+		ResourceID:    id,
+		EventType:     eventType,
+		OldPayloadMap: current.Payload,
+		NewPayloadMap: updatedPayload,
+		OldLabelsMap:  current.Labels,
+		NewLabelsMap:  updatedLabels,
+	}); err != nil {
 		return fmt.Errorf("insert register event: %w", err)
 	}
 
@@ -1510,6 +1683,12 @@ func (s *sqliteStore) DeleteRegister(ctx context.Context, id string) error {
 	}
 	defer rollbackTx(tx, "rollback register delete transaction")
 
+	if sp, ok := SignatureParamsFromContext(ctx); ok && sp.HostID != "" {
+		if err := s.recordSignatureTx(ctx, tx, sp.HostID, sp.Timestamp, sp.Nonce, sp.ExpiresAt); err != nil {
+			return err
+		}
+	}
+
 	res, err := tx.ExecContext(ctx, `DELETE FROM registers WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("delete register: %w", err)
@@ -1522,7 +1701,13 @@ func (s *sqliteStore) DeleteRegister(ctx context.Context, id string) error {
 	if count == 0 {
 		return ErrRegisterNotFound
 	}
-	if err := insertResourceEventSQLite(ctx, tx, "register", id, "deleted", current.Payload, nil, current.Labels, nil); err != nil {
+	if err := insertResourceEventSQLite(ctx, tx, ResourceEventParams{
+		ResourceType:  "register",
+		ResourceID:    id,
+		EventType:     "deleted",
+		OldPayloadMap: current.Payload,
+		OldLabelsMap:  current.Labels,
+	}); err != nil {
 		return fmt.Errorf("insert register event: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -1555,14 +1740,14 @@ func (s *sqliteStore) CreateGrant(ctx context.Context, grant Grant) (Grant, erro
 	}
 	requestVersionInput := grant.RequestVersion
 
-	grant.ID = generateID()
+	normalizeEntityIDAndTimestamps(ctx, &grant.ID, &grant.CreatedAt, &grant.UpdatedAt)
 
 	s.logDBOperation("grants", "create", logrus.Fields{
-		"grant_id":        grant.ID,
-		"request_id":      grant.RequestID,
+		"grant_id":              grant.ID,
+		"request_id":            grant.RequestID,
 		"request_version_input": requestVersionInput,
-		"request_version": grant.RequestVersion,
-		"payload":         grant.Payload,
+		"request_version":       grant.RequestVersion,
+		"payload":               grant.Payload,
 	})
 
 	payloadValue, err := encodeJSON(grant.Payload)
@@ -1576,28 +1761,31 @@ func (s *sqliteStore) CreateGrant(ctx context.Context, grant Grant) (Grant, erro
 	}
 	defer rollbackTx(tx, "rollback create grant transaction")
 
+	createdAt := nullableDBTime(grant.CreatedAt)
+	updatedAt := nullableDBTime(grant.UpdatedAt)
+
 	var stmt string
 	var args []any
 	if requestVersionInput > 0 {
 		stmt = `
-INSERT INTO grants (id, request_id, payload, request_version)
-SELECT ?, r.id, ?, r.version
+INSERT INTO grants (id, request_id, payload, request_version, created_at, updated_at)
+SELECT ?, r.id, ?, r.version, COALESCE(?, (strftime('%Y-%m-%d %H:%M:%f', 'now'))), COALESCE(?, (strftime('%Y-%m-%d %H:%M:%f', 'now')))
 FROM requests r
 WHERE r.id = ? AND r.version = ?
 `
-		args = []any{grant.ID, payloadValue, grant.RequestID, requestVersionInput}
+		args = []any{grant.ID, payloadValue, createdAt, updatedAt, grant.RequestID, requestVersionInput}
 	} else {
 		stmt = `
-INSERT INTO grants (id, request_id, payload, request_version)
-SELECT ?, r.id, ?, r.version
+INSERT INTO grants (id, request_id, payload, request_version, created_at, updated_at)
+SELECT ?, r.id, ?, r.version, COALESCE(?, (strftime('%Y-%m-%d %H:%M:%f', 'now'))), COALESCE(?, (strftime('%Y-%m-%d %H:%M:%f', 'now')))
 FROM requests r
 WHERE r.id = ?
 `
-		args = []any{grant.ID, payloadValue, grant.RequestID}
+		args = []any{grant.ID, payloadValue, createdAt, updatedAt, grant.RequestID}
 	}
 	result, err := tx.ExecContext(ctx, stmt, args...)
 	if err != nil {
-		if isUniqueConstraintError(err) {
+		if IsUniqueConstraintError(err) {
 			return Grant{}, fmt.Errorf("%w: %w", ErrGrantAlreadyExists, err)
 		}
 		return Grant{}, fmt.Errorf("insert grant: %w", err)
@@ -1626,7 +1814,13 @@ WHERE r.id = ?
 			return Grant{}, fmt.Errorf("read inserted grant version: %w", err)
 		}
 	}
-	if err := insertResourceEventSQLite(ctx, tx, "grant", grant.ID, "created", nil, grant.Payload, nil, nil); err != nil {
+	if err := insertResourceEventSQLite(ctx, tx, ResourceEventParams{
+		ResourceType:  "grant",
+		ResourceID:    grant.ID,
+		EventType:     "created",
+		NewPayloadMap: grant.Payload,
+		Timestamp:     grant.CreatedAt,
+	}); err != nil {
 		return Grant{}, fmt.Errorf("insert grant event: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -1740,8 +1934,8 @@ func (s *sqliteStore) UpdateGrant(ctx context.Context, id string, payload map[st
 	}
 
 	s.logDBOperation("grants", "update", logrus.Fields{
-		"grant_id": id,
-		"payload":  payload,
+		"grant_id":              id,
+		"payload":               payload,
 		"request_version_input": requestVersion,
 	})
 
@@ -1762,10 +1956,11 @@ func (s *sqliteStore) UpdateGrant(ctx context.Context, id string, payload map[st
 
 	var stmt string
 	var args []any
-	if requestVersion > 0 {
-		stmt = `
+	if t, ok := DeterministicTimeFromContext(ctx); ok {
+		if requestVersion > 0 {
+			stmt = `
 UPDATE grants
-SET payload = ?, request_version = (SELECT version FROM requests WHERE requests.id = grants.request_id)
+SET payload = ?, request_version = (SELECT version FROM requests WHERE requests.id = grants.request_id), updated_at = ?
 WHERE id = ?
   AND EXISTS (
     SELECT 1 FROM requests
@@ -1773,14 +1968,36 @@ WHERE id = ?
       AND requests.version = ?
   )
 `
-		args = []any{payloadValue, id, requestVersion}
-	} else {
-		stmt = `
+			args = []any{payloadValue, FormatDBTime(t), id, requestVersion}
+		} else {
+			stmt = `
 UPDATE grants
-SET payload = ?, request_version = (SELECT version FROM requests WHERE requests.id = grants.request_id)
+SET payload = ?, request_version = (SELECT version FROM requests WHERE requests.id = grants.request_id), updated_at = ?
 WHERE id = ?
 `
-		args = []any{payloadValue, id}
+			args = []any{payloadValue, FormatDBTime(t), id}
+		}
+	} else {
+		if requestVersion > 0 {
+			stmt = `
+UPDATE grants
+SET payload = ?, request_version = (SELECT version FROM requests WHERE requests.id = grants.request_id), updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
+WHERE id = ?
+  AND EXISTS (
+    SELECT 1 FROM requests
+    WHERE requests.id = grants.request_id
+      AND requests.version = ?
+  )
+`
+			args = []any{payloadValue, id, requestVersion}
+		} else {
+			stmt = `
+UPDATE grants
+SET payload = ?, request_version = (SELECT version FROM requests WHERE requests.id = grants.request_id), updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
+WHERE id = ?
+`
+			args = []any{payloadValue, id}
+		}
 	}
 	result, err := tx.ExecContext(ctx, stmt, args...)
 	if err != nil {
@@ -1818,10 +2035,16 @@ WHERE g.id = ?
 		}
 		if grantVersion == requestVersionNow && sameJSONMap(currentPayload, payload) {
 			// Match postgres behavior for idempotent updates: refresh timestamp and emit an update event.
-			if err := setUpdatedAt(ctx, tx, "grants", "id", id, "strftime('%Y-%m-%d %H:%M:%f', 'now')"); err != nil {
+			if err := setUpdatedAt(ctx, tx, "grants", "id", id); err != nil {
 				return fmt.Errorf("refresh grant timestamp no-op: %w", err)
 			}
-			if err := insertResourceEventSQLite(ctx, tx, "grant", id, "updated", current.Payload, payload, nil, nil); err != nil {
+			if err := insertResourceEventSQLite(ctx, tx, ResourceEventParams{
+				ResourceType:  "grant",
+				ResourceID:    id,
+				EventType:     "updated",
+				OldPayloadMap: currentPayload,
+				NewPayloadMap: payload,
+			}); err != nil {
 				return fmt.Errorf("insert grant event no-op: %w", err)
 			}
 			if err := tx.Commit(); err != nil {
@@ -1831,10 +2054,13 @@ WHERE g.id = ?
 		}
 		return fmt.Errorf("update grant payload: no rows affected for changed payload")
 	}
-	if err := setUpdatedAt(ctx, tx, "grants", "id", id, "strftime('%Y-%m-%d %H:%M:%f', 'now')"); err != nil {
-		return fmt.Errorf("refresh grant timestamp: %w", err)
-	}
-	if err := insertResourceEventSQLite(ctx, tx, "grant", id, "updated", current.Payload, payload, nil, nil); err != nil {
+	if err := insertResourceEventSQLite(ctx, tx, ResourceEventParams{
+		ResourceType:  "grant",
+		ResourceID:    id,
+		EventType:     "updated",
+		OldPayloadMap: current.Payload,
+		NewPayloadMap: payload,
+	}); err != nil {
 		return fmt.Errorf("insert grant event: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -1888,7 +2114,12 @@ func (s *sqliteStore) DeleteGrant(ctx context.Context, id string) error {
 	if count == 0 {
 		return ErrGrantNotFound
 	}
-	if err := insertResourceEventSQLite(ctx, tx, "grant", id, "deleted", current.Payload, nil, nil, nil); err != nil {
+	if err := insertResourceEventSQLite(ctx, tx, ResourceEventParams{
+		ResourceType:  "grant",
+		ResourceID:    id,
+		EventType:     "deleted",
+		OldPayloadMap: current.Payload,
+	}); err != nil {
 		return fmt.Errorf("insert grant event: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -1907,7 +2138,7 @@ func (s *sqliteStore) CreateSchemaDefinition(ctx context.Context, def SchemaDefi
 		return SchemaDefinition{}, fmt.Errorf("schema is required")
 	}
 
-	def.ID = generateID()
+	normalizeEntityIDAndTimestamps(ctx, &def.ID, &def.CreatedAt, nil)
 
 	s.logDBOperation("schema_definitions", "create", logrus.Fields{
 		"schema_definition_id": def.ID,
@@ -1926,14 +2157,16 @@ func (s *sqliteStore) CreateSchemaDefinition(ctx context.Context, def SchemaDefi
 	}
 	defer rollbackTx(tx, "rollback schema definition transaction")
 
+	createdAt := nullableDBTime(def.CreatedAt)
+
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO schema_definitions (id, unique_key, schema)
-VALUES (?, ?, ?)
-`, def.ID, nullableText(def.UniqueKey), schemaValue); err != nil {
-		switch {
-		case isUniqueSchemaDefinitionKeyConstraintError(err):
+INSERT INTO schema_definitions (id, unique_key, schema, created_at)
+VALUES (?, ?, ?, COALESCE(?, (strftime('%Y-%m-%d %H:%M:%f', 'now'))))
+`, def.ID, nullableText(def.UniqueKey), schemaValue, createdAt); err != nil {
+		switch TranslateConstraintError(err) {
+		case ErrKeyAlreadyExists:
 			return SchemaDefinition{}, fmt.Errorf("%w: %w", ErrSchemaDefinitionUniqueKeyConflict, err)
-		case isUniqueConstraintError(err):
+		case ErrAlreadyExists:
 			return SchemaDefinition{}, fmt.Errorf("%w: %w", ErrSchemaDefinitionAlreadyExists, err)
 		default:
 			return SchemaDefinition{}, fmt.Errorf("insert schema definition: %w", err)
@@ -2103,11 +2336,11 @@ type rowScanner interface {
 
 func scanHost(scanner rowScanner) (Host, error) {
 	var (
-		host          Host
-		uniqueKey     sql.NullString
-		publicKey     sql.NullString
-		lastSigTs     sql.NullInt64
-		createdAt     any
+		host      Host
+		uniqueKey sql.NullString
+		publicKey sql.NullString
+		lastSigTs sql.NullInt64
+		createdAt any
 	)
 
 	if err := scanner.Scan(&host.ID, &uniqueKey, &publicKey, &lastSigTs, &createdAt); err != nil {
@@ -2357,12 +2590,15 @@ func scanGrant(scanner rowScanner) (Grant, error) {
 }
 
 func parseCreatedAt(value string) (time.Time, error) {
+	value = strings.TrimSpace(value)
 	if value == "" {
 		return time.Time{}, nil
 	}
 
 	layouts := []string{
 		createdAtLayout,
+		"2006-01-02 15:04:05",
+		"2006-01-02 15:04:05.999999999",
 		time.RFC3339Nano,
 		time.RFC3339,
 	}
@@ -2416,93 +2652,51 @@ func parseDBBool(value any) (bool, error) {
 	}
 }
 
-func generateID() string {
-	return uuid.NewString()
-}
-
-func encodeJSON(value any) (any, error) {
-	if value == nil {
-		return nil, nil
-	}
-	b, err := json.Marshal(value)
-	if err != nil {
-		return nil, err
-	}
-	return string(b), nil
-}
-
-func decodeAnyMap(value sql.NullString) (map[string]any, error) {
-	if !value.Valid || value.String == "" {
-		return nil, nil
-	}
-	var dest map[string]any
-	if err := json.Unmarshal([]byte(value.String), &dest); err != nil {
-		return nil, err
-	}
-	return dest, nil
-}
-
-func decodeStringMap(value sql.NullString) (map[string]string, error) {
-	if !value.Valid || value.String == "" {
-		return nil, nil
-	}
-	var dest map[string]string
-	if err := json.Unmarshal([]byte(value.String), &dest); err != nil {
-		return nil, err
-	}
-	return dest, nil
-}
-
-func decodeRawJSON(value sql.NullString) (json.RawMessage, error) {
-	if !value.Valid || value.String == "" {
-		return nil, nil
-	}
-	if !json.Valid([]byte(value.String)) {
-		return nil, fmt.Errorf("invalid JSON payload")
-	}
-	return json.RawMessage([]byte(value.String)), nil
-}
-
-func nullableText(value string) any {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return nil
-	}
-	return trimmed
-}
-
+// insertResourceEventSQLite writes an audit record into the resource_events table.
 func insertResourceEventSQLite(
 	ctx context.Context,
 	tx *sql.Tx,
-	resourceType string,
-	resourceID string,
-	eventType string,
-	oldPayloadMap map[string]any,
-	newPayloadMap map[string]any,
-	oldLabelsMap map[string]string,
-	newLabelsMap map[string]string,
+	params ResourceEventParams,
 ) error {
-	oldPayload, err := encodeJSON(oldPayloadMap)
+	ts := params.Timestamp
+	if ts.IsZero() {
+		if ctxTS, ok := DeterministicTimeFromContext(ctx); ok {
+			ts = ctxTS
+		}
+	}
+
+	oldPayload, err := encodeJSON(params.OldPayloadMap)
 	if err != nil {
 		return fmt.Errorf("encode old_payload: %w", err)
 	}
-	newPayload, err := encodeJSON(newPayloadMap)
+	newPayload, err := encodeJSON(params.NewPayloadMap)
 	if err != nil {
 		return fmt.Errorf("encode new_payload: %w", err)
 	}
-	oldLabels, err := encodeJSON(oldLabelsMap)
+	oldLabels, err := encodeJSON(params.OldLabelsMap)
 	if err != nil {
 		return fmt.Errorf("encode old_labels: %w", err)
 	}
-	newLabels, err := encodeJSON(newLabelsMap)
+	newLabels, err := encodeJSON(params.NewLabelsMap)
 	if err != nil {
 		return fmt.Errorf("encode new_labels: %w", err)
 	}
 
+	if !ts.IsZero() {
+		eventID := DeterministicResourceEventID(params, ts, oldPayload, newPayload, oldLabels, newLabels)
+		if _, err := tx.ExecContext(ctx, `
+INSERT OR IGNORE INTO resource_events (id, resource_type, resource_id, event_type, old_payload, new_payload, old_labels, new_labels, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, eventID, params.ResourceType, params.ResourceID, params.EventType, oldPayload, newPayload, oldLabels, newLabels, FormatDBTime(ts)); err != nil {
+			return err
+		}
+		return nil
+	}
+
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO resource_events (id, resource_type, resource_id, event_type, old_payload, new_payload, old_labels, new_labels)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-`, generateID(), resourceType, resourceID, eventType, oldPayload, newPayload, oldLabels, newLabels); err != nil {
+INSERT INTO resource_events (id, resource_type, resource_id, event_type, old_payload, new_payload, old_labels, new_labels, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, (strftime('%Y-%m-%d %H:%M:%f', 'now')))
+`, GenerateID(), params.ResourceType, params.ResourceID, params.EventType, oldPayload, newPayload, oldLabels, newLabels); err != nil {
 		return err
 	}
 	return nil
@@ -2513,8 +2707,11 @@ func insertLabels(ctx context.Context, tx *sql.Tx, table, idColumn, id string, l
 		return nil
 	}
 
+	keys := sortedMapKeys(labels)
+
 	stmt := fmt.Sprintf(`INSERT INTO %s (%s, key, value) VALUES (?, ?, ?)`, table, idColumn)
-	for key, value := range labels {
+	for _, key := range keys {
+		value := labels[key]
 		if len(key) > maxLabelLength {
 			return fmt.Errorf("label key %q exceeds %d characters", key, maxLabelLength)
 		}
@@ -2535,9 +2732,16 @@ func replaceLabels(ctx context.Context, tx *sql.Tx, table, idColumn, id string, 
 	return insertLabels(ctx, tx, table, idColumn, id, labels)
 }
 
-func setUpdatedAt(ctx context.Context, tx *sql.Tx, table, idColumn, id, nowExpr string) error {
-	stmt := fmt.Sprintf(`UPDATE %s SET updated_at = %s WHERE %s = ?`, table, nowExpr, idColumn)
-	if _, err := tx.ExecContext(ctx, stmt, id); err != nil {
+func setUpdatedAt(ctx context.Context, tx *sql.Tx, table, idColumn, id string) error {
+	var err error
+	if t, ok := DeterministicTimeFromContext(ctx); ok {
+		stmt := fmt.Sprintf(`UPDATE %s SET updated_at = ? WHERE %s = ?`, table, idColumn)
+		_, err = tx.ExecContext(ctx, stmt, FormatDBTime(t), id)
+	} else {
+		stmt := fmt.Sprintf(`UPDATE %s SET updated_at = strftime('%%Y-%%m-%%d %%H:%%M:%%f', 'now') WHERE %s = ?`, table, idColumn)
+		_, err = tx.ExecContext(ctx, stmt, id)
+	}
+	if err != nil {
 		return fmt.Errorf("update %s timestamp: %w", table, err)
 	}
 	return nil

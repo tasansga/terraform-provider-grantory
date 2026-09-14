@@ -305,8 +305,7 @@ func doReadyz(t *testing.T, httpClient *http.Client) *http.Response {
 
 func startUnixHTTPServer(t *testing.T, body string) string {
 	t.Helper()
-	socketPath := filepath.Join(os.TempDir(), fmt.Sprintf("grantory-%d.sock", time.Now().UnixNano()))
-	_ = os.Remove(socketPath)
+	socketPath := filepath.Join(t.TempDir(), "server.sock")
 	listener, err := net.Listen("unix", socketPath)
 	require.NoError(t, err)
 
@@ -322,7 +321,6 @@ func startUnixHTTPServer(t *testing.T, body string) string {
 	t.Cleanup(func() {
 		_ = server.Shutdown(context.Background())
 		_ = listener.Close()
-		_ = os.Remove(socketPath)
 	})
 	return socketPath
 }
@@ -568,8 +566,7 @@ func startTestAgentSocket(t *testing.T, withKey bool) string {
 		require.NoError(t, keyring.Add(agent.AddedKey{PrivateKey: rawKey}))
 	}
 
-	path := filepath.Join(os.TempDir(), fmt.Sprintf("grantory-agent-%d.sock", time.Now().UnixNano()))
-	_ = os.Remove(path)
+	path := filepath.Join(t.TempDir(), "agent.sock")
 	ln, err := net.Listen("unix", path)
 	require.NoError(t, err)
 
@@ -591,7 +588,6 @@ func startTestAgentSocket(t *testing.T, withKey bool) string {
 	t.Cleanup(func() {
 		_ = ln.Close()
 		<-done
-		_ = os.Remove(path)
 	})
 	return path
 }
@@ -603,8 +599,7 @@ func startTestAgentSocketWithKeys(t *testing.T, keys ...interface{}) string {
 		require.NoError(t, keyring.Add(agent.AddedKey{PrivateKey: key}))
 	}
 
-	path := filepath.Join(os.TempDir(), fmt.Sprintf("grantory-agent-%d.sock", time.Now().UnixNano()))
-	_ = os.Remove(path)
+	path := filepath.Join(t.TempDir(), "agent.sock")
 	ln, err := net.Listen("unix", path)
 	require.NoError(t, err)
 
@@ -626,7 +621,6 @@ func startTestAgentSocketWithKeys(t *testing.T, keys ...interface{}) string {
 	t.Cleanup(func() {
 		_ = ln.Close()
 		<-done
-		_ = os.Remove(path)
 	})
 	return path
 }

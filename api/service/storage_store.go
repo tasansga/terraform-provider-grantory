@@ -43,8 +43,17 @@ func NewPostgresStore(ctx context.Context, dsn string) (Store, error) {
 	return storageStore{store: st}, nil
 }
 
+// NewStorageStore wraps an existing storage.Store as a Store.
+func NewStorageStore(store storage.Store) Store {
+	return storageStore{store: store}
+}
+
 type storageStore struct {
 	store storage.Store
+}
+
+func (s storageStore) Unwrap() storage.Store {
+	return s.store
 }
 
 func (a storageStore) Close() error {
@@ -58,7 +67,7 @@ func (a storageStore) CreateHost(ctx context.Context, payload HostCreatePayload)
 		Labels:    payload.Labels,
 	})
 	if err != nil {
-		return Host{}, mapStorageError(err)
+		return Host{}, MapStorageError(err)
 	}
 	return hostFromStorage(host), nil
 }
@@ -66,7 +75,7 @@ func (a storageStore) CreateHost(ctx context.Context, payload HostCreatePayload)
 func (a storageStore) GetHost(ctx context.Context, id string) (Host, error) {
 	host, err := a.store.GetHost(ctx, id)
 	if err != nil {
-		return Host{}, mapStorageError(err)
+		return Host{}, MapStorageError(err)
 	}
 	return hostFromStorage(host), nil
 }
@@ -74,7 +83,7 @@ func (a storageStore) GetHost(ctx context.Context, id string) (Host, error) {
 func (a storageStore) ListHosts(ctx context.Context) ([]Host, error) {
 	hosts, err := a.store.ListHosts(ctx)
 	if err != nil {
-		return nil, mapStorageError(err)
+		return nil, MapStorageError(err)
 	}
 	out := make([]Host, 0, len(hosts))
 	for _, host := range hosts {
@@ -85,17 +94,17 @@ func (a storageStore) ListHosts(ctx context.Context) ([]Host, error) {
 
 func (a storageStore) UpdateHostLabels(ctx context.Context, id string, labels map[string]string) (Host, error) {
 	if err := a.store.UpdateHostLabels(ctx, id, labels); err != nil {
-		return Host{}, mapStorageError(err)
+		return Host{}, MapStorageError(err)
 	}
 	host, err := a.store.GetHost(ctx, id)
 	if err != nil {
-		return Host{}, mapStorageError(err)
+		return Host{}, MapStorageError(err)
 	}
 	return hostFromStorage(host), nil
 }
 
 func (a storageStore) DeleteHost(ctx context.Context, id string) error {
-	return mapStorageError(a.store.DeleteHost(ctx, id))
+	return MapStorageError(a.store.DeleteHost(ctx, id))
 }
 
 func (a storageStore) CreateRequest(ctx context.Context, payload RequestCreatePayload) (Request, error) {
@@ -109,7 +118,7 @@ func (a storageStore) CreateRequest(ctx context.Context, payload RequestCreatePa
 		Labels:                    payload.Labels,
 	})
 	if err != nil {
-		return Request{}, mapStorageError(err)
+		return Request{}, MapStorageError(err)
 	}
 	return a.GetRequest(ctx, req.ID)
 }
@@ -117,7 +126,7 @@ func (a storageStore) CreateRequest(ctx context.Context, payload RequestCreatePa
 func (a storageStore) GetRequest(ctx context.Context, id string) (Request, error) {
 	req, err := a.store.GetRequest(ctx, id)
 	if err != nil {
-		return Request{}, mapStorageError(err)
+		return Request{}, MapStorageError(err)
 	}
 	return a.requestWithGrant(ctx, req)
 }
@@ -130,7 +139,7 @@ func (a storageStore) ListRequests(ctx context.Context, opts RequestListOptions)
 	}
 	requests, err := a.store.ListRequests(ctx, &filters)
 	if err != nil {
-		return nil, mapStorageError(err)
+		return nil, MapStorageError(err)
 	}
 	out := make([]Request, 0, len(requests))
 	for _, req := range requests {
@@ -149,13 +158,13 @@ func (a storageStore) UpdateRequestLabels(ctx context.Context, id string, labels
 
 func (a storageStore) UpdateRequest(ctx context.Context, id string, payload RequestUpdatePayload) (Request, error) {
 	if err := a.store.UpdateRequest(ctx, id, payload.Payload, payload.Labels); err != nil {
-		return Request{}, mapStorageError(err)
+		return Request{}, MapStorageError(err)
 	}
 	return a.GetRequest(ctx, id)
 }
 
 func (a storageStore) DeleteRequest(ctx context.Context, id string) error {
-	return mapStorageError(a.store.DeleteRequest(ctx, id))
+	return MapStorageError(a.store.DeleteRequest(ctx, id))
 }
 
 func (a storageStore) CreateRegister(ctx context.Context, payload RegisterCreatePayload) (Register, error) {
@@ -168,7 +177,7 @@ func (a storageStore) CreateRegister(ctx context.Context, payload RegisterCreate
 		Labels:             payload.Labels,
 	})
 	if err != nil {
-		return Register{}, mapStorageError(err)
+		return Register{}, MapStorageError(err)
 	}
 	return a.GetRegister(ctx, reg.ID)
 }
@@ -176,7 +185,7 @@ func (a storageStore) CreateRegister(ctx context.Context, payload RegisterCreate
 func (a storageStore) GetRegister(ctx context.Context, id string) (Register, error) {
 	reg, err := a.store.GetRegister(ctx, id)
 	if err != nil {
-		return Register{}, mapStorageError(err)
+		return Register{}, MapStorageError(err)
 	}
 	return registerFromStorage(reg), nil
 }
@@ -188,7 +197,7 @@ func (a storageStore) ListRegisters(ctx context.Context, opts RegisterListOption
 	}
 	registers, err := a.store.ListRegisters(ctx, &filters)
 	if err != nil {
-		return nil, mapStorageError(err)
+		return nil, MapStorageError(err)
 	}
 	out := make([]Register, 0, len(registers))
 	for _, reg := range registers {
@@ -199,7 +208,7 @@ func (a storageStore) ListRegisters(ctx context.Context, opts RegisterListOption
 
 func (a storageStore) UpdateRegister(ctx context.Context, id string, payload RegisterUpdatePayload) (Register, error) {
 	if err := a.store.UpdateRegister(ctx, id, payload.Payload, payload.Labels); err != nil {
-		return Register{}, mapStorageError(err)
+		return Register{}, MapStorageError(err)
 	}
 	return a.GetRegister(ctx, id)
 }
@@ -211,7 +220,7 @@ func (a storageStore) UpdateRegisterLabels(ctx context.Context, id string, label
 func (a storageStore) ListRegisterEvents(ctx context.Context, registerID string) ([]RegisterEvent, error) {
 	events, err := a.store.ListRegisterEvents(ctx, registerID)
 	if err != nil {
-		return nil, mapStorageError(err)
+		return nil, MapStorageError(err)
 	}
 	out := make([]RegisterEvent, 0, len(events))
 	for _, event := range events {
@@ -221,7 +230,7 @@ func (a storageStore) ListRegisterEvents(ctx context.Context, registerID string)
 }
 
 func (a storageStore) DeleteRegister(ctx context.Context, id string) error {
-	return mapStorageError(a.store.DeleteRegister(ctx, id))
+	return MapStorageError(a.store.DeleteRegister(ctx, id))
 }
 
 func (a storageStore) CreateGrant(ctx context.Context, payload GrantCreatePayload) (Grant, error) {
@@ -231,7 +240,7 @@ func (a storageStore) CreateGrant(ctx context.Context, payload GrantCreatePayloa
 		Payload:        payload.Payload,
 	})
 	if err != nil {
-		return Grant{}, mapStorageError(err)
+		return Grant{}, MapStorageError(err)
 	}
 	return a.GetGrant(ctx, grant.ID)
 }
@@ -239,7 +248,7 @@ func (a storageStore) CreateGrant(ctx context.Context, payload GrantCreatePayloa
 func (a storageStore) GetGrant(ctx context.Context, id string) (Grant, error) {
 	grant, err := a.store.GetGrant(ctx, id)
 	if err != nil {
-		return Grant{}, mapStorageError(err)
+		return Grant{}, MapStorageError(err)
 	}
 	return grantFromStorage(grant), nil
 }
@@ -247,7 +256,7 @@ func (a storageStore) GetGrant(ctx context.Context, id string) (Grant, error) {
 func (a storageStore) ListGrants(ctx context.Context) ([]Grant, error) {
 	grants, err := a.store.ListGrants(ctx)
 	if err != nil {
-		return nil, mapStorageError(err)
+		return nil, MapStorageError(err)
 	}
 	out := make([]Grant, 0, len(grants))
 	for _, grant := range grants {
@@ -257,12 +266,12 @@ func (a storageStore) ListGrants(ctx context.Context) ([]Grant, error) {
 }
 
 func (a storageStore) DeleteGrant(ctx context.Context, id string) error {
-	return mapStorageError(a.store.DeleteGrant(ctx, id))
+	return MapStorageError(a.store.DeleteGrant(ctx, id))
 }
 
 func (a storageStore) UpdateGrant(ctx context.Context, id string, payload GrantUpdatePayload) (Grant, error) {
 	if err := a.store.UpdateGrant(ctx, id, payload.Payload, payload.RequestVersion); err != nil {
-		return Grant{}, mapStorageError(err)
+		return Grant{}, MapStorageError(err)
 	}
 	return a.GetGrant(ctx, id)
 }
@@ -274,7 +283,7 @@ func (a storageStore) CreateSchemaDefinition(ctx context.Context, payload Schema
 		Labels:    payload.Labels,
 	})
 	if err != nil {
-		return SchemaDefinition{}, mapStorageError(err)
+		return SchemaDefinition{}, MapStorageError(err)
 	}
 	return a.GetSchemaDefinition(ctx, def.ID)
 }
@@ -282,7 +291,7 @@ func (a storageStore) CreateSchemaDefinition(ctx context.Context, payload Schema
 func (a storageStore) GetSchemaDefinition(ctx context.Context, id string) (SchemaDefinition, error) {
 	def, err := a.store.GetSchemaDefinition(ctx, id)
 	if err != nil {
-		return SchemaDefinition{}, mapStorageError(err)
+		return SchemaDefinition{}, MapStorageError(err)
 	}
 	return schemaDefinitionFromStorage(def), nil
 }
@@ -290,7 +299,7 @@ func (a storageStore) GetSchemaDefinition(ctx context.Context, id string) (Schem
 func (a storageStore) ListSchemaDefinitions(ctx context.Context) ([]SchemaDefinition, error) {
 	defs, err := a.store.ListSchemaDefinitions(ctx)
 	if err != nil {
-		return nil, mapStorageError(err)
+		return nil, MapStorageError(err)
 	}
 	out := make([]SchemaDefinition, 0, len(defs))
 	for _, def := range defs {
@@ -301,24 +310,24 @@ func (a storageStore) ListSchemaDefinitions(ctx context.Context) ([]SchemaDefini
 
 func (a storageStore) UpdateSchemaDefinitionLabels(ctx context.Context, id string, labels map[string]string) (SchemaDefinition, error) {
 	if err := a.store.UpdateSchemaDefinitionLabels(ctx, id, labels); err != nil {
-		return SchemaDefinition{}, mapStorageError(err)
+		return SchemaDefinition{}, MapStorageError(err)
 	}
 	return a.GetSchemaDefinition(ctx, id)
 }
 
 func (a storageStore) DeleteSchemaDefinition(ctx context.Context, id string) error {
-	return mapStorageError(a.store.DeleteSchemaDefinition(ctx, id))
+	return MapStorageError(a.store.DeleteSchemaDefinition(ctx, id))
 }
 
 func (a storageStore) RecordSignature(ctx context.Context, hostID string, timestamp int64, nonce string, expiresAt time.Time) error {
-	return mapStorageError(a.store.RecordSignature(ctx, hostID, timestamp, nonce, expiresAt))
+	return MapStorageError(a.store.RecordSignature(ctx, hostID, timestamp, nonce, expiresAt))
 }
 
 func (a storageStore) requestWithGrant(ctx context.Context, req storage.Request) (Request, error) {
 	out := requestFromStorage(req)
 	grant, found, err := a.store.GetGrantForRequest(ctx, req.ID)
 	if err != nil {
-		return Request{}, mapStorageError(err)
+		return Request{}, MapStorageError(err)
 	}
 	if !found {
 		return out, nil
@@ -410,7 +419,8 @@ func schemaDefinitionFromStorage(def storage.SchemaDefinition) SchemaDefinition 
 	}
 }
 
-func mapStorageError(err error) error {
+// MapStorageError translates storage-layer errors into service-layer sentinel errors.
+func MapStorageError(err error) error {
 	switch {
 	case err == nil:
 		return nil
@@ -456,6 +466,10 @@ func mapStorageError(err error) error {
 		return ErrReplayDetected
 	case errors.Is(err, storage.ErrTimestampRegressed):
 		return ErrTimestampRegressed
+	case errors.Is(err, storage.ErrNotLeader):
+		return ErrNotLeader
+	case errors.Is(err, storage.ErrLeadershipLost):
+		return ErrLeadershipLost
 	default:
 		return err
 	}

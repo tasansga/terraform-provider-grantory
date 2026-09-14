@@ -23,3 +23,22 @@ func TestFeaturesUniqueAndSemver(t *testing.T) {
 		assert.NoError(t, err, "feature since must be valid semver: %s", feature.Since)
 	}
 }
+
+func TestAPIVersion(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "1.6.0", APIVersion)
+}
+
+func TestFeaturesClusterCapabilities(t *testing.T) {
+	t.Parallel()
+
+	features := Features()
+	featureMap := make(map[string]string, len(features))
+	for _, f := range features {
+		featureMap[f.Name] = f.Since
+	}
+
+	assert.Equal(t, "1.6.0", featureMap["cluster.status"])
+	assert.Equal(t, "1.6.0", featureMap["cluster.management"])
+}

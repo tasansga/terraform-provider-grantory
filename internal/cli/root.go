@@ -41,6 +41,7 @@ func NewRootCommand() *cobra.Command {
 	root.PersistentFlags().String(FlagPassword, "", "Password for basic auth (env: "+EnvPassword+")")
 	root.PersistentFlags().String(FlagNamespace, "", "namespace to target for CLI commands (env: "+EnvNamespace+")")
 	root.PersistentFlags().String(FlagPrivateKeyFile, "", "path to a file containing a hex-encoded Ed25519 private key (env: "+EnvPrivateKeyFile+")")
+	root.PersistentFlags().Bool(FlagAllowDirectRaftMutation, false, fmt.Sprintf("allow direct SQLite database mutations even if Raft cluster state exists (env: %s)", EnvAllowDirectRaftMutation))
 	root.PersistentFlags().SortFlags = false
 	root.SilenceUsage = true
 
@@ -54,6 +55,7 @@ func NewRootCommand() *cobra.Command {
 		newInspectCmd(),
 		newDeleteCmd(),
 		newMutateCmd(),
+		newClusterCmd(),
 	)
 
 	return root
@@ -69,6 +71,25 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	cfg.ServerVersion = versionString()
 
 	configureLogging(cfg)
+	fields := serverStartupFields(cfg)
+	logrus.WithFields(fields).Info("starting Grantory server")
+
+	srv, err := server.New(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := srv.Close(); err != nil {
+			logrus.WithError(err).Warn("close server")
+		}
+	}()
+
+	err = srv.Serve(ctx)
+	logrus.Info("stopping Grantory server")
+	return err
+}
+
+func serverStartupFields(cfg config.Config) logrus.Fields {
 	tlsStatus := "disabled"
 	if server.IsTLSEnabled(cfg) {
 		tlsStatus = "enabled"
@@ -93,21 +114,14 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		}
 		fields["data_dir"] = absDataDir
 	}
-	logrus.WithFields(fields).Info("starting Grantory server")
-
-	srv, err := server.New(ctx, cfg)
-	if err != nil {
-		return err
+	if cfg.IsRaftEnabled() {
+		fields["raft_node_id"] = cfg.RaftNodeID
+		fields["raft_bind"] = cfg.RaftBind
+		fields["raft_advertise"] = cfg.RaftAdvertise
+		fields["raft_peers"] = cfg.RaftPeers
+		fields["raft_bootstrap_expect"] = cfg.RaftBootstrapExpect
 	}
-	defer func() {
-		if err := srv.Close(); err != nil {
-			logrus.WithError(err).Warn("close server")
-		}
-	}()
-
-	err = srv.Serve(ctx)
-	logrus.Info("stopping Grantory server")
-	return err
+	return fields
 }
 
 func redactPostgresDSN(dsn string) string {

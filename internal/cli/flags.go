@@ -20,6 +20,8 @@ const (
 	EnvGrantoryControllerNamespace = "GRANTORY_CONTROLLER_NAMESPACE"
 	FlagPrivateKeyFile             = "private-key-file"
 	EnvPrivateKeyFile              = "PRIVATE_KEY_FILE"
+	FlagAllowDirectRaftMutation    = "allow-direct-raft-mutation"
+	EnvAllowDirectRaftMutation     = "GRANTORY_ALLOW_DIRECT_RAFT_MUTATION"
 )
 
 type backendMode string

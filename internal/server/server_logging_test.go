@@ -30,9 +30,11 @@ func TestRequestLoggingMiddlewareRecordsErrorStatus(t *testing.T) {
 	for i := len(hook.AllEntries()) - 1; i >= 0; i-- {
 		candidate := hook.AllEntries()[i]
 		if handler, ok := candidate.Data["handler"].(string); ok && handler == "Server.request" {
-			if _, hasStatus := candidate.Data["status"]; hasStatus {
-				logged = candidate
-				break
+			if path, ok := candidate.Data["path"].(string); ok && path == "/missing" {
+				if _, hasStatus := candidate.Data["status"]; hasStatus {
+					logged = candidate
+					break
+				}
 			}
 		}
 	}

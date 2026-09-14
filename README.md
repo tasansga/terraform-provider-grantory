@@ -34,7 +34,7 @@ Producers request something they need (resource `grantory_request`). Grantors (r
 
 ## Terraform/OpenTofu workflow
 
-Grantory is designed for multi-pipeline automation: one Terraform/OpenTofu pipeline declares a `grantory_request` (the "producer"), another pipeline or automation run inspects those requests and creates matching `grantory_grant` resources (the "grantor")
+Grantory is designed for multi-pipeline automation: one Terraform/OpenTofu pipeline declares a `grantory_request` (the "producer"), another pipeline or automation run inspects those requests and creates matching `grantory_grant` resources (the "grantor").
 
 This allows pipelines with requests to act on them (e.g., to rotate secrets or provision proxies).
 
@@ -155,14 +155,14 @@ provider "grantory" {
 Grantory can also be driven from Kubernetes using CRDs plus the built-in controller. App teams declare `GrantoryRequest` / `GrantoryRegister` custom resources, and the controller syncs them to a Grantory server instance. Grant handlers still run outside the cluster (or in-cluster) and issue grants via the API.
 
 The CRDs live in `k8s/crds/` and the controller runs via `grantory controller`. It uses the same server configuration flags as the CLI and also supports `GRANTORY_CONTROLLER_*` env vars for server URL and credentials.
-An example controller deployment (RBAC + Deployment) lives in `k8s/controller.yaml`.
+An example controller deployment (RBAC + Deployment) lives in `k8s/controller/`.
 
 ## Running the server
 
 Grantory runs as an HTTP server and can optionally expose the same API via a Unix domain socket. Configure the database (sqlite directory path or Postgres DSN), HTTP/HTTPS bind addresses, optional Unix socket listener, TLS certificates, and log level via flags or matching environment variables (`DATABASE`, `HTTP_BIND`, `HTTPS_BIND`, `UNIX_SOCKET`, `UNIX_SOCKET_MODE`, `TLS_CERT`, `TLS_KEY`, `LOG_LEVEL`). TLS is only activated if `TLS_CERT` and `TLS_KEY` are set. Set `HTTP_BIND=off` to disable the HTTP listener.
 
 ```bash
-grantory --database ./data --http-bind 127.0.0.1:8080
+grantory serve --database ./data --http-bind 127.0.0.1:8080
 ```
 
 Defaults: `HTTP_BIND=0.0.0.0:8080`, `HTTPS_BIND=0.0.0.0:8443`, `UNIX_SOCKET=""` (disabled), `UNIX_SOCKET_MODE=0660`.
@@ -170,20 +170,62 @@ Defaults: `HTTP_BIND=0.0.0.0:8080`, `HTTPS_BIND=0.0.0.0:8443`, `UNIX_SOCKET=""` 
 When TLS is enabled, the server listens on both HTTP and HTTPS using those addresses. `HTTPS_BIND` is only evaluated when `TLS_CERT` and `TLS_KEY` are set.
 
 ```bash
-grantory --http-bind 127.0.0.1:8080 --https-bind 127.0.0.1:8443 --tls-cert ./cert.pem --tls-key ./key.pem
+grantory serve --http-bind 127.0.0.1:8080 --https-bind 127.0.0.1:8443 --tls-cert ./cert.pem --tls-key ./key.pem
 ```
 
 To enable a Unix socket listener, set `--unix-socket` (or `UNIX_SOCKET`). This is opt-in and can run alongside HTTP/HTTPS listeners.
 
 ```bash
-grantory --unix-socket /run/grantory/server.sock --unix-socket-mode 0660
+grantory serve --unix-socket /run/grantory/server.sock --unix-socket-mode 0660
 ```
 
 Unix socket only mode:
 
 ```bash
-grantory --http-bind off --https-bind off --unix-socket /run/grantory/server.sock
+grantory serve --http-bind off --https-bind off --unix-socket /run/grantory/server.sock
 ```
+
+### High availability (clustering)
+
+**EXPERIMENTAL FEATURE**
+
+Grantory can run as a multi-node cluster using embedded Raft consensus. The leader handles writes while followers automatically reverse-proxy write traffic to the leader.
+
+To run a 3-node cluster, configure `--raft-bind`, `--raft-advertise`, `--raft-node-id`, `--raft-bootstrap-expect`, and initial `--raft-peers`:
+
+```bash
+grantory serve \
+  --http-bind localhost:8080 \
+  --database $(mktemp -d) \
+  --raft-bind localhost:8300 \
+  --raft-advertise localhost:8300 \
+  --raft-node-id node-1 \
+  --raft-bootstrap-expect 3 \
+  --raft-peers node-1=localhost:8300,node-2=localhost:8301,node-3=localhost:8302 \
+  --raft-cluster-secret "shared-secret"
+
+grantory serve \
+  --http-bind localhost:8081 \
+  --database $(mktemp -d) \
+  --raft-bind localhost:8301 \
+  --raft-advertise localhost:8300 \
+  --raft-node-id node-2 \
+  --raft-bootstrap-expect 3 \
+  --raft-peers node-1=localhost:8300,node-2=localhost:8301,node-3=localhost:8302 \
+  --raft-cluster-secret "shared-secret"
+
+grantory serve \
+  --http-bind localhost:8082 \
+  --database $(mktemp -d) \
+  --raft-bind localhost:8302 \
+  --raft-advertise localhost:8300 \
+  --raft-node-id node-3 \
+  --raft-bootstrap-expect 3 \
+  --raft-peers node-1=localhost:8300,node-2=localhost:8301,node-3=localhost:8302 \
+  --raft-cluster-secret "shared-secret"
+```
+
+Configure `--raft-cluster-secret` (or `RAFT_CLUSTER_SECRET`) to authenticate cluster management requests and proxy routing. Mutual TLS is supported via `--raft-ca-file`, `--raft-cert-file`, and `--raft-key-file`. Use `grantory cluster --help` for administrative commands (`status`, `step-down`, `remove`, `recover`).
 
 ## Docker image
 
@@ -248,6 +290,8 @@ fmt.Println(host.ID)
 For embedded HTTP server usage (listeners + routes), use:
 
 ```go
+import "github.com/tasansga/terraform-provider-grantory/api/server"
+
 cfg := server.DefaultConfig()
 cfg.Database = "./data"
 cfg.BindAddr = "127.0.0.1:8080"
@@ -290,7 +334,7 @@ This pattern lets any workload register a heartbeat endpoint without needing dir
 
 It has three stages:
 
-1. Producer requests an endpoind: A workload requests a Gatus endpoint (name + optional group).
+1. Producer requests an endpoint: A workload requests a Gatus endpoint (name + optional group).
 
 2. Central Gatus grants tokens: A central "grantor" reads all requests, issues tokens, and writes the final "external‑endpoints" list used by Gatus.
 
@@ -344,7 +388,7 @@ resource "grantory_grant" "gatus_external_endpoint" {
 output "external_endpoints" {
   value = [
     for key, req in data.grantory_request.details : merge(
-      jsondecode(req.request_payload),
+      jsondecode(req.payload),
       { token = random_password.token[key].result }
     )
   ]

@@ -9,14 +9,16 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	apiclient "github.com/tasansga/terraform-provider-grantory/api/client"
+	clusterraft "github.com/tasansga/terraform-provider-grantory/internal/cluster/raft"
 	"github.com/tasansga/terraform-provider-grantory/internal/config"
-	"github.com/tasansga/terraform-provider-grantory/internal/server"
 	"github.com/tasansga/terraform-provider-grantory/internal/storage"
+	"github.com/tasansga/terraform-provider-grantory/internal/store"
 )
 
 type resourceType string
@@ -33,7 +35,21 @@ func loadConfig(cmd *cobra.Command) (config.Config, error) {
 	return config.FromFlagSet(cmd.Root().PersistentFlags())
 }
 
-func runWithBackend(cmd *cobra.Command, action func(context.Context, cliBackend) error) error {
+func isDirectRaftMutationAllowed(cmd *cobra.Command) bool {
+	if cmd != nil {
+		if allowed, err := cmd.Flags().GetBool(FlagAllowDirectRaftMutation); err == nil && allowed {
+			return true
+		}
+		if cmd.Root() != nil && cmd.Root() != cmd {
+			if allowed, err := cmd.Root().PersistentFlags().GetBool(FlagAllowDirectRaftMutation); err == nil && allowed {
+				return true
+			}
+		}
+	}
+	return os.Getenv(EnvAllowDirectRaftMutation) == "true"
+}
+
+func runWithBackend(cmd *cobra.Command, mutative bool, action func(context.Context, cliBackend) error) error {
 	cfg, err := loadConfig(cmd)
 	if err != nil {
 		return err
@@ -76,38 +92,28 @@ func runWithBackend(cmd *cobra.Command, action func(context.Context, cliBackend)
 
 	switch backendCfg.mode {
 	case backendModeDirect:
-		var store storage.Store
-		if storage.IsPostgresDSN(cfg.Database) {
-			pgStore, err := storage.NewPostgres(ctx, cfg.Database)
-			if err != nil {
-				return err
+		raftDBPath := filepath.Join(cfg.Database, clusterraft.RaftDirName, clusterraft.RaftDBFileName)
+		if _, err := os.Stat(raftDBPath); err == nil {
+			if mutative && !isDirectRaftMutationAllowed(cmd) {
+				return fmt.Errorf("direct database mutation refused: detected active Raft cluster state at %s. Direct mutations bypass consensus and desynchronize cluster state. Use --server-url to interact via the cluster API, or pass --allow-direct-raft-mutation to proceed anyway", raftDBPath)
 			}
-			store = pgStore
-		} else {
-			if err := os.MkdirAll(cfg.Database, 0o755); err != nil {
-				return fmt.Errorf("create sqlite directory: %w", err)
-			}
-			path := server.NamespaceDBPath(cfg.Database, namespace)
-			sqliteStore, err := storage.New(ctx, path)
-			if err != nil {
-				return err
-			}
-			store = sqliteStore
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "WARNING: direct database mode detected Raft cluster state at %s. Direct mutations bypass consensus and may desynchronize cluster state. Use --server-url to interact via the cluster API.\n", raftDBPath)
 		}
-		store.SetNamespace(namespace)
+		nsStore, err := store.NewNamespaceStore(ctx, cfg.Database)
+		if err != nil {
+			return err
+		}
 		defer func() {
-			if err := store.Close(); err != nil {
-				if _, ferr := fmt.Fprintf(cmd.ErrOrStderr(), "close store: %v\n", err); ferr != nil {
-					_ = ferr
-				}
+			if cerr := nsStore.Close(); cerr != nil {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "close store: %v\n", cerr)
 			}
 		}()
-
-		if err := store.Migrate(ctx); err != nil {
+		st, err := nsStore.StoreFor(ctx, namespace)
+		if err != nil {
 			return err
 		}
 
-		return action(ctx, newDirectBackend(store))
+		return action(ctx, newDirectBackend(st))
 	case backendModeAPI:
 		backend, err := newAPIBackend(namespace, backendCfg.serverURL, backendCfg.token, backendCfg.user, backendCfg.password)
 		if err != nil {
@@ -143,7 +149,7 @@ func newListCmd() *cobra.Command {
 				return err
 			}
 
-			return runWithBackend(cmd, func(ctx context.Context, backend cliBackend) error {
+			return runWithBackend(cmd, false, func(ctx context.Context, backend cliBackend) error {
 				switch resType {
 				case resourceTypeHosts:
 					if len(hostLabelFilters) > 0 {
@@ -304,7 +310,7 @@ func newInspectCmd() *cobra.Command {
 				return errors.New("either <id> or --unique-key is required")
 			}
 
-			return runWithBackend(cmd, func(ctx context.Context, backend cliBackend) error {
+			return runWithBackend(cmd, false, func(ctx context.Context, backend cliBackend) error {
 				targetID := id
 				if strings.TrimSpace(uniqueKey) != "" {
 					foundID, err := lookupIDByUniqueKey(ctx, backend, resType, strings.TrimSpace(uniqueKey))
@@ -383,7 +389,7 @@ func createRequest(cmd *cobra.Command) error {
 		}
 	}
 
-	return runWithBackend(cmd, func(ctx context.Context, backend cliBackend) error {
+	return runWithBackend(cmd, true, func(ctx context.Context, backend cliBackend) error {
 		created, err := backend.CreateRequest(ctx, storage.Request{
 			HostID:                    strings.TrimSpace(hostID),
 			RequestSchemaDefinitionID: strings.TrimSpace(requestSchemaID),
@@ -445,7 +451,7 @@ func createRegister(cmd *cobra.Command) error {
 		}
 	}
 
-	return runWithBackend(cmd, func(ctx context.Context, backend cliBackend) error {
+	return runWithBackend(cmd, true, func(ctx context.Context, backend cliBackend) error {
 		created, err := backend.CreateRegister(ctx, storage.Register{
 			HostID:             strings.TrimSpace(hostID),
 			SchemaDefinitionID: strings.TrimSpace(schemaID),
@@ -478,7 +484,7 @@ func createGrant(cmd *cobra.Command) error {
 		return err
 	}
 
-	return runWithBackend(cmd, func(ctx context.Context, backend cliBackend) error {
+	return runWithBackend(cmd, true, func(ctx context.Context, backend cliBackend) error {
 		created, err := backend.CreateGrant(ctx, storage.Grant{
 			RequestID: strings.TrimSpace(requestID),
 			Payload:   payload,
@@ -523,7 +529,7 @@ func createSchemaDefinition(cmd *cobra.Command) error {
 		}
 	}
 
-	return runWithBackend(cmd, func(ctx context.Context, backend cliBackend) error {
+	return runWithBackend(cmd, true, func(ctx context.Context, backend cliBackend) error {
 		created, err := backend.CreateSchemaDefinition(ctx, storage.SchemaDefinition{
 			UniqueKey: strings.TrimSpace(uniqueKey),
 			Schema:    schemaValue,
@@ -551,7 +557,7 @@ func newDeleteCmd() *cobra.Command {
 			}
 			id := args[1]
 
-			return runWithBackend(cmd, func(ctx context.Context, backend cliBackend) error {
+			return runWithBackend(cmd, true, func(ctx context.Context, backend cliBackend) error {
 				switch resType {
 				case resourceTypeHosts:
 					if err := backend.DeleteHost(ctx, id); err != nil {
@@ -615,7 +621,7 @@ func newMutateCmd() *cobra.Command {
 				return errors.New("only one of --labels or --labels-file may be provided")
 			}
 
-			return runWithBackend(cmd, func(ctx context.Context, backend cliBackend) error {
+			return runWithBackend(cmd, true, func(ctx context.Context, backend cliBackend) error {
 				labels, err := resolveLabels(cmd, labelsFlag, labelsFile)
 				if err != nil {
 					return err
@@ -963,7 +969,7 @@ func newNamespaceDeleteCmd() *cobra.Command {
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			namespace := args[0]
-			if err := server.ValidateNamespaceName(namespace); err != nil {
+			if err := store.ValidateNamespaceName(namespace); err != nil {
 				return err
 			}
 
@@ -983,7 +989,15 @@ func newNamespaceDeleteCmd() *cobra.Command {
 				})
 			}
 
-			path := server.NamespaceDBPath(cfg.Database, namespace)
+			raftDBPath := filepath.Join(cfg.Database, clusterraft.RaftDirName, clusterraft.RaftDBFileName)
+			if _, err := os.Stat(raftDBPath); err == nil {
+				if !isDirectRaftMutationAllowed(cmd) {
+					return fmt.Errorf("direct namespace deletion refused: detected active Raft cluster state at %s. Direct deletion bypasses consensus and desynchronizes cluster state. Use --server-url to interact via the cluster API, or pass --allow-direct-raft-mutation to proceed anyway", raftDBPath)
+				}
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "WARNING: direct database mode detected Raft cluster state at %s. Direct mutations bypass consensus and may desynchronize cluster state. Stop cluster nodes before deleting namespaces directly.\n", raftDBPath)
+			}
+
+			path := store.NamespaceDBPath(cfg.Database, namespace)
 			if err := removeNamespaceFiles(path); err != nil {
 				return err
 			}
@@ -998,24 +1012,19 @@ func newNamespaceDeleteCmd() *cobra.Command {
 }
 
 func dropPostgresNamespace(ctx context.Context, dsn, namespace string) error {
-	store, err := storage.NewPostgres(ctx, dsn)
+	pgStore, err := storage.NewPostgres(ctx, dsn)
 	if err != nil {
 		return err
 	}
 	defer func() {
-		_ = store.Close()
+		_ = pgStore.Close()
 	}()
 
-	stmt := fmt.Sprintf(`DROP SCHEMA IF EXISTS %s CASCADE`, quoteIdent(namespace))
-	if _, err := store.DB().ExecContext(ctx, stmt); err != nil {
+	stmt := fmt.Sprintf(`DROP SCHEMA IF EXISTS %s CASCADE`, storage.QuoteIdent(namespace))
+	if _, err := pgStore.DB().ExecContext(ctx, stmt); err != nil {
 		return fmt.Errorf("drop namespace schema: %w", err)
 	}
 	return nil
-}
-
-func quoteIdent(value string) string {
-	escaped := strings.ReplaceAll(value, `"`, `""`)
-	return `"` + escaped + `"`
 }
 
 func resolveNamespace(cmd *cobra.Command) (string, error) {
@@ -1028,9 +1037,9 @@ func resolveNamespace(cmd *cobra.Command) (string, error) {
 		namespace = os.Getenv(EnvNamespace)
 	}
 	if namespace == "" {
-		namespace = server.DefaultNamespace
+		namespace = store.DefaultNamespace
 	}
-	if err := server.ValidateNamespaceName(namespace); err != nil {
+	if err := store.ValidateNamespaceName(namespace); err != nil {
 		return "", err
 	}
 	return namespace, nil
