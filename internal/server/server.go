@@ -2,20 +2,28 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"database/sql"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/sirupsen/logrus"
+	"github.com/valyala/fasthttp"
 
+	"github.com/tasansga/terraform-provider-grantory/api/service"
+	"github.com/tasansga/terraform-provider-grantory/internal/cluster/raft"
 	"github.com/tasansga/terraform-provider-grantory/internal/config"
 	"github.com/tasansga/terraform-provider-grantory/internal/storage"
+	"github.com/tasansga/terraform-provider-grantory/internal/store"
 )
 
 const (
@@ -24,25 +32,67 @@ const (
 	requireSignaturesCtxKey = "grantory:require-signatures"
 )
 
-type localStore struct {
-	store storage.Store
-}
-
 type Server struct {
-	cfg     config.Config
-	nsStore *NamespaceStore
+	cfg         config.Config
+	nsStore     *store.NamespaceStore
+	raftNode    *raft.RaftNode
+	proxyClient *fasthttp.Client
 }
 
 func New(ctx context.Context, cfg config.Config) (*Server, error) {
-	nsStore, err := NewNamespaceStore(ctx, cfg.Database)
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
+	nsStore, err := store.NewNamespaceStore(ctx, cfg.Database)
 	if err != nil {
 		return nil, err
 	}
-	return &Server{cfg: cfg, nsStore: nsStore}, nil
+
+	var proxyClient *fasthttp.Client
+	if cfg.IsRaftEnabled() {
+		client, err := buildProxyClient(cfg)
+		if err != nil {
+			_ = nsStore.Close()
+			return nil, fmt.Errorf("build proxy client: %w", err)
+		}
+		proxyClient = client
+	}
+
+	s := &Server{
+		cfg:         cfg,
+		nsStore:     nsStore,
+		proxyClient: proxyClient,
+	}
+	if cfg.IsRaftEnabled() {
+		raftNode, err := raft.NewRaftNode(ctx, cfg, nsStore, nsStore.DataDir())
+		if err != nil {
+			_ = nsStore.Close()
+			return nil, fmt.Errorf("initialize raft node: %w", err)
+		}
+		s.raftNode = raftNode
+	}
+
+	return s, nil
 }
 
-func (s *Server) Serve(ctx context.Context) error {
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+func (s *Server) buildApp() *fiber.App {
+	app := fiber.New(fiber.Config{
+		DisableStartupMessage: true,
+		ErrorHandler: func(c *fiber.Ctx, err error) error {
+			code := fiber.StatusInternalServerError
+			msg := err.Error()
+			if fe, ok := asFiberError(err); ok {
+				code = fe.Code
+				msg = fe.Message
+			}
+			if (code == fiber.StatusServiceUnavailable || code == fiber.StatusBadGateway) && len(c.Response().Header.Peek("Retry-After")) == 0 {
+				c.Set("Retry-After", "1")
+			}
+			c.Set(fiber.HeaderContentType, fiber.MIMETextPlainCharsetUTF8)
+			return c.Status(code).SendString(msg)
+		},
+	})
 
 	app.Get("/static/water.min.css", s.handleWaterCSS)
 	app.Get("/", s.handleRoot)
@@ -51,6 +101,14 @@ func (s *Server) Serve(ctx context.Context) error {
 	app.Get("/readyz", s.handleReadiness)
 	app.Get("/meta", s.handleMeta)
 	app.Use(requestLoggingMiddleware())
+
+	var clusterMgr ClusterManager
+	if s.raftNode != nil {
+		clusterMgr = s.raftNode
+	}
+	registerClusterAdminAuth(app, s.cfg.RaftClusterSecret)
+	app.Use(clusterRoutingMiddleware(clusterMgr, s.proxyClient))
+	registerClusterRoutes(app, clusterMgr)
 
 	api := app.Group("/", s.namespaceMiddleware())
 
@@ -66,13 +124,38 @@ func (s *Server) Serve(ctx context.Context) error {
 	api.Get("/grant.html", s.handleGrantPage)
 	api.Get("/schema.html", s.handleSchemaPage)
 
+	return app
+}
+
+func (s *Server) Serve(ctx context.Context) error {
+	app := s.buildApp()
+
+	serveCtx, cancel := context.WithCancel(ctx)
+	shutdownDone := make(chan struct{})
 	go func() {
-		<-ctx.Done()
+		defer close(shutdownDone)
+		<-serveCtx.Done()
 		_ = app.Shutdown()
+		if s.raftNode != nil {
+			_ = s.raftNode.Close()
+		}
+	}()
+	defer func() {
+		cancel()
+		<-shutdownDone
+	}()
+
+	var openedListeners []net.Listener
+	var started bool
+	defer func() {
+		if !started {
+			for _, l := range openedListeners {
+				_ = l.Close()
+			}
+		}
 	}()
 
 	httpDisabled := isBindDisabled(s.cfg.BindAddr)
-	httpsDisabled := isBindDisabled(s.cfg.TLSBind)
 	unixSocketEnabled := isUnixSocketEnabled(s.cfg.UnixSocket)
 
 	var unixListener net.Listener
@@ -83,69 +166,127 @@ func (s *Server) Serve(ctx context.Context) error {
 			return err
 		}
 		unixListener = listener
+		openedListeners = append(openedListeners, unixListener)
 		unixCleanup = cleanup
 		defer unixCleanup()
 	}
 
 	if IsTLSEnabled(s.cfg) {
-		if s.cfg.TLSBind == "" || httpsDisabled {
-			return fmt.Errorf("https bind address must be configured when TLS is enabled")
-		}
 		if !httpDisabled && s.cfg.TLSBind == s.cfg.BindAddr {
 			return fmt.Errorf("https bind address must differ from http bind address")
 		}
 
-		errCount := 1
+		tlsTcpLn, err := s.listenTCP(s.cfg.TLSBind, true)
+		if err != nil {
+			return err
+		}
+		openedListeners = append(openedListeners, tlsTcpLn)
+
+		cer, err := tls.LoadX509KeyPair(s.cfg.TLSCert, s.cfg.TLSKey)
+		if err != nil {
+			return err
+		}
+		tlsLn := tls.NewListener(tlsTcpLn, &tls.Config{Certificates: []tls.Certificate{cer}})
+
+		var httpLn net.Listener
 		if !httpDisabled {
-			errCount = 2
-		}
-		if unixSocketEnabled {
-			errCount++
-		}
-		errCh := make(chan error, errCount)
-		if !httpDisabled {
-			go func() {
-				errCh <- app.Listen(s.cfg.BindAddr)
-			}()
-		}
-		go func() {
-			errCh <- app.ListenTLS(s.cfg.TLSBind, s.cfg.TLSCert, s.cfg.TLSKey)
-		}()
-		if unixSocketEnabled {
-			go func() {
-				errCh <- app.Listener(unixListener)
-			}()
+			httpTcpLn, err := s.listenTCP(s.cfg.BindAddr, false)
+			if err != nil {
+				return err
+			}
+			openedListeners = append(openedListeners, httpTcpLn)
+			httpLn = httpTcpLn
 		}
 
-		err := <-errCh
-		if err != nil {
-			_ = app.Shutdown()
+		var listeners []net.Listener
+		listeners = append(listeners, tlsLn)
+		if httpLn != nil {
+			listeners = append(listeners, httpLn)
 		}
-		return err
+		if unixListener != nil {
+			listeners = append(listeners, unixListener)
+		}
+		started = true
+		return listenAndServe(app, listeners...)
 	}
 
 	if httpDisabled && !unixSocketEnabled {
 		return fmt.Errorf("need at least one listener - enable http bind address or unix socket when TLS is disabled")
 	}
-	if httpDisabled {
-		return app.Listener(unixListener)
-	}
-	if !unixSocketEnabled {
-		return app.Listen(s.cfg.BindAddr)
-	}
 
-	errCh := make(chan error, 2)
-	go func() {
-		errCh <- app.Listen(s.cfg.BindAddr)
-	}()
-	go func() {
-		errCh <- app.Listener(unixListener)
-	}()
-	err := <-errCh
-	if err != nil {
-		_ = app.Shutdown()
+	var listeners []net.Listener
+	if !httpDisabled {
+		httpTcpLn, err := s.listenTCP(s.cfg.BindAddr, false)
+		if err != nil {
+			return err
+		}
+		openedListeners = append(openedListeners, httpTcpLn)
+		listeners = append(listeners, httpTcpLn)
 	}
+	if unixSocketEnabled {
+		listeners = append(listeners, unixListener)
+	}
+	started = true
+	return listenAndServe(app, listeners...)
+}
+
+func isClusterUnavailableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, storage.ErrLeadershipLost) ||
+		errors.Is(err, storage.ErrNotLeader) ||
+		errors.Is(err, service.ErrLeadershipLost) ||
+		errors.Is(err, service.ErrNotLeader) ||
+		isDatabaseClosedError(err)
+}
+
+func isDatabaseClosedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, sql.ErrConnDone) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "sql: database is closed") ||
+		strings.Contains(msg, "database is closed") ||
+		strings.Contains(msg, "bad connection")
+}
+
+// listenAndServe serves app concurrently on all provided listeners.
+// When any listener exits (whether cleanly or with an error), it unconditionally
+// shuts down app so that sibling listeners exit promptly without hanging.
+func listenAndServe(app *fiber.App, listeners ...net.Listener) error {
+	if len(listeners) == 0 {
+		return fmt.Errorf("need at least one listener")
+	}
+	if len(listeners) == 1 {
+		return app.Listener(listeners[0])
+	}
+	errCh := make(chan error, len(listeners))
+	for _, ln := range listeners {
+		ln := ln
+		go func() {
+			errCh <- app.Listener(ln)
+		}()
+	}
+	err := <-errCh
+	_ = app.Shutdown()
 	return err
+}
+
+func (s *Server) listenTCP(addr string, isTLSListener bool) (net.Listener, error) {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	if s.raftNode != nil && (isTLSListener || !s.raftNode.IsTLS()) {
+		if tcpAddr, ok := ln.Addr().(*net.TCPAddr); ok {
+			s.raftNode.SetHTTPPort(strconv.Itoa(tcpAddr.Port))
+		}
+	}
+	return ln, nil
 }
 
 func isBindDisabled(addr string) bool {
@@ -206,11 +347,23 @@ func requestLoggingMiddleware() fiber.Handler {
 		err := c.Next()
 		status := c.Response().StatusCode()
 		if err != nil {
-			var fe *fiber.Error
-			if errors.As(err, &fe) {
-				status = fe.Code
-			} else if status < http.StatusBadRequest {
-				status = http.StatusInternalServerError
+			if isClusterUnavailableError(err) {
+				status = fiber.StatusServiceUnavailable
+			} else {
+				var fe *fiber.Error
+				if errors.As(err, &fe) {
+					status = fe.Code
+				} else if status < http.StatusBadRequest {
+					status = http.StatusInternalServerError
+				}
+			}
+		}
+		// Safety fallback: ensure Retry-After: 1 is injected even on non-error direct
+		// 503/502 responses (e.g., from proxy middleware or direct handler responses)
+		// that bypass Fiber's central ErrorHandler.
+		if status == fiber.StatusServiceUnavailable || status == fiber.StatusBadGateway {
+			if len(c.Response().Header.Peek("Retry-After")) == 0 {
+				c.Set("Retry-After", "1")
 			}
 		}
 		if status >= http.StatusBadRequest {
@@ -224,30 +377,53 @@ func requestLoggingMiddleware() fiber.Handler {
 	}
 }
 
+type unclosableStore struct {
+	storage.Store
+}
+
+func (u unclosableStore) Close() error {
+	return nil
+}
+
+func (u unclosableStore) Unwrap() storage.Store {
+	return u.Store
+}
+
+func (u unclosableStore) SupportsSignatureBundling() bool {
+	return checkSignatureBundling(u.Store)
+}
+
 func (s *Server) namespaceMiddleware() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		namespace := c.Get("REMOTE_USER")
 		if namespace == "" {
-			namespace = DefaultNamespace
+			namespace = store.DefaultNamespace
 		}
-		store, err := s.nsStore.StoreFor(c.Context(), namespace)
+		storeInstance, err := s.nsStore.StoreFor(c.UserContext(), namespace)
 		if err != nil {
-			if err := ValidateNamespaceName(namespace); err != nil {
+			if errors.Is(err, store.ErrInvalidNamespace) {
 				return fiber.NewError(fiber.StatusBadRequest, err.Error())
 			}
 			logrus.WithError(err).WithField("namespace", namespace).Error("prepare namespace store")
 			return fiber.NewError(fiber.StatusInternalServerError, "unable to access namespace data")
 		}
 
-		c.Locals(storeCtxKey, localStore{store: store})
+		if s.raftNode != nil {
+			c.Locals(storeCtxKey, newRaftStore(storeInstance, s.raftNode, namespace))
+		} else {
+			c.Locals(storeCtxKey, unclosableStore{Store: storeInstance})
+		}
 		c.Locals(namespaceCtxKey, namespace)
 		c.Locals(requireSignaturesCtxKey, s.cfg.RequireSignatures)
+		// Clear storeCtxKey on return to prevent fasthttp's (*userData).Reset() from invoking
+		// io.Closer.Close() on the long-lived singleton namespace store when recycling fiber.Ctx.
+		defer c.Locals(storeCtxKey, nil)
 		return c.Next()
 	}
 }
 
 func IsTLSEnabled(cfg config.Config) bool {
-	return cfg.TLSCert != "" && cfg.TLSKey != ""
+	return cfg.IsTLSEnabled()
 }
 
 func (s *Server) handleHealth(c *fiber.Ctx) error {
@@ -269,7 +445,14 @@ func (s *Server) handleReadiness(c *fiber.Ctx) error {
 		}
 	}
 
-	if _, err := s.nsStore.StoreFor(c.Context(), DefaultNamespace); err != nil {
+	if s.raftNode != nil {
+		if s.raftNode.LeaderAddr() == "" && !s.raftNode.IsLeader() {
+			c.Set("Retry-After", "1")
+			return fiber.NewError(http.StatusServiceUnavailable, "raft cluster has no leader")
+		}
+	}
+
+	if _, err := s.nsStore.StoreFor(c.UserContext(), store.DefaultNamespace); err != nil {
 		logrus.WithError(err).Error("prepare default namespace")
 		return fiber.NewError(http.StatusServiceUnavailable, "database not ready")
 	}
@@ -307,18 +490,30 @@ func (s *Server) handleMetrics(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	reqCounts, err := store.CountRequestsByGrantPresence(c.Context())
+	reqCounts, err := store.CountRequestsByGrantPresence(c.UserContext())
 	if err != nil {
+		if isClusterUnavailableError(err) {
+			fe, _ := asFiberError(err)
+			return fe
+		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("count requests")
 		return fiber.NewError(http.StatusInternalServerError, "unable to collect request metrics")
 	}
-	grantCounts, err := store.CountGrants(c.Context())
+	grantCounts, err := store.CountGrants(c.UserContext())
 	if err != nil {
+		if isClusterUnavailableError(err) {
+			fe, _ := asFiberError(err)
+			return fe
+		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("count grants")
 		return fiber.NewError(http.StatusInternalServerError, "unable to collect grant metrics")
 	}
-	registerCounts, err := store.CountRegisters(c.Context())
+	registerCounts, err := store.CountRegisters(c.UserContext())
 	if err != nil {
+		if isClusterUnavailableError(err) {
+			fe, _ := asFiberError(err)
+			return fe
+		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("count registers")
 		return fiber.NewError(http.StatusInternalServerError, "unable to collect register metrics")
 	}
@@ -330,7 +525,92 @@ func (s *Server) handleMetrics(c *fiber.Ctx) error {
 	})
 }
 
-// Close releases all namespace databases.
+// Close releases all namespace databases and cluster resources.
 func (s *Server) Close() error {
-	return s.nsStore.Close()
+	if s == nil {
+		return nil
+	}
+	var firstErr error
+	if s.raftNode != nil {
+		if err := s.raftNode.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if s.proxyClient != nil {
+		s.proxyClient.CloseIdleConnections()
+	}
+	if s.nsStore != nil {
+		if err := s.nsStore.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// RaftNode returns the underlying RaftNode if clustering is enabled.
+func (s *Server) RaftNode() *raft.RaftNode {
+	if s == nil {
+		return nil
+	}
+	return s.raftNode
+}
+
+func buildProxyClient(cfg config.Config) (*fasthttp.Client, error) {
+	rootPool, err := x509.SystemCertPool()
+	if err != nil || rootPool == nil {
+		rootPool = x509.NewCertPool()
+	}
+
+	if cfg.RaftCAFile != "" {
+		caData, err := os.ReadFile(cfg.RaftCAFile)
+		if err != nil {
+			return nil, fmt.Errorf("read raft CA file: %w", err)
+		}
+		if !rootPool.AppendCertsFromPEM(caData) {
+			return nil, fmt.Errorf("failed to append certs from raft CA file %q", cfg.RaftCAFile)
+		}
+	}
+
+	// In development and test environments with self-signed leaf certificates, adding TLSCert
+	// directly to the root pool allows followers to trust peer HTTPS endpoints without a dedicated CA.
+	// In production deployments using custom intermediate or enterprise root CAs, operators must
+	// specify the CA certificate bundle via --raft-ca-file to ensure proper intra-cluster TLS verification.
+	if cfg.TLSCert != "" {
+		certData, err := os.ReadFile(cfg.TLSCert)
+		if err != nil {
+			return nil, fmt.Errorf("read TLS cert file: %w", err)
+		}
+		if !rootPool.AppendCertsFromPEM(certData) {
+			return nil, fmt.Errorf("failed to append certs from TLS cert file %q", cfg.TLSCert)
+		}
+	}
+
+	tlsConfig := &tls.Config{
+		RootCAs: rootPool,
+	}
+	if cfg.RaftTLSServerName != "" {
+		tlsConfig.ServerName = cfg.RaftTLSServerName
+	}
+
+	// Client certificate support:
+	if cfg.RaftCertFile != "" && cfg.RaftKeyFile != "" {
+		cert, err := tls.LoadX509KeyPair(cfg.RaftCertFile, cfg.RaftKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("load raft client keypair: %w", err)
+		}
+		tlsConfig.Certificates = append(tlsConfig.Certificates, cert)
+	} else if cfg.TLSCert != "" && cfg.TLSKey != "" {
+		cert, err := tls.LoadX509KeyPair(cfg.TLSCert, cfg.TLSKey)
+		if err != nil {
+			return nil, fmt.Errorf("load TLS client keypair: %w", err)
+		}
+		tlsConfig.Certificates = append(tlsConfig.Certificates, cert)
+	}
+
+	return &fasthttp.Client{
+		TLSConfig:       tlsConfig,
+		ReadTimeout:     30 * time.Second,
+		WriteTimeout:    10 * time.Second,
+		MaxConnDuration: 60 * time.Second,
+	}, nil
 }

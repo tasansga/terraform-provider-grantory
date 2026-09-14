@@ -6,12 +6,10 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
-	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/stretchr/testify/assert"
@@ -342,8 +340,7 @@ func startTestAgentSocket(t *testing.T, withKey bool) string {
 		require.NoError(t, keyring.Add(agent.AddedKey{PrivateKey: rawKey}))
 	}
 
-	path := filepath.Join(os.TempDir(), fmt.Sprintf("grantory-provider-agent-%d.sock", time.Now().UnixNano()))
-	_ = os.Remove(path)
+	path := filepath.Join(t.TempDir(), "agent.sock")
 	ln, err := net.Listen("unix", path)
 	require.NoError(t, err)
 
@@ -365,7 +362,6 @@ func startTestAgentSocket(t *testing.T, withKey bool) string {
 	t.Cleanup(func() {
 		_ = ln.Close()
 		<-done
-		_ = os.Remove(path)
 	})
 	return path
 }

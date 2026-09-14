@@ -88,6 +88,19 @@ type schemaPageData struct {
 	Schema    storage.SchemaDefinition
 }
 
+func renderPageError(err error, namespace, action, fallbackMsg string, extraFields ...logrus.Fields) error {
+	if isClusterUnavailableError(err) {
+		fe, _ := asFiberError(err)
+		return fe
+	}
+	entry := logrus.WithError(err).WithField("namespace", namespace)
+	for _, fields := range extraFields {
+		entry = entry.WithFields(fields)
+	}
+	entry.Error(action)
+	return fiber.NewError(http.StatusInternalServerError, fallbackMsg)
+}
+
 func (s *Server) handleIndex(c *fiber.Ctx) error {
 	logRequestEntry(c, "Server.handleIndex", nil)
 
@@ -96,51 +109,43 @@ func (s *Server) handleIndex(c *fiber.Ctx) error {
 		return err
 	}
 
-	reqCounts, err := store.CountRequestsByGrantPresence(c.Context())
+	reqCounts, err := store.CountRequestsByGrantPresence(c.UserContext())
 	if err != nil {
-		logrus.WithError(err).WithField("namespace", namespace).Error("count requests for index")
-		return fiber.NewError(http.StatusInternalServerError, "unable to collect request stats")
+		return renderPageError(err, namespace, "count requests for index", "unable to collect request stats")
 	}
 
-	registerCounts, err := store.CountRegisters(c.Context())
+	registerCounts, err := store.CountRegisters(c.UserContext())
 	if err != nil {
-		logrus.WithError(err).WithField("namespace", namespace).Error("count registers for index")
-		return fiber.NewError(http.StatusInternalServerError, "unable to collect register stats")
+		return renderPageError(err, namespace, "count registers for index", "unable to collect register stats")
 	}
 
-	grantCounts, err := store.CountGrants(c.Context())
+	grantCounts, err := store.CountGrants(c.UserContext())
 	if err != nil {
-		logrus.WithError(err).WithField("namespace", namespace).Error("count grants for index")
-		return fiber.NewError(http.StatusInternalServerError, "unable to collect grant stats")
+		return renderPageError(err, namespace, "count grants for index", "unable to collect grant stats")
 	}
 
-	hosts, err := store.ListHosts(c.Context())
+	hosts, err := store.ListHosts(c.UserContext())
 	if err != nil {
-		logrus.WithError(err).WithField("namespace", namespace).Error("list hosts for index")
-		return fiber.NewError(http.StatusInternalServerError, "unable to list hosts")
+		return renderPageError(err, namespace, "list hosts for index", "unable to list hosts")
 	}
 
-	requests, err := store.ListRequests(c.Context(), nil)
+	requests, err := store.ListRequests(c.UserContext(), nil)
 	if err != nil {
-		logrus.WithError(err).WithField("namespace", namespace).Error("list requests for index")
-		return fiber.NewError(http.StatusInternalServerError, "unable to list requests")
+		return renderPageError(err, namespace, "list requests for index", "unable to list requests")
 	}
 
-	registers, err := store.ListRegisters(c.Context(), nil)
+	registers, err := store.ListRegisters(c.UserContext(), nil)
 	if err != nil {
-		logrus.WithError(err).WithField("namespace", namespace).Error("list registers for index")
-		return fiber.NewError(http.StatusInternalServerError, "unable to list registers")
+		return renderPageError(err, namespace, "list registers for index", "unable to list registers")
 	}
 
-	grants, err := store.ListGrants(c.Context())
+	grants, err := store.ListGrants(c.UserContext())
 	if err != nil {
-		logrus.WithError(err).WithField("namespace", namespace).Error("list grants for index")
-		return fiber.NewError(http.StatusInternalServerError, "unable to list grants")
+		return renderPageError(err, namespace, "list grants for index", "unable to list grants")
 	}
-	schemaDefinitions, err := store.ListSchemaDefinitions(c.Context())
+	schemaDefinitions, err := store.ListSchemaDefinitions(c.UserContext())
 	if err != nil {
-		logrus.WithError(err).WithField("namespace", namespace).Error("list schema definitions for index")
-		return fiber.NewError(http.StatusInternalServerError, "unable to list schema definitions")
+		return renderPageError(err, namespace, "list schema definitions for index", "unable to list schema definitions")
 	}
 
 	data := indexPageData{
@@ -159,8 +164,7 @@ func (s *Server) handleIndex(c *fiber.Ctx) error {
 
 	var buf bytes.Buffer
 	if err := indexTemplate.Execute(&buf, data); err != nil {
-		logrus.WithError(err).WithField("namespace", namespace).Error("render index page")
-		return fiber.NewError(http.StatusInternalServerError, "unable to render stats page")
+		return renderPageError(err, namespace, "render index page", "unable to render stats page")
 	}
 
 	c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
@@ -180,19 +184,17 @@ func (s *Server) handleRegisterPage(c *fiber.Ctx) error {
 		return fiber.NewError(http.StatusBadRequest, "id query parameter is required")
 	}
 
-	register, err := store.GetRegister(c.Context(), registerID)
+	register, err := store.GetRegister(c.UserContext(), registerID)
 	if err != nil {
 		if errors.Is(err, storage.ErrRegisterNotFound) {
 			return fiber.NewError(http.StatusNotFound, "register not found")
 		}
-		logrus.WithError(err).WithField("namespace", namespace).WithField("register_id", registerID).Error("load register for detail page")
-		return fiber.NewError(http.StatusInternalServerError, "unable to load register")
+		return renderPageError(err, namespace, "load register for detail page", "unable to load register", logrus.Fields{"register_id": registerID})
 	}
 
-	events, err := store.ListRegisterEvents(c.Context(), registerID)
+	events, err := store.ListRegisterEvents(c.UserContext(), registerID)
 	if err != nil {
-		logrus.WithError(err).WithField("namespace", namespace).WithField("register_id", registerID).Error("load register events for detail page")
-		return fiber.NewError(http.StatusInternalServerError, "unable to load register events")
+		return renderPageError(err, namespace, "load register events for detail page", "unable to load register events", logrus.Fields{"register_id": registerID})
 	}
 
 	data := registerPageData{
@@ -203,8 +205,7 @@ func (s *Server) handleRegisterPage(c *fiber.Ctx) error {
 
 	var buf bytes.Buffer
 	if err := registerTemplate.Execute(&buf, data); err != nil {
-		logrus.WithError(err).WithField("namespace", namespace).Error("render register page")
-		return fiber.NewError(http.StatusInternalServerError, "unable to render register page")
+		return renderPageError(err, namespace, "render register page", "unable to render register page")
 	}
 
 	c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
@@ -224,19 +225,17 @@ func (s *Server) handleRequestPage(c *fiber.Ctx) error {
 		return fiber.NewError(http.StatusBadRequest, "id query parameter is required")
 	}
 
-	req, err := store.GetRequest(c.Context(), requestID)
+	req, err := store.GetRequest(c.UserContext(), requestID)
 	if err != nil {
 		if errors.Is(err, storage.ErrRequestNotFound) {
 			return fiber.NewError(http.StatusNotFound, "request not found")
 		}
-		logrus.WithError(err).WithField("namespace", namespace).WithField("request_id", requestID).Error("load request for detail page")
-		return fiber.NewError(http.StatusInternalServerError, "unable to load request")
+		return renderPageError(err, namespace, "load request for detail page", "unable to load request", logrus.Fields{"request_id": requestID})
 	}
 
 	var grantPtr *storage.Grant
-	if grant, found, err := store.GetGrantForRequest(c.Context(), requestID); err != nil {
-		logrus.WithError(err).WithField("namespace", namespace).WithField("request_id", requestID).Error("load grant for request detail page")
-		return fiber.NewError(http.StatusInternalServerError, "unable to load request grant")
+	if grant, found, err := store.GetGrantForRequest(c.UserContext(), requestID); err != nil {
+		return renderPageError(err, namespace, "load grant for request detail page", "unable to load request grant", logrus.Fields{"request_id": requestID})
 	} else if found {
 		grantCopy := grant
 		grantPtr = &grantCopy
@@ -250,8 +249,7 @@ func (s *Server) handleRequestPage(c *fiber.Ctx) error {
 
 	var buf bytes.Buffer
 	if err := requestTemplate.Execute(&buf, data); err != nil {
-		logrus.WithError(err).WithField("namespace", namespace).Error("render request page")
-		return fiber.NewError(http.StatusInternalServerError, "unable to render request page")
+		return renderPageError(err, namespace, "render request page", "unable to render request page")
 	}
 
 	c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
@@ -271,22 +269,20 @@ func (s *Server) handleGrantPage(c *fiber.Ctx) error {
 		return fiber.NewError(http.StatusBadRequest, "id query parameter is required")
 	}
 
-	grant, err := store.GetGrant(c.Context(), grantID)
+	grant, err := store.GetGrant(c.UserContext(), grantID)
 	if err != nil {
 		if errors.Is(err, storage.ErrGrantNotFound) {
 			return fiber.NewError(http.StatusNotFound, "grant not found")
 		}
-		logrus.WithError(err).WithField("namespace", namespace).WithField("grant_id", grantID).Error("load grant for detail page")
-		return fiber.NewError(http.StatusInternalServerError, "unable to load grant")
+		return renderPageError(err, namespace, "load grant for detail page", "unable to load grant", logrus.Fields{"grant_id": grantID})
 	}
 
-	req, err := store.GetRequest(c.Context(), grant.RequestID)
+	req, err := store.GetRequest(c.UserContext(), grant.RequestID)
 	if err != nil {
 		if errors.Is(err, storage.ErrRequestNotFound) {
 			return fiber.NewError(http.StatusNotFound, "request not found")
 		}
-		logrus.WithError(err).WithField("namespace", namespace).WithField("request_id", grant.RequestID).Error("load request for grant detail page")
-		return fiber.NewError(http.StatusInternalServerError, "unable to load grant request")
+		return renderPageError(err, namespace, "load request for grant detail page", "unable to load grant request", logrus.Fields{"request_id": grant.RequestID})
 	}
 
 	data := grantPageData{
@@ -297,8 +293,7 @@ func (s *Server) handleGrantPage(c *fiber.Ctx) error {
 
 	var buf bytes.Buffer
 	if err := grantTemplate.Execute(&buf, data); err != nil {
-		logrus.WithError(err).WithField("namespace", namespace).Error("render grant page")
-		return fiber.NewError(http.StatusInternalServerError, "unable to render grant page")
+		return renderPageError(err, namespace, "render grant page", "unable to render grant page")
 	}
 
 	c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
@@ -318,13 +313,12 @@ func (s *Server) handleSchemaPage(c *fiber.Ctx) error {
 		return fiber.NewError(http.StatusBadRequest, "id query parameter is required")
 	}
 
-	def, err := store.GetSchemaDefinition(c.Context(), schemaID)
+	def, err := store.GetSchemaDefinition(c.UserContext(), schemaID)
 	if err != nil {
 		if errors.Is(err, storage.ErrSchemaDefinitionNotFound) {
 			return fiber.NewError(http.StatusNotFound, "schema definition not found")
 		}
-		logrus.WithError(err).WithField("namespace", namespace).WithField("schema_definition_id", schemaID).Error("load schema definition for detail page")
-		return fiber.NewError(http.StatusInternalServerError, "unable to load schema definition")
+		return renderPageError(err, namespace, "load schema definition for detail page", "unable to load schema definition", logrus.Fields{"schema_definition_id": schemaID})
 	}
 
 	data := schemaPageData{
@@ -334,8 +328,7 @@ func (s *Server) handleSchemaPage(c *fiber.Ctx) error {
 
 	var buf bytes.Buffer
 	if err := schemaTemplate.Execute(&buf, data); err != nil {
-		logrus.WithError(err).WithField("namespace", namespace).Error("render schema page")
-		return fiber.NewError(http.StatusInternalServerError, "unable to render schema page")
+		return renderPageError(err, namespace, "render schema page", "unable to render schema page")
 	}
 
 	c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)

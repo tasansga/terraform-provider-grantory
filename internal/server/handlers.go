@@ -19,6 +19,7 @@ import (
 
 	apiservice "github.com/tasansga/terraform-provider-grantory/api/service"
 	"github.com/tasansga/terraform-provider-grantory/internal/storage"
+	"github.com/tasansga/terraform-provider-grantory/internal/store"
 )
 
 func registerHostRoutes(app fiber.Router) {
@@ -91,12 +92,15 @@ func (h hostHandler) create(c *fiber.Ctx) error {
 		}
 	}
 
-	host, err := svc.CreateHost(c.Context(), apiservice.HostCreatePayload{
+	host, err := svc.CreateHost(c.UserContext(), apiservice.HostCreatePayload{
 		UniqueKey: payload.UniqueKey,
 		PublicKey: payload.PublicKey,
 		Labels:    payload.Labels,
 	})
 	if err != nil {
+		if fe, ok := asFiberError(err); ok {
+			return fe
+		}
 		switch {
 		case errors.Is(err, apiservice.ErrHostAlreadyExists):
 			return fiber.NewError(fiber.StatusConflict, "host already exists")
@@ -119,8 +123,11 @@ func (h hostHandler) list(c *fiber.Ctx) error {
 		return err
 	}
 
-	hosts, err := svc.ListHosts(c.Context())
+	hosts, err := svc.ListHosts(c.UserContext())
 	if err != nil {
+		if fe, ok := asFiberError(err); ok {
+			return fe
+		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("list hosts")
 		return fiber.NewError(fiber.StatusInternalServerError, "unable to list hosts")
 	}
@@ -136,10 +143,13 @@ func (h hostHandler) get(c *fiber.Ctx) error {
 		return err
 	}
 
-	host, err := svc.GetHost(c.Context(), hostID)
+	host, err := svc.GetHost(c.UserContext(), hostID)
 	if err != nil {
 		if errors.Is(err, apiservice.ErrHostNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "host not found")
+		}
+		if fe, ok := asFiberError(err); ok {
+			return fe
 		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("get host")
 		return fiber.NewError(fiber.StatusInternalServerError, "unable to fetch host")
@@ -160,7 +170,10 @@ func (h hostHandler) delete(c *fiber.Ctx) error {
 		return err
 	}
 
-	if err := svc.DeleteHost(c.Context(), hostID); err != nil {
+	if err := svc.DeleteHost(c.UserContext(), hostID); err != nil {
+		if fe, ok := asFiberError(err); ok {
+			return fe
+		}
 		if errors.Is(err, apiservice.ErrHostNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "host not found")
 		}
@@ -191,8 +204,11 @@ func (h hostHandler) updateLabels(c *fiber.Ctx) error {
 		return err
 	}
 
-	updated, err := svc.UpdateHostLabels(c.Context(), hostID, payload.Labels)
+	updated, err := svc.UpdateHostLabels(c.UserContext(), hostID, payload.Labels)
 	if err != nil {
+		if fe, ok := asFiberError(err); ok {
+			return fe
+		}
 		if errors.Is(err, apiservice.ErrHostNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "host not found")
 		}
@@ -290,7 +306,7 @@ func (h requestHandler) create(c *fiber.Ctx) error {
 		return err
 	}
 
-	created, err := svc.CreateRequest(c.Context(), apiservice.RequestCreatePayload{
+	created, err := svc.CreateRequest(c.UserContext(), apiservice.RequestCreatePayload{
 		HostID:                    payload.HostID,
 		RequestSchemaDefinitionID: payload.RequestSchemaDefinitionID,
 		GrantSchemaDefinitionID:   payload.GrantSchemaDefinitionID,
@@ -300,6 +316,9 @@ func (h requestHandler) create(c *fiber.Ctx) error {
 		Labels:                    payload.Labels,
 	})
 	if err != nil {
+		if fe, ok := asFiberError(err); ok {
+			return fe
+		}
 		switch {
 		case errors.Is(err, apiservice.ErrRequestAlreadyExists):
 			return fiber.NewError(fiber.StatusConflict, "request already exists")
@@ -308,8 +327,11 @@ func (h requestHandler) create(c *fiber.Ctx) error {
 		case errors.Is(err, apiservice.ErrReferencedHostNotFound):
 			return fiber.NewError(fiber.StatusBadRequest, fmt.Sprintf("host %s not found", payload.HostID))
 		case errors.Is(err, apiservice.ErrSchemaDefinitionNotFound):
-			missingID, resolveErr := resolveMissingRequestSchemaID(c.Context(), svc, payload.RequestSchemaDefinitionID, payload.GrantSchemaDefinitionID)
+			missingID, resolveErr := resolveMissingRequestSchemaID(c.UserContext(), svc, payload.RequestSchemaDefinitionID, payload.GrantSchemaDefinitionID)
 			if resolveErr != nil {
+				if fe, ok := asFiberError(resolveErr); ok {
+					return fe
+				}
 				logrus.WithError(resolveErr).WithField("namespace", namespace).Error("resolve missing schema definition for request")
 				return fiber.NewError(fiber.StatusInternalServerError, "unable to load schema definition")
 			}
@@ -341,8 +363,11 @@ func (h requestHandler) list(c *fiber.Ctx) error {
 		return err
 	}
 
-	requests, err := svc.ListRequests(c.Context(), filters)
+	requests, err := svc.ListRequests(c.UserContext(), filters)
 	if err != nil {
+		if fe, ok := asFiberError(err); ok {
+			return fe
+		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("list requests")
 		return fiber.NewError(fiber.StatusInternalServerError, "unable to list requests")
 	}
@@ -359,10 +384,13 @@ func (h requestHandler) get(c *fiber.Ctx) error {
 		return err
 	}
 
-	req, err := svc.GetRequest(c.Context(), reqID)
+	req, err := svc.GetRequest(c.UserContext(), reqID)
 	if err != nil {
 		if errors.Is(err, apiservice.ErrRequestNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "request not found")
+		}
+		if fe, ok := asFiberError(err); ok {
+			return fe
 		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("get request")
 		return fiber.NewError(fiber.StatusInternalServerError, "unable to fetch request")
@@ -380,10 +408,13 @@ func (h requestHandler) delete(c *fiber.Ctx) error {
 		return err
 	}
 
-	current, err := svc.GetRequest(c.Context(), requestID)
+	current, err := svc.GetRequest(c.UserContext(), requestID)
 	if err != nil {
 		if errors.Is(err, apiservice.ErrRequestNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "request not found")
+		}
+		if fe, ok := asFiberError(err); ok {
+			return fe
 		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("get request for signature verification")
 		return fiber.NewError(fiber.StatusInternalServerError, "unable to fetch request")
@@ -393,7 +424,10 @@ func (h requestHandler) delete(c *fiber.Ctx) error {
 		return err
 	}
 
-	if err := svc.DeleteRequest(c.Context(), requestID); err != nil {
+	if err := svc.DeleteRequest(c.UserContext(), requestID); err != nil {
+		if fe, ok := asFiberError(err); ok {
+			return fe
+		}
 		if errors.Is(err, apiservice.ErrRequestNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "request not found")
 		}
@@ -487,10 +521,13 @@ func (h requestHandler) update(c *fiber.Ctx) error {
 		return err
 	}
 
-	current, err := svc.GetRequest(c.Context(), reqID)
+	current, err := svc.GetRequest(c.UserContext(), reqID)
 	if err != nil {
 		if errors.Is(err, apiservice.ErrRequestNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "request not found")
+		}
+		if fe, ok := asFiberError(err); ok {
+			return fe
 		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("get request for signature verification")
 		return fiber.NewError(fiber.StatusInternalServerError, "unable to fetch request")
@@ -500,11 +537,14 @@ func (h requestHandler) update(c *fiber.Ctx) error {
 		return err
 	}
 
-	updated, err := svc.UpdateRequest(c.Context(), reqID, apiservice.RequestUpdatePayload{
+	updated, err := svc.UpdateRequest(c.UserContext(), reqID, apiservice.RequestUpdatePayload{
 		Payload: payload.Payload,
 		Labels:  payload.Labels,
 	})
 	if err != nil {
+		if fe, ok := asFiberError(err); ok {
+			return fe
+		}
 		switch {
 		case errors.Is(err, apiservice.ErrRequestNotFound):
 			return fiber.NewError(fiber.StatusNotFound, "request not found")
@@ -562,7 +602,7 @@ func (h registerHandler) create(c *fiber.Ctx) error {
 		return err
 	}
 
-	created, err := svc.CreateRegister(c.Context(), apiservice.RegisterCreatePayload{
+	created, err := svc.CreateRegister(c.UserContext(), apiservice.RegisterCreatePayload{
 		HostID:             payload.HostID,
 		SchemaDefinitionID: payload.SchemaDefinitionID,
 		UniqueKey:          payload.UniqueKey,
@@ -571,6 +611,9 @@ func (h registerHandler) create(c *fiber.Ctx) error {
 		Labels:             payload.Labels,
 	})
 	if err != nil {
+		if fe, ok := asFiberError(err); ok {
+			return fe
+		}
 		switch {
 		case errors.Is(err, apiservice.ErrRegisterAlreadyExists):
 			return fiber.NewError(fiber.StatusConflict, "register already exists")
@@ -604,8 +647,11 @@ func (h registerHandler) list(c *fiber.Ctx) error {
 		return err
 	}
 
-	registers, err := svc.ListRegisters(c.Context(), filters)
+	registers, err := svc.ListRegisters(c.UserContext(), filters)
 	if err != nil {
+		if fe, ok := asFiberError(err); ok {
+			return fe
+		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("list registers")
 		return fiber.NewError(fiber.StatusInternalServerError, "unable to list registers")
 	}
@@ -622,10 +668,13 @@ func (h registerHandler) get(c *fiber.Ctx) error {
 		return err
 	}
 
-	reg, err := svc.GetRegister(c.Context(), registerID)
+	reg, err := svc.GetRegister(c.UserContext(), registerID)
 	if err != nil {
 		if errors.Is(err, apiservice.ErrRegisterNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "register not found")
+		}
+		if fe, ok := asFiberError(err); ok {
+			return fe
 		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("get register")
 		return fiber.NewError(fiber.StatusInternalServerError, "unable to fetch register")
@@ -650,10 +699,13 @@ func (h registerHandler) update(c *fiber.Ctx) error {
 		return err
 	}
 
-	current, err := svc.GetRegister(c.Context(), registerID)
+	current, err := svc.GetRegister(c.UserContext(), registerID)
 	if err != nil {
 		if errors.Is(err, apiservice.ErrRegisterNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "register not found")
+		}
+		if fe, ok := asFiberError(err); ok {
+			return fe
 		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("get register for signature verification")
 		return fiber.NewError(fiber.StatusInternalServerError, "unable to fetch register")
@@ -663,11 +715,14 @@ func (h registerHandler) update(c *fiber.Ctx) error {
 		return err
 	}
 
-	updated, err := svc.UpdateRegister(c.Context(), registerID, apiservice.RegisterUpdatePayload{
+	updated, err := svc.UpdateRegister(c.UserContext(), registerID, apiservice.RegisterUpdatePayload{
 		Payload: payload.Payload,
 		Labels:  payload.Labels,
 	})
 	if err != nil {
+		if fe, ok := asFiberError(err); ok {
+			return fe
+		}
 		switch {
 		case errors.Is(err, apiservice.ErrRegisterNotFound):
 			return fiber.NewError(fiber.StatusNotFound, "register not found")
@@ -676,7 +731,7 @@ func (h registerHandler) update(c *fiber.Ctx) error {
 		case isValidationError(err):
 			return fiber.NewError(fiber.StatusBadRequest, err.Error())
 		}
-		logrus.WithError(err).WithField("namespace", namespace).Error("update register labels")
+		logrus.WithError(err).WithField("namespace", namespace).Error("update register")
 		return fiber.NewError(fiber.StatusInternalServerError, "unable to update register")
 	}
 
@@ -692,10 +747,13 @@ func (h registerHandler) listEvents(c *fiber.Ctx) error {
 		return err
 	}
 
-	events, err := svc.ListRegisterEvents(c.Context(), registerID)
+	events, err := svc.ListRegisterEvents(c.UserContext(), registerID)
 	if err != nil {
 		if errors.Is(err, apiservice.ErrRegisterNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "register not found")
+		}
+		if fe, ok := asFiberError(err); ok {
+			return fe
 		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("list register events")
 		return fiber.NewError(fiber.StatusInternalServerError, "unable to list register events")
@@ -712,10 +770,13 @@ func (h registerHandler) delete(c *fiber.Ctx) error {
 		return err
 	}
 
-	current, err := svc.GetRegister(c.Context(), registerID)
+	current, err := svc.GetRegister(c.UserContext(), registerID)
 	if err != nil {
 		if errors.Is(err, apiservice.ErrRegisterNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "register not found")
+		}
+		if fe, ok := asFiberError(err); ok {
+			return fe
 		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("get register for signature verification")
 		return fiber.NewError(fiber.StatusInternalServerError, "unable to fetch register")
@@ -725,7 +786,10 @@ func (h registerHandler) delete(c *fiber.Ctx) error {
 		return err
 	}
 
-	if err := svc.DeleteRegister(c.Context(), registerID); err != nil {
+	if err := svc.DeleteRegister(c.UserContext(), registerID); err != nil {
+		if fe, ok := asFiberError(err); ok {
+			return fe
+		}
 		if errors.Is(err, apiservice.ErrRegisterNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "register not found")
 		}
@@ -763,12 +827,15 @@ func (h schemaDefinitionHandler) create(c *fiber.Ctx) error {
 		return err
 	}
 
-	created, err := svc.CreateSchemaDefinition(c.Context(), apiservice.SchemaDefinitionCreatePayload{
+	created, err := svc.CreateSchemaDefinition(c.UserContext(), apiservice.SchemaDefinitionCreatePayload{
 		UniqueKey: payload.UniqueKey,
 		Schema:    payload.Schema,
 		Labels:    payload.Labels,
 	})
 	if err != nil {
+		if fe, ok := asFiberError(err); ok {
+			return fe
+		}
 		switch {
 		case errors.Is(err, apiservice.ErrSchemaDefinitionAlreadyExists):
 			return fiber.NewError(fiber.StatusConflict, "schema definition already exists")
@@ -794,10 +861,13 @@ func (h schemaDefinitionHandler) get(c *fiber.Ctx) error {
 		return err
 	}
 
-	def, err := svc.GetSchemaDefinition(c.Context(), defID)
+	def, err := svc.GetSchemaDefinition(c.UserContext(), defID)
 	if err != nil {
 		if errors.Is(err, apiservice.ErrSchemaDefinitionNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "schema definition not found")
+		}
+		if fe, ok := asFiberError(err); ok {
+			return fe
 		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("get schema definition")
 		return fiber.NewError(fiber.StatusInternalServerError, "unable to fetch schema definition")
@@ -814,8 +884,11 @@ func (h schemaDefinitionHandler) list(c *fiber.Ctx) error {
 		return err
 	}
 
-	defs, err := svc.ListSchemaDefinitions(c.Context())
+	defs, err := svc.ListSchemaDefinitions(c.UserContext())
 	if err != nil {
+		if fe, ok := asFiberError(err); ok {
+			return fe
+		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("list schema definitions")
 		return fiber.NewError(fiber.StatusInternalServerError, "unable to list schema definitions")
 	}
@@ -832,7 +905,10 @@ func (h schemaDefinitionHandler) delete(c *fiber.Ctx) error {
 		return err
 	}
 
-	if err := svc.DeleteSchemaDefinition(c.Context(), defID); err != nil {
+	if err := svc.DeleteSchemaDefinition(c.UserContext(), defID); err != nil {
+		if fe, ok := asFiberError(err); ok {
+			return fe
+		}
 		if errors.Is(err, apiservice.ErrSchemaDefinitionNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "schema definition not found")
 		}
@@ -860,8 +936,11 @@ func (h schemaDefinitionHandler) updateLabels(c *fiber.Ctx) error {
 		return err
 	}
 
-	updated, err := svc.UpdateSchemaDefinitionLabels(c.Context(), defID, payload.Labels)
+	updated, err := svc.UpdateSchemaDefinitionLabels(c.UserContext(), defID, payload.Labels)
 	if err != nil {
+		if fe, ok := asFiberError(err); ok {
+			return fe
+		}
 		if errors.Is(err, apiservice.ErrSchemaDefinitionNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "schema definition not found")
 		}
@@ -914,12 +993,15 @@ func (h grantHandler) create(c *fiber.Ctx) error {
 		return err
 	}
 
-	grant, err := svc.CreateGrant(c.Context(), apiservice.GrantCreatePayload{
+	grant, err := svc.CreateGrant(c.UserContext(), apiservice.GrantCreatePayload{
 		RequestID:      payload.RequestID,
 		RequestVersion: payload.RequestVersion,
 		Payload:        payload.Payload,
 	})
 	if err != nil {
+		if fe, ok := asFiberError(err); ok {
+			return fe
+		}
 		switch {
 		case errors.Is(err, apiservice.ErrGrantAlreadyExists):
 			return fiber.NewError(fiber.StatusConflict, "grant already exists")
@@ -948,8 +1030,11 @@ func (h grantHandler) list(c *fiber.Ctx) error {
 		return err
 	}
 
-	grants, err := svc.ListGrants(c.Context())
+	grants, err := svc.ListGrants(c.UserContext())
 	if err != nil {
+		if fe, ok := asFiberError(err); ok {
+			return fe
+		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("list grants")
 		return fiber.NewError(fiber.StatusInternalServerError, "unable to list grants")
 	}
@@ -965,10 +1050,13 @@ func (h grantHandler) get(c *fiber.Ctx) error {
 		return err
 	}
 
-	grant, err := svc.GetGrant(c.Context(), grantID)
+	grant, err := svc.GetGrant(c.UserContext(), grantID)
 	if err != nil {
 		if errors.Is(err, apiservice.ErrGrantNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "grant not found")
+		}
+		if fe, ok := asFiberError(err); ok {
+			return fe
 		}
 		logrus.WithError(err).WithField("namespace", namespace).Error("get grant")
 		return fiber.NewError(fiber.StatusInternalServerError, "unable to fetch grant")
@@ -996,11 +1084,14 @@ func (h grantHandler) update(c *fiber.Ctx) error {
 		return err
 	}
 
-	updated, err := svc.UpdateGrant(c.Context(), grantID, apiservice.GrantUpdatePayload{
+	updated, err := svc.UpdateGrant(c.UserContext(), grantID, apiservice.GrantUpdatePayload{
 		RequestVersion: payload.RequestVersion,
 		Payload:        *payload.Payload,
 	})
 	if err != nil {
+		if fe, ok := asFiberError(err); ok {
+			return fe
+		}
 		switch {
 		case errors.Is(err, apiservice.ErrGrantNotFound):
 			return fiber.NewError(fiber.StatusNotFound, "grant not found")
@@ -1025,7 +1116,10 @@ func (h grantHandler) delete(c *fiber.Ctx) error {
 		return err
 	}
 
-	if err := svc.DeleteGrant(c.Context(), grantID); err != nil {
+	if err := svc.DeleteGrant(c.UserContext(), grantID); err != nil {
+		if fe, ok := asFiberError(err); ok {
+			return fe
+		}
 		if errors.Is(err, apiservice.ErrGrantNotFound) {
 			return fiber.NewError(fiber.StatusNotFound, "grant not found")
 		}
@@ -1040,7 +1134,7 @@ func resolveNamespaceService(c *fiber.Ctx) (*apiservice.Service, string, error) 
 	if err != nil {
 		return nil, namespace, err
 	}
-	return apiservice.New(newServiceStoreAdapter(store)), namespace, nil
+	return apiservice.New(apiservice.NewStorageStore(store)), namespace, nil
 }
 
 func resolveNamespaceStore(c *fiber.Ctx) (storage.Store, string, error) {
@@ -1053,18 +1147,11 @@ func resolveNamespaceStore(c *fiber.Ctx) (storage.Store, string, error) {
 	return store, namespace, nil
 }
 
-func storeFromLocals(value interface{}) storage.Store {
-	switch v := value.(type) {
-	case storage.Store:
-		return v
-	case localStore:
-		return v.store
-	case *localStore:
-		return v.store
-	default:
-		return nil
-	}
+func storeFromLocals(value any) storage.Store {
+	st, _ := value.(storage.Store)
+	return st
 }
+
 
 func namespaceFromCtx(c *fiber.Ctx) string {
 	if raw := c.Locals(namespaceCtxKey); raw != nil {
@@ -1072,7 +1159,7 @@ func namespaceFromCtx(c *fiber.Ctx) string {
 			return namespace
 		}
 	}
-	return DefaultNamespace
+	return store.DefaultNamespace
 }
 
 func isValidationError(err error) bool {
@@ -1081,6 +1168,35 @@ func isValidationError(err error) bool {
 		strings.Contains(msg, "must be valid json") ||
 		strings.Contains(msg, "not valid json schema") ||
 		strings.Contains(msg, "does not match schema")
+}
+
+func asFiberError(err error) (*fiber.Error, bool) {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return fiber.NewError(fiber.StatusRequestTimeout, "operation timed out or cancelled"), true
+	}
+	if errors.Is(err, apiservice.ErrReplayDetected) || errors.Is(err, storage.ErrReplayDetected) {
+		return fiber.NewError(fiber.StatusUnauthorized, "replay detected: nonce already used"), true
+	}
+	if errors.Is(err, apiservice.ErrTimestampRegressed) || errors.Is(err, storage.ErrTimestampRegressed) {
+		return fiber.NewError(fiber.StatusUnauthorized, "timestamp regressed"), true
+	}
+	if isClusterUnavailableError(err) {
+		msg := "service temporarily unavailable"
+		switch {
+		case errors.Is(err, apiservice.ErrLeadershipLost), errors.Is(err, storage.ErrLeadershipLost):
+			msg = "cluster leader changed during operation"
+		case errors.Is(err, apiservice.ErrNotLeader), errors.Is(err, storage.ErrNotLeader):
+			msg = "not cluster leader"
+		case isDatabaseClosedError(err):
+			msg = "database temporarily unavailable"
+		}
+		return fiber.NewError(fiber.StatusServiceUnavailable, msg), true
+	}
+	var fe *fiber.Error
+	if errors.As(err, &fe) {
+		return fe, true
+	}
+	return nil, false
 }
 
 func resolveMissingRequestSchemaID(ctx context.Context, svc *apiservice.Service, requestSchemaID, grantSchemaID string) (string, error) {
@@ -1114,7 +1230,7 @@ func verifySignature(c *fiber.Ctx, svc *apiservice.Service, hostID string) error
 		}
 		return nil
 	}
-	host, err := svc.GetHost(c.Context(), hostID)
+	host, err := svc.GetHost(c.UserContext(), hostID)
 	if err != nil {
 		if errors.Is(err, apiservice.ErrHostNotFound) {
 			if requireSigs {
@@ -1122,7 +1238,11 @@ func verifySignature(c *fiber.Ctx, svc *apiservice.Service, hostID string) error
 			}
 			return nil
 		}
-		return err
+		if fe, ok := asFiberError(err); ok {
+			return fe
+		}
+		logrus.WithError(err).WithField("host_id", hostID).Error("fetch host for signature verification")
+		return fiber.NewError(fiber.StatusInternalServerError, "unable to fetch host for signature verification")
 	}
 
 	if host.PublicKey == "" {
@@ -1176,13 +1296,29 @@ func verifySignature(c *fiber.Ctx, svc *apiservice.Service, hostID string) error
 
 	// Anti-replay and monotonicity check
 	expiresAt := time.Unix(ts, 0).UTC().Add(6 * time.Minute)
-	if err := svc.Store().RecordSignature(c.Context(), hostID, ts, nonce, expiresAt); err != nil {
+
+	if checkSignatureBundling(svc.Store()) {
+		ctx := storage.WithSignatureParams(c.UserContext(), storage.SignatureParams{
+			HostID:    hostID,
+			Timestamp: ts,
+			Nonce:     nonce,
+			ExpiresAt: expiresAt,
+		})
+		c.SetUserContext(ctx)
+		return nil
+	}
+
+	// Fallback for custom stores or mocks lacking transactional bundling support:
+	if err := svc.Store().RecordSignature(c.UserContext(), hostID, ts, nonce, expiresAt); err != nil {
 		switch {
-		case errors.Is(err, apiservice.ErrReplayDetected):
+		case errors.Is(err, apiservice.ErrReplayDetected) || errors.Is(err, storage.ErrReplayDetected):
 			return fiber.NewError(fiber.StatusUnauthorized, "replay detected: nonce already used")
-		case errors.Is(err, apiservice.ErrTimestampRegressed):
+		case errors.Is(err, apiservice.ErrTimestampRegressed) || errors.Is(err, storage.ErrTimestampRegressed):
 			return fiber.NewError(fiber.StatusUnauthorized, "timestamp regressed")
 		default:
+			if fe, ok := asFiberError(err); ok {
+				return fe
+			}
 			logrus.WithError(err).Error("record signature")
 			return fiber.NewError(fiber.StatusInternalServerError, "unable to verify anti-replay state")
 		}

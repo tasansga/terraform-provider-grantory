@@ -13,8 +13,10 @@ var (
 	ErrRequestImmutable                  = errors.New("request is immutable")
 	ErrGrantNotFound                     = errors.New("grant not found")
 	ErrGrantAlreadyExists                = errors.New("grant already exists")
-	ErrGrantAlreadyCurrent               = errors.New("grant already current")
 	ErrGrantRequestVersionConflict       = errors.New("request version conflict")
+	// Deprecated: ErrGrantAlreadyCurrent is no longer returned by the service layer.
+	// Retained for backwards compatibility with external consumers.
+	ErrGrantAlreadyCurrent = errors.New("grant already current")
 	ErrRegisterNotFound                  = errors.New("register not found")
 	ErrRegisterAlreadyExists             = errors.New("register already exists")
 	ErrRegisterUniqueKeyConflict         = errors.New("register unique key already exists")
@@ -28,4 +30,8 @@ var (
 	// Signature and security errors.
 	ErrReplayDetected     = errors.New("replay detected")
 	ErrTimestampRegressed = errors.New("timestamp regressed")
+
+	// Clustering and consensus errors.
+	ErrNotLeader      = errors.New("node is not the cluster leader")
+	ErrLeadershipLost = errors.New("leadership lost during operation")
 )

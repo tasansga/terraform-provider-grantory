@@ -13,9 +13,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sirupsen/logrus"
+	"github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
-	"github.com/tasansga/terraform-provider-grantory/internal/server"
+	"github.com/stretchr/testify/require"
+	"github.com/tasansga/terraform-provider-grantory/internal/config"
+	clusterraft "github.com/tasansga/terraform-provider-grantory/internal/cluster/raft"
 	"github.com/tasansga/terraform-provider-grantory/internal/storage"
+	"github.com/tasansga/terraform-provider-grantory/internal/store"
 )
 
 func closeStore(t *testing.T, store storage.Store) {
@@ -293,7 +298,7 @@ func TestNamespaceFlagTargetsNamespace(t *testing.T) {
 	dataDir := prepareTestDataDir(t, nil)
 
 	ctx := context.Background()
-	customStore, err := storage.New(ctx, server.NamespaceDBPath(dataDir, "custom-ns"))
+	customStore, err := storage.New(ctx, store.NamespaceDBPath(dataDir, "custom-ns"))
 	if !assert.NoError(t, err, "storage.New() error") {
 		t.FailNow()
 	}
@@ -321,7 +326,7 @@ func TestNamespaceFlagTargetsNamespace(t *testing.T) {
 	cmd.SetArgs([]string{"--database", dataDir, "--namespace", "custom-ns", "delete", "hosts", host.ID})
 	assert.NoError(t, cmd.Execute(), "delete host command failed")
 
-	verifyStore, err := storage.New(ctx, server.NamespaceDBPath(dataDir, "custom-ns"))
+	verifyStore, err := storage.New(ctx, store.NamespaceDBPath(dataDir, "custom-ns"))
 	if !assert.NoError(t, err, "storage.New() error") {
 		t.FailNow()
 	}
@@ -1148,39 +1153,39 @@ func TestDirectBackendMethods(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dataDir, "data"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	path := server.NamespaceDBPath(dataDir, server.DefaultNamespace)
-	store, err := storage.New(ctx, path)
+	path := store.NamespaceDBPath(dataDir, store.DefaultNamespace)
+	st, err := storage.New(ctx, path)
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
-	store.SetNamespace(server.DefaultNamespace)
-	defer closeStore(t, store)
-	if err := store.Migrate(ctx); err != nil {
+	st.SetNamespace(store.DefaultNamespace)
+	defer closeStore(t, st)
+	if err := st.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	host, err := store.CreateHost(ctx, storage.Host{Labels: map[string]string{"env": "test"}})
+	host, err := st.CreateHost(ctx, storage.Host{Labels: map[string]string{"env": "test"}})
 	if err != nil {
 		t.Fatalf("create host: %v", err)
 	}
-	request, err := store.CreateRequest(ctx, storage.Request{HostID: host.ID})
+	request, err := st.CreateRequest(ctx, storage.Request{HostID: host.ID})
 	if err != nil {
 		t.Fatalf("create request: %v", err)
 	}
-	reg, err := store.CreateRegister(ctx, storage.Register{HostID: host.ID})
+	reg, err := st.CreateRegister(ctx, storage.Register{HostID: host.ID})
 	if err != nil {
 		t.Fatalf("create register: %v", err)
 	}
-	grant, err := store.CreateGrant(ctx, storage.Grant{RequestID: request.ID, Payload: map[string]any{"value": "ok"}})
+	grant, err := st.CreateGrant(ctx, storage.Grant{RequestID: request.ID, Payload: map[string]any{"value": "ok"}})
 	if err != nil {
 		t.Fatalf("create grant: %v", err)
 	}
-	def, err := store.CreateSchemaDefinition(ctx, storage.SchemaDefinition{Schema: json.RawMessage(`{"type":"object"}`)})
+	def, err := st.CreateSchemaDefinition(ctx, storage.SchemaDefinition{Schema: json.RawMessage(`{"type":"object"}`)})
 	if err != nil {
 		t.Fatalf("create schema definition: %v", err)
 	}
 
-	backend := newDirectBackend(store)
+	backend := newDirectBackend(st)
 
 	if _, err := backend.ListHosts(ctx); err != nil {
 		t.Fatalf("list hosts: %v", err)
@@ -1527,22 +1532,22 @@ func prepareTestDataDir(t *testing.T, setup func(context.Context, storage.Store)
 	}
 
 	ctx := context.Background()
-	path := server.NamespaceDBPath(dataDir, server.DefaultNamespace)
-	store, err := storage.New(ctx, path)
+	path := store.NamespaceDBPath(dataDir, store.DefaultNamespace)
+	st, err := storage.New(ctx, path)
 	if err != nil {
 		assert.NoError(t, err, "New() error")
 		t.FailNow()
 	}
-	store.SetNamespace(server.DefaultNamespace)
-	defer closeStore(t, store)
+	st.SetNamespace(store.DefaultNamespace)
+	defer closeStore(t, st)
 
-	if err := store.Migrate(ctx); err != nil {
+	if err := st.Migrate(ctx); err != nil {
 		assert.NoError(t, err, "Migrate() error")
 		t.FailNow()
 	}
 
 	if setup != nil {
-		setup(ctx, store)
+		setup(ctx, st)
 	}
 	return dataDir
 }
@@ -1550,12 +1555,370 @@ func prepareTestDataDir(t *testing.T, setup func(context.Context, storage.Store)
 func openStoreForTesting(t *testing.T, dataDir string) storage.Store {
 	t.Helper()
 
-	path := server.NamespaceDBPath(dataDir, server.DefaultNamespace)
-	store, err := storage.New(context.Background(), path)
+	path := store.NamespaceDBPath(dataDir, store.DefaultNamespace)
+	st, err := storage.New(context.Background(), path)
 	if err != nil {
 		assert.NoError(t, err, "New() error")
 		t.FailNow()
 	}
-	store.SetNamespace(server.DefaultNamespace)
-	return store
+	st.SetNamespace(store.DefaultNamespace)
+	return st
+}
+
+func TestServerStartupFields_RaftConfig(t *testing.T) {
+	t.Parallel()
+
+	t.Run("omits raft fields when raft is disabled", func(t *testing.T) {
+		cfg := config.Config{
+			BindAddr: "127.0.0.1:8080",
+			Database: t.TempDir(),
+		}
+		fields := serverStartupFields(cfg)
+		assert.NotContains(t, fields, "raft_node_id")
+		assert.NotContains(t, fields, "raft_bind")
+		assert.NotContains(t, fields, "raft_advertise")
+		assert.NotContains(t, fields, "raft_peers")
+		assert.NotContains(t, fields, "raft_bootstrap_expect")
+	})
+
+	t.Run("includes raft fields when raft is enabled", func(t *testing.T) {
+		cfg := config.Config{
+			BindAddr:            "127.0.0.1:8080",
+			Database:            t.TempDir(),
+			RaftNodeID:          "node-1",
+			RaftBind:            "127.0.0.1:9090",
+			RaftAdvertise:       "10.0.0.1:9090",
+			RaftPeers:           []string{"node-2=10.0.0.2:9090", "node-3=10.0.0.3:9090"},
+			RaftBootstrapExpect: 3,
+		}
+		fields := serverStartupFields(cfg)
+		assert.Equal(t, "node-1", fields["raft_node_id"])
+		assert.Equal(t, "127.0.0.1:9090", fields["raft_bind"])
+		assert.Equal(t, "10.0.0.1:9090", fields["raft_advertise"])
+		assert.Equal(t, []string{"node-2=10.0.0.2:9090", "node-3=10.0.0.3:9090"}, fields["raft_peers"])
+		assert.Equal(t, 3, fields["raft_bootstrap_expect"])
+	})
+
+	t.Run("logs raft fields at startup", func(t *testing.T) {
+		hook := test.NewGlobal()
+		t.Cleanup(hook.Reset)
+
+		cfg := config.Config{
+			BindAddr:            "127.0.0.1:8080",
+			Database:            t.TempDir(),
+			RaftNodeID:          "node-lead",
+			RaftBind:            "127.0.0.1:9091",
+			RaftAdvertise:       "10.0.0.1:9091",
+			RaftPeers:           []string{"node-2=10.0.0.2:9091"},
+			RaftBootstrapExpect: 2,
+		}
+		fields := serverStartupFields(cfg)
+		logrus.WithFields(fields).Info("starting Grantory server")
+
+		var found *logrus.Entry
+		for _, entry := range hook.AllEntries() {
+			if entry.Message == "starting Grantory server" && entry.Data["raft_node_id"] == "node-lead" {
+				found = entry
+				break
+			}
+		}
+		require.NotNil(t, found, "expected startup log entry with raft_node_id")
+		assert.Equal(t, "127.0.0.1:9091", found.Data["raft_bind"])
+		assert.Equal(t, "10.0.0.1:9091", found.Data["raft_advertise"])
+		assert.Equal(t, []string{"node-2=10.0.0.2:9091"}, found.Data["raft_peers"])
+		assert.Equal(t, 2, found.Data["raft_bootstrap_expect"])
+	})
+}
+
+func TestDirectModeRaftWarning(t *testing.T) {
+	t.Parallel()
+
+	t.Run("outputs warning when raft.db exists", func(t *testing.T) {
+		dataDir := t.TempDir()
+		raftDir := filepath.Join(dataDir, "raft")
+		require.NoError(t, os.MkdirAll(raftDir, 0o755))
+		raftDB := filepath.Join(raftDir, "raft.db")
+		require.NoError(t, os.WriteFile(raftDB, []byte("fake raft"), 0o600))
+
+		cmd := NewRootCommand()
+		var outBuf, errBuf bytes.Buffer
+		cmd.SetOut(&outBuf)
+		cmd.SetErr(&errBuf)
+		cmd.SetArgs([]string{"--database", dataDir, "list", "hosts"})
+		_ = cmd.Execute()
+
+		assert.Contains(t, errBuf.String(), "WARNING: direct database mode detected Raft cluster state at "+raftDB)
+		assert.Contains(t, errBuf.String(), "Direct mutations bypass consensus and may desynchronize cluster state. Use --server-url to interact via the cluster API.")
+	})
+
+	t.Run("no warning when raft.db does not exist", func(t *testing.T) {
+		dataDir := t.TempDir()
+
+		cmd := NewRootCommand()
+		var outBuf, errBuf bytes.Buffer
+		cmd.SetOut(&outBuf)
+		cmd.SetErr(&errBuf)
+		cmd.SetArgs([]string{"--database", dataDir, "list", "hosts"})
+		_ = cmd.Execute()
+
+		assert.NotContains(t, errBuf.String(), "WARNING: direct database mode detected Raft cluster state")
+	})
+}
+
+func TestNamespaceDeleteRaftWarning(t *testing.T) {
+	t.Parallel()
+
+	t.Run("outputs warning when raft.db exists and allowed", func(t *testing.T) {
+		dataDir := t.TempDir()
+		raftDir := filepath.Join(dataDir, clusterraft.RaftDirName)
+		require.NoError(t, os.MkdirAll(raftDir, 0o755))
+		raftDB := filepath.Join(raftDir, clusterraft.RaftDBFileName)
+		require.NoError(t, os.WriteFile(raftDB, []byte("fake raft"), 0o600))
+
+		nsDB := filepath.Join(dataDir, "testns.db")
+		require.NoError(t, os.WriteFile(nsDB, []byte("fake sqlite"), 0o600))
+
+		cmd := NewRootCommand()
+		var outBuf, errBuf bytes.Buffer
+		cmd.SetOut(&outBuf)
+		cmd.SetErr(&errBuf)
+		cmd.SetArgs([]string{"--database", dataDir, "--allow-direct-raft-mutation", "namespace", "delete", "testns"})
+		err := cmd.Execute()
+		assert.NoError(t, err)
+
+		assert.Contains(t, errBuf.String(), "WARNING: direct database mode detected Raft cluster state at "+raftDB)
+		assert.Contains(t, errBuf.String(), "Direct mutations bypass consensus and may desynchronize cluster state. Stop cluster nodes before deleting namespaces directly.")
+
+		_, statErr := os.Stat(nsDB)
+		assert.ErrorIs(t, statErr, os.ErrNotExist)
+	})
+
+	t.Run("refuses deletion without allow flag when raft.db exists", func(t *testing.T) {
+		dataDir := t.TempDir()
+		raftDir := filepath.Join(dataDir, clusterraft.RaftDirName)
+		require.NoError(t, os.MkdirAll(raftDir, 0o755))
+		raftDB := filepath.Join(raftDir, clusterraft.RaftDBFileName)
+		require.NoError(t, os.WriteFile(raftDB, []byte("fake raft"), 0o600))
+
+		nsDB := filepath.Join(dataDir, "testns.db")
+		require.NoError(t, os.WriteFile(nsDB, []byte("fake sqlite"), 0o600))
+
+		cmd := NewRootCommand()
+		var outBuf, errBuf bytes.Buffer
+		cmd.SetOut(&outBuf)
+		cmd.SetErr(&errBuf)
+		cmd.SetArgs([]string{"--database", dataDir, "namespace", "delete", "testns"})
+		err := cmd.Execute()
+		require.Error(t, err)
+
+		assert.Contains(t, err.Error(), "direct namespace deletion refused: detected active Raft cluster state at "+raftDB)
+		assert.Contains(t, err.Error(), "Direct deletion bypasses consensus and desynchronizes cluster state. Use --server-url to interact via the cluster API, or pass --allow-direct-raft-mutation to proceed anyway")
+
+		_, statErr := os.Stat(nsDB)
+		assert.NoError(t, statErr)
+	})
+
+	t.Run("no warning when raft.db does not exist", func(t *testing.T) {
+		dataDir := t.TempDir()
+
+		nsDB := filepath.Join(dataDir, "testns.db")
+		require.NoError(t, os.WriteFile(nsDB, []byte("fake sqlite"), 0o600))
+
+		cmd := NewRootCommand()
+		var outBuf, errBuf bytes.Buffer
+		cmd.SetOut(&outBuf)
+		cmd.SetErr(&errBuf)
+		cmd.SetArgs([]string{"--database", dataDir, "namespace", "delete", "testns"})
+		err := cmd.Execute()
+		assert.NoError(t, err)
+
+		assert.NotContains(t, errBuf.String(), "WARNING: direct database mode detected Raft cluster state")
+
+		_, statErr := os.Stat(nsDB)
+		assert.ErrorIs(t, statErr, os.ErrNotExist)
+	})
+}
+
+func TestDirectRaftMutationGuard(t *testing.T) {
+	t.Run("mutative delete refused without allow flag when raft.db exists", func(t *testing.T) {
+		var hostID string
+		dataDir := prepareTestDataDir(t, func(ctx context.Context, store storage.Store) {
+			host, err := store.CreateHost(ctx, storage.Host{})
+			require.NoError(t, err)
+			hostID = host.ID
+		})
+
+		raftDir := filepath.Join(dataDir, clusterraft.RaftDirName)
+		require.NoError(t, os.MkdirAll(raftDir, 0o755))
+		raftDB := filepath.Join(raftDir, clusterraft.RaftDBFileName)
+		require.NoError(t, os.WriteFile(raftDB, []byte("fake raft"), 0o600))
+
+		cmd := NewRootCommand()
+		var outBuf, errBuf bytes.Buffer
+		cmd.SetOut(&outBuf)
+		cmd.SetErr(&errBuf)
+		cmd.SetArgs([]string{"--database", dataDir, "delete", "hosts", hostID})
+		err := cmd.Execute()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "direct database mutation refused: detected active Raft cluster state at "+raftDB)
+		assert.Contains(t, err.Error(), "Direct mutations bypass consensus and desynchronize cluster state. Use --server-url to interact via the cluster API, or pass --allow-direct-raft-mutation to proceed anyway")
+
+		store := openStoreForTesting(t, dataDir)
+		defer closeStore(t, store)
+		_, err = store.GetHost(context.Background(), hostID)
+		assert.NoError(t, err)
+	})
+
+	t.Run("mutative delete succeeds with allow flag when raft.db exists", func(t *testing.T) {
+		var hostID string
+		dataDir := prepareTestDataDir(t, func(ctx context.Context, store storage.Store) {
+			host, err := store.CreateHost(ctx, storage.Host{})
+			require.NoError(t, err)
+			hostID = host.ID
+		})
+
+		raftDir := filepath.Join(dataDir, clusterraft.RaftDirName)
+		require.NoError(t, os.MkdirAll(raftDir, 0o755))
+		raftDB := filepath.Join(raftDir, clusterraft.RaftDBFileName)
+		require.NoError(t, os.WriteFile(raftDB, []byte("fake raft"), 0o600))
+
+		cmd := NewRootCommand()
+		var outBuf, errBuf bytes.Buffer
+		cmd.SetOut(&outBuf)
+		cmd.SetErr(&errBuf)
+		cmd.SetArgs([]string{"--database", dataDir, "--allow-direct-raft-mutation", "delete", "hosts", hostID})
+		err := cmd.Execute()
+		require.NoError(t, err)
+		assert.Contains(t, errBuf.String(), "WARNING: direct database mode detected Raft cluster state at "+raftDB)
+
+		store := openStoreForTesting(t, dataDir)
+		defer closeStore(t, store)
+		_, err = store.GetHost(context.Background(), hostID)
+		assert.ErrorIs(t, err, storage.ErrHostNotFound)
+	})
+
+	t.Run("mutative delete succeeds with env var when raft.db exists", func(t *testing.T) {
+		var hostID string
+		dataDir := prepareTestDataDir(t, func(ctx context.Context, store storage.Store) {
+			host, err := store.CreateHost(ctx, storage.Host{})
+			require.NoError(t, err)
+			hostID = host.ID
+		})
+
+		raftDir := filepath.Join(dataDir, clusterraft.RaftDirName)
+		require.NoError(t, os.MkdirAll(raftDir, 0o755))
+		raftDB := filepath.Join(raftDir, clusterraft.RaftDBFileName)
+		require.NoError(t, os.WriteFile(raftDB, []byte("fake raft"), 0o600))
+
+		t.Setenv(EnvAllowDirectRaftMutation, "true")
+
+		cmd := NewRootCommand()
+		var outBuf, errBuf bytes.Buffer
+		cmd.SetOut(&outBuf)
+		cmd.SetErr(&errBuf)
+		cmd.SetArgs([]string{"--database", dataDir, "delete", "hosts", hostID})
+		err := cmd.Execute()
+		require.NoError(t, err)
+
+		store := openStoreForTesting(t, dataDir)
+		defer closeStore(t, store)
+		_, err = store.GetHost(context.Background(), hostID)
+		assert.ErrorIs(t, err, storage.ErrHostNotFound)
+	})
+
+	t.Run("mutative mutate labels refused without allow flag when raft.db exists", func(t *testing.T) {
+		var hostID string
+		dataDir := prepareTestDataDir(t, func(ctx context.Context, store storage.Store) {
+			host, err := store.CreateHost(ctx, storage.Host{})
+			require.NoError(t, err)
+			hostID = host.ID
+		})
+
+		raftDir := filepath.Join(dataDir, clusterraft.RaftDirName)
+		require.NoError(t, os.MkdirAll(raftDir, 0o755))
+		raftDB := filepath.Join(raftDir, clusterraft.RaftDBFileName)
+		require.NoError(t, os.WriteFile(raftDB, []byte("fake raft"), 0o600))
+
+		cmd := NewRootCommand()
+		var outBuf, errBuf bytes.Buffer
+		cmd.SetOut(&outBuf)
+		cmd.SetErr(&errBuf)
+		cmd.SetArgs([]string{"--database", dataDir, "mutate", "hosts", hostID, "--labels", `{"env":"test"}`})
+		err := cmd.Execute()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "direct database mutation refused: detected active Raft cluster state at "+raftDB)
+	})
+
+	t.Run("mutative create refused without allow flag when raft.db exists", func(t *testing.T) {
+		var hostID string
+		dataDir := prepareTestDataDir(t, func(ctx context.Context, store storage.Store) {
+			host, err := store.CreateHost(ctx, storage.Host{})
+			require.NoError(t, err)
+			hostID = host.ID
+		})
+
+		raftDir := filepath.Join(dataDir, clusterraft.RaftDirName)
+		require.NoError(t, os.MkdirAll(raftDir, 0o755))
+		raftDB := filepath.Join(raftDir, clusterraft.RaftDBFileName)
+		require.NoError(t, os.WriteFile(raftDB, []byte("fake raft"), 0o600))
+
+		payloadPath := filepath.Join(t.TempDir(), "payload.json")
+		require.NoError(t, os.WriteFile(payloadPath, []byte(`{}`), 0o600))
+
+		cmd := NewRootCommand()
+		var outBuf, errBuf bytes.Buffer
+		cmd.SetOut(&outBuf)
+		cmd.SetErr(&errBuf)
+		cmd.SetArgs([]string{"--database", dataDir, "create", "requests", "--host-id", hostID, "--payload-file", payloadPath})
+		err := cmd.Execute()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "direct database mutation refused: detected active Raft cluster state at "+raftDB)
+	})
+
+	t.Run("read-only operation succeeds without allow flag when raft.db exists", func(t *testing.T) {
+		dataDir := prepareTestDataDir(t, func(ctx context.Context, store storage.Store) {
+			_, err := store.CreateHost(ctx, storage.Host{ID: "host-ro"})
+			require.NoError(t, err)
+		})
+
+		raftDir := filepath.Join(dataDir, clusterraft.RaftDirName)
+		require.NoError(t, os.MkdirAll(raftDir, 0o755))
+		raftDB := filepath.Join(raftDir, clusterraft.RaftDBFileName)
+		require.NoError(t, os.WriteFile(raftDB, []byte("fake raft"), 0o600))
+
+		cmd := NewRootCommand()
+		var outBuf, errBuf bytes.Buffer
+		cmd.SetOut(&outBuf)
+		cmd.SetErr(&errBuf)
+		cmd.SetArgs([]string{"--database", dataDir, "list", "hosts"})
+		err := cmd.Execute()
+		require.NoError(t, err)
+
+		assert.Contains(t, errBuf.String(), "WARNING: direct database mode detected Raft cluster state at "+raftDB)
+		assert.Contains(t, outBuf.String(), "host-ro")
+	})
+
+	t.Run("namespace delete succeeds with env var when raft.db exists", func(t *testing.T) {
+		dataDir := t.TempDir()
+		raftDir := filepath.Join(dataDir, clusterraft.RaftDirName)
+		require.NoError(t, os.MkdirAll(raftDir, 0o755))
+		raftDB := filepath.Join(raftDir, clusterraft.RaftDBFileName)
+		require.NoError(t, os.WriteFile(raftDB, []byte("fake raft"), 0o600))
+
+		nsDB := filepath.Join(dataDir, "testns.db")
+		require.NoError(t, os.WriteFile(nsDB, []byte("fake sqlite"), 0o600))
+
+		t.Setenv(EnvAllowDirectRaftMutation, "true")
+
+		cmd := NewRootCommand()
+		var outBuf, errBuf bytes.Buffer
+		cmd.SetOut(&outBuf)
+		cmd.SetErr(&errBuf)
+		cmd.SetArgs([]string{"--database", dataDir, "namespace", "delete", "testns"})
+		err := cmd.Execute()
+		require.NoError(t, err)
+
+		_, statErr := os.Stat(nsDB)
+		assert.ErrorIs(t, statErr, os.ErrNotExist)
+	})
 }

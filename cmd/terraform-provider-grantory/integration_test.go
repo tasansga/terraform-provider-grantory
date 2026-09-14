@@ -26,6 +26,7 @@ import (
 	"github.com/tasansga/terraform-provider-grantory/internal/config"
 	"github.com/tasansga/terraform-provider-grantory/internal/server"
 	"github.com/tasansga/terraform-provider-grantory/internal/storage"
+	"github.com/tasansga/terraform-provider-grantory/internal/store"
 
 	_ "embed"
 )
@@ -458,17 +459,17 @@ func TestIntegrationTerraformApplyUpdatesServer(t *testing.T) {
 	require.NotNil(t, foundGrant, "expected grant created via Terraform")
 	require.Equal(t, requestID, foundGrant.RequestID)
 
-	storePath := server.NamespaceDBPath(serverDataDir, server.DefaultNamespace)
-	store, err := storage.New(context.Background(), storePath)
+	storePath := store.NamespaceDBPath(serverDataDir, store.DefaultNamespace)
+	st, err := storage.New(context.Background(), storePath)
 	require.NoError(t, err, "open Grantory store for verification")
 	t.Cleanup(func() {
-		if err := store.Close(); err != nil {
+		if err := st.Close(); err != nil {
 			t.Errorf("close Grantory store: %v", err)
 		}
 	})
-	store.SetNamespace(server.DefaultNamespace)
+	st.SetNamespace(store.DefaultNamespace)
 
-	freshRequest, err := store.GetRequest(context.Background(), requestID)
+	freshRequest, err := st.GetRequest(context.Background(), requestID)
 	require.NoError(t, err, "retrieve request after grant creation")
 	require.True(t, freshRequest.HasGrant, "request should be marked as granted")
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/tasansga/terraform-provider-grantory/internal/config"
 	"github.com/tasansga/terraform-provider-grantory/internal/server"
 	"github.com/tasansga/terraform-provider-grantory/internal/storage"
+	"github.com/tasansga/terraform-provider-grantory/internal/store"
 )
 
 func TestCLISigning(t *testing.T) {
@@ -51,17 +52,17 @@ func TestCLISigning(t *testing.T) {
 
 	// 2. Generate key pair and register host
 	// Use DefaultNamespace ("_def") explicitly to match CLI and Server default
-	store, err := storage.New(ctx, server.NamespaceDBPath(dataDir, server.DefaultNamespace))
+	st, err := storage.New(ctx, store.NamespaceDBPath(dataDir, store.DefaultNamespace))
 	require.NoError(t, err)
-	defer func() { _ = store.Close() }()
-	require.NoError(t, store.Migrate(ctx))
+	defer func() { _ = st.Close() }()
+	require.NoError(t, st.Migrate(ctx))
 
 	pub, priv, err := ed25519.GenerateKey(nil)
 	require.NoError(t, err)
 	pubHex := hex.EncodeToString(pub)
 	privHex := hex.EncodeToString(priv)
 
-	host, err := store.CreateHost(ctx, storage.Host{
+	host, err := st.CreateHost(ctx, storage.Host{
 		PublicKey: pubHex,
 		UniqueKey: "signed-host",
 	})

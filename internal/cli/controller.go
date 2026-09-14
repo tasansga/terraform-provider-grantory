@@ -11,7 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	k8scontroller "github.com/tasansga/terraform-provider-grantory/internal/k8s/controller"
-	"github.com/tasansga/terraform-provider-grantory/internal/server"
+	"github.com/tasansga/terraform-provider-grantory/internal/store"
 )
 
 const (
@@ -134,9 +134,9 @@ func resolveControllerNamespace(cmd *cobra.Command) (string, error) {
 		namespace = firstNonEmpty(os.Getenv(EnvGrantoryControllerNamespace), os.Getenv(EnvNamespace))
 	}
 	if namespace == "" {
-		namespace = server.DefaultNamespace
+		namespace = store.DefaultNamespace
 	}
-	if err := server.ValidateNamespaceName(namespace); err != nil {
+	if err := store.ValidateNamespaceName(namespace); err != nil {
 		return "", err
 	}
 	return namespace, nil

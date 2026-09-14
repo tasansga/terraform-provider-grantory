@@ -6,9 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/sirupsen/logrus"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -17,6 +17,7 @@ import (
 // postgresStore wraps a postgres database connection for the provisioner server.
 type postgresStore struct {
 	db        *sql.DB
+	nsMu      sync.RWMutex
 	namespace string
 	schema    string
 }
@@ -46,6 +47,8 @@ func (s *postgresStore) SetNamespace(namespace string) {
 	if s == nil {
 		return
 	}
+	s.nsMu.Lock()
+	defer s.nsMu.Unlock()
 	if ns := strings.TrimSpace(namespace); ns != "" {
 		s.namespace = ns
 		s.schema = ns
@@ -59,6 +62,8 @@ func (s *postgresStore) namespaceForLog() string {
 	if s == nil {
 		return unknownNamespace
 	}
+	s.nsMu.RLock()
+	defer s.nsMu.RUnlock()
 	if ns := strings.TrimSpace(s.namespace); ns != "" {
 		return ns
 	}
@@ -96,11 +101,22 @@ func (s *postgresStore) DB() *sql.DB {
 	return s.db
 }
 
+// SupportsSignatureBundling indicates that postgresStore bundles anti-replay signature
+// records atomically within mutation transactions.
+func (s *postgresStore) SupportsSignatureBundling() bool {
+	return true
+}
+
+// NewPostgresFromDB returns a postgres Store instance wrapping db.
+func NewPostgresFromDB(db *sql.DB) Store {
+	return &postgresStore{db: db, namespace: unknownNamespace}
+}
+
 func (s *postgresStore) ensureSchema(ctx context.Context, tx *sql.Tx) error {
 	if s == nil || s.schema == "" {
 		return fmt.Errorf("namespace is required")
 	}
-	stmt := fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %s`, quoteIdent(s.schema))
+	stmt := fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %s`, QuoteIdent(s.schema))
 	if _, err := tx.ExecContext(ctx, stmt); err != nil {
 		return fmt.Errorf("create schema: %w", err)
 	}
@@ -159,7 +175,15 @@ func (s *postgresStore) Migrate(ctx context.Context) error {
 }
 
 func (s *postgresStore) table(name string) string {
-	return fmt.Sprintf("%s.%s", quoteIdent(s.schema), quoteIdent(name))
+	if s == nil {
+		return QuoteIdent(name)
+	}
+	s.nsMu.RLock()
+	defer s.nsMu.RUnlock()
+	if strings.TrimSpace(s.schema) == "" {
+		return QuoteIdent(name)
+	}
+	return fmt.Sprintf("%s.%s", QuoteIdent(s.schema), QuoteIdent(name))
 }
 
 func (s *postgresStore) ensureHostsTable(ctx context.Context, tx *sql.Tx) error {
@@ -458,6 +482,8 @@ CREATE TABLE IF NOT EXISTS %s (
 	return nil
 }
 
+// ensureGrantLabelsTable creates the grant_labels table.
+// grant_labels is reserved schema for forward compatibility and future grant label querying capabilities.
 func (s *postgresStore) ensureGrantLabelsTable(ctx context.Context, tx *sql.Tx) error {
 	stmt := fmt.Sprintf(`
 CREATE TABLE IF NOT EXISTS %s (
@@ -511,7 +537,7 @@ func (s *postgresStore) CreateHost(ctx context.Context, host Host) (Host, error)
 	if s == nil || s.db == nil {
 		return Host{}, fmt.Errorf("store not initialized")
 	}
-	host.ID = generateID()
+	normalizeEntityIDAndTimestamps(ctx, &host.ID, &host.CreatedAt, nil)
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -526,7 +552,7 @@ func (s *postgresStore) CreateHost(ctx context.Context, host Host) (Host, error)
 		"labels":     host.Labels,
 	})
 
-	stmt := fmt.Sprintf(`INSERT INTO %s (id, unique_key, public_key) VALUES ($1, $2, $3)`, s.table("hosts"))
+	stmt := fmt.Sprintf(`INSERT INTO %s (id, unique_key, public_key, created_at) VALUES ($1, $2, $3, COALESCE($4::timestamptz, NOW()))`, s.table("hosts"))
 	var uniqueKey any
 	if host.UniqueKey != "" {
 		uniqueKey = host.UniqueKey
@@ -535,18 +561,25 @@ func (s *postgresStore) CreateHost(ctx context.Context, host Host) (Host, error)
 	if host.PublicKey != "" {
 		publicKey = host.PublicKey
 	}
-	if _, err := tx.ExecContext(ctx, stmt, host.ID, uniqueKey, publicKey); err != nil {
-		if isUniqueConstraintError(err) {
-			if isUniqueHostKeyConstraintError(err) {
-				return Host{}, ErrHostUniqueKeyConflict
-			}
-			return Host{}, ErrHostAlreadyExists
+	if _, err := tx.ExecContext(ctx, stmt, host.ID, uniqueKey, publicKey, nullableTime(host.CreatedAt)); err != nil {
+		switch TranslateConstraintError(err) {
+		case ErrKeyAlreadyExists:
+			return Host{}, fmt.Errorf("%w: %w", ErrHostUniqueKeyConflict, err)
+		case ErrAlreadyExists:
+			return Host{}, fmt.Errorf("%w: %w", ErrHostAlreadyExists, err)
+		default:
+			return Host{}, fmt.Errorf("insert host: %w", err)
 		}
-		return Host{}, fmt.Errorf("insert host: %w", err)
 	}
 
 	if err := insertLabelsPostgres(ctx, tx, s.table("host_labels"), "host_id", host.ID, host.Labels); err != nil {
 		return Host{}, fmt.Errorf("insert host labels: %w", err)
+	}
+
+	if sp, ok := SignatureParamsFromContext(ctx); ok && sp.HostID != "" {
+		if err := s.recordSignatureTx(ctx, tx, sp.HostID, sp.Timestamp, sp.Nonce, sp.ExpiresAt); err != nil {
+			return Host{}, err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -625,8 +658,20 @@ func (s *postgresStore) DeleteHost(ctx context.Context, id string) error {
 		"host_id": id,
 	})
 
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin delete host transaction: %w", err)
+	}
+	defer rollbackTx(tx, "rollback delete host transaction")
+
+	if sp, ok := SignatureParamsFromContext(ctx); ok && sp.HostID != "" {
+		if err := s.recordSignatureTx(ctx, tx, sp.HostID, sp.Timestamp, sp.Nonce, sp.ExpiresAt); err != nil {
+			return err
+		}
+	}
+
 	stmt := fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, s.table("hosts"))
-	res, err := s.db.ExecContext(ctx, stmt, id)
+	res, err := tx.ExecContext(ctx, stmt, id)
 	if err != nil {
 		return fmt.Errorf("delete host: %w", err)
 	}
@@ -637,6 +682,10 @@ func (s *postgresStore) DeleteHost(ctx context.Context, id string) error {
 	}
 	if count == 0 {
 		return ErrHostNotFound
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit delete host transaction: %w", err)
 	}
 
 	return nil
@@ -663,12 +712,60 @@ func (s *postgresStore) UpdateHostLabels(ctx context.Context, id string, labels 
 	}
 	defer rollbackTx(tx, "rollback host labels transaction")
 
+	if sp, ok := SignatureParamsFromContext(ctx); ok && sp.HostID != "" {
+		if err := s.recordSignatureTx(ctx, tx, sp.HostID, sp.Timestamp, sp.Nonce, sp.ExpiresAt); err != nil {
+			return err
+		}
+	}
+
 	if err := replaceLabelsPostgres(ctx, tx, s.table("host_labels"), "host_id", id, labels); err != nil {
 		return fmt.Errorf("replace host labels: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit host labels transaction: %w", err)
+	}
+
+	return nil
+}
+
+func (s *postgresStore) recordSignatureTx(ctx context.Context, tx *sql.Tx, hostID string, timestamp int64, nonce string, expiresAt time.Time) error {
+	// 1. Check monotonic timestamp
+	var lastTs sql.NullInt64
+	query := fmt.Sprintf(`SELECT last_signature_timestamp FROM %s WHERE id = $1`, s.table("hosts"))
+	err := tx.QueryRowContext(ctx, query, hostID).Scan(&lastTs)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrHostNotFound
+		}
+		return fmt.Errorf("fetch last timestamp: %w", err)
+	}
+
+	if lastTs.Valid && timestamp < (lastTs.Int64-SignatureTimestampGracePeriodSeconds) {
+		return ErrTimestampRegressed
+	}
+
+	// 2. Try insert nonce
+	stmt := fmt.Sprintf(`INSERT INTO %s (host_id, nonce, expires_at) VALUES ($1, $2, $3)`, s.table("nonces"))
+	if _, err = tx.ExecContext(ctx, stmt, hostID, nonce, expiresAt); err != nil {
+		if IsUniqueConstraintError(err) {
+			return ErrReplayDetected
+		}
+		return fmt.Errorf("insert nonce: %w", err)
+	}
+
+	// 3. Update host timestamp (only advance if incoming timestamp is newer)
+	if !lastTs.Valid || timestamp > lastTs.Int64 {
+		stmt = fmt.Sprintf(`UPDATE %s SET last_signature_timestamp = $1 WHERE id = $2`, s.table("hosts"))
+		if _, err = tx.ExecContext(ctx, stmt, timestamp, hostID); err != nil {
+			return fmt.Errorf("update last timestamp: %w", err)
+		}
+	}
+
+	// 4. Cleanup expired nonces (occasional)
+	if timestamp%10 == 0 {
+		stmt = fmt.Sprintf(`DELETE FROM %s WHERE expires_at < $1`, s.table("nonces"))
+		_, _ = tx.ExecContext(ctx, stmt, time.Unix(timestamp, 0).UTC())
 	}
 
 	return nil
@@ -692,42 +789,8 @@ func (s *postgresStore) RecordSignature(ctx context.Context, hostID string, time
 	}
 	defer rollbackTx(tx, "rollback record signature transaction")
 
-	// 1. Check monotonic timestamp
-	var lastTs sql.NullInt64
-	query := fmt.Sprintf(`SELECT last_signature_timestamp FROM %s WHERE id = $1`, s.table("hosts"))
-	err = tx.QueryRowContext(ctx, query, hostID).Scan(&lastTs)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrHostNotFound
-		}
-		return fmt.Errorf("fetch last timestamp: %w", err)
-	}
-
-	if lastTs.Valid && timestamp < (lastTs.Int64-SignatureTimestampGracePeriodSeconds) {
-		return ErrTimestampRegressed
-	}
-
-	// 2. Try insert nonce
-	stmt := fmt.Sprintf(`INSERT INTO %s (host_id, nonce, expires_at) VALUES ($1, $2, $3)`, s.table("nonces"))
-	if _, err = tx.ExecContext(ctx, stmt, hostID, nonce, expiresAt); err != nil {
-		if isUniqueConstraintError(err) {
-			return ErrReplayDetected
-		}
-		return fmt.Errorf("insert nonce: %w", err)
-	}
-
-	// 3. Update host timestamp (only advance if incoming timestamp is newer)
-	if !lastTs.Valid || timestamp > lastTs.Int64 {
-		stmt = fmt.Sprintf(`UPDATE %s SET last_signature_timestamp = $1 WHERE id = $2`, s.table("hosts"))
-		if _, err = tx.ExecContext(ctx, stmt, timestamp, hostID); err != nil {
-			return fmt.Errorf("update last timestamp: %w", err)
-		}
-	}
-
-	// 4. Cleanup expired nonces (occasional)
-	if timestamp%10 == 0 {
-		stmt = fmt.Sprintf(`DELETE FROM %s WHERE expires_at < (NOW() AT TIME ZONE 'UTC')`, s.table("nonces"))
-		_, _ = tx.ExecContext(ctx, stmt)
+	if err := s.recordSignatureTx(ctx, tx, hostID, timestamp, nonce, expiresAt); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -749,7 +812,7 @@ func (s *postgresStore) CreateRequest(ctx context.Context, req Request) (Request
 		return Request{}, err
 	}
 
-	req.ID = generateID()
+	normalizeEntityIDAndTimestamps(ctx, &req.ID, &req.CreatedAt, &req.UpdatedAt)
 
 	s.logDBOperation("requests", "create", logrus.Fields{
 		"request_id":                   req.ID,
@@ -778,7 +841,13 @@ func (s *postgresStore) CreateRequest(ctx context.Context, req Request) (Request
 	}
 	defer rollbackTx(tx, "rollback create request transaction")
 
-	stmt := fmt.Sprintf(`INSERT INTO %s (id, host_id, request_schema_definition_id, grant_schema_definition_id, unique_key, data, mutable, version) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, s.table("requests"))
+	if sp, ok := SignatureParamsFromContext(ctx); ok && sp.HostID != "" {
+		if err := s.recordSignatureTx(ctx, tx, sp.HostID, sp.Timestamp, sp.Nonce, sp.ExpiresAt); err != nil {
+			return Request{}, err
+		}
+	}
+
+	stmt := fmt.Sprintf(`INSERT INTO %s (id, host_id, request_schema_definition_id, grant_schema_definition_id, unique_key, data, mutable, version, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9::timestamptz, NOW()), COALESCE($10::timestamptz, NOW()))`, s.table("requests"))
 	var uniqueKey any
 	if req.UniqueKey != "" {
 		uniqueKey = req.UniqueKey
@@ -791,20 +860,28 @@ func (s *postgresStore) CreateRequest(ctx context.Context, req Request) (Request
 	if req.GrantSchemaDefinitionID != "" {
 		grantSchemaID = req.GrantSchemaDefinitionID
 	}
-	if _, err := tx.ExecContext(ctx, stmt, req.ID, req.HostID, requestSchemaID, grantSchemaID, uniqueKey, payloadValue, req.Mutable, req.Version); err != nil {
-		if isUniqueConstraintError(err) {
-			if isUniqueKeyConstraintError(err) {
-				return Request{}, fmt.Errorf("%w: %w", ErrRequestUniqueKeyConflict, err)
-			}
+	if _, err := tx.ExecContext(ctx, stmt, req.ID, req.HostID, requestSchemaID, grantSchemaID, uniqueKey, payloadValue, req.Mutable, req.Version, nullableTime(req.CreatedAt), nullableTime(req.UpdatedAt)); err != nil {
+		switch TranslateConstraintError(err) {
+		case ErrKeyAlreadyExists:
+			return Request{}, fmt.Errorf("%w: %w", ErrRequestUniqueKeyConflict, err)
+		case ErrAlreadyExists:
 			return Request{}, fmt.Errorf("%w: %w", ErrRequestAlreadyExists, err)
+		default:
+			return Request{}, fmt.Errorf("insert request: %w", err)
 		}
-		return Request{}, fmt.Errorf("insert request: %w", err)
 	}
 
 	if err := insertLabelsPostgres(ctx, tx, s.table("request_labels"), "request_id", req.ID, req.Labels); err != nil {
 		return Request{}, fmt.Errorf("insert request labels: %w", err)
 	}
-	if err := insertResourceEventPostgres(ctx, tx, s.table("resource_events"), "request", req.ID, "created", nil, req.Payload, nil, req.Labels); err != nil {
+	if err := insertResourceEventPostgres(ctx, tx, s.table("resource_events"), ResourceEventParams{
+		ResourceType:  "request",
+		ResourceID:    req.ID,
+		EventType:     "created",
+		NewPayloadMap: req.Payload,
+		NewLabelsMap:  req.Labels,
+		Timestamp:     req.CreatedAt,
+	}); err != nil {
 		return Request{}, fmt.Errorf("insert request event: %w", err)
 	}
 
@@ -986,6 +1063,12 @@ func (s *postgresStore) UpdateRequest(ctx context.Context, id string, payload *m
 	}
 	defer rollbackTx(tx, "rollback request update transaction")
 
+	if sp, ok := SignatureParamsFromContext(ctx); ok && sp.HostID != "" {
+		if err := s.recordSignatureTx(ctx, tx, sp.HostID, sp.Timestamp, sp.Nonce, sp.ExpiresAt); err != nil {
+			return err
+		}
+	}
+
 	if labels != nil {
 		if err := replaceLabelsPostgres(ctx, tx, s.table("request_labels"), "request_id", id, *labels); err != nil {
 			return fmt.Errorf("replace request labels: %w", err)
@@ -1002,7 +1085,7 @@ func (s *postgresStore) UpdateRequest(ctx context.Context, id string, payload *m
 		}
 	}
 
-	if err := setUpdatedAtPostgres(ctx, tx, s.table("requests"), "id", id, "NOW()"); err != nil {
+	if err := setUpdatedAtPostgres(ctx, tx, s.table("requests"), "id", id); err != nil {
 		return fmt.Errorf("refresh request timestamp: %w", err)
 	}
 
@@ -1021,7 +1104,15 @@ func (s *postgresStore) UpdateRequest(ctx context.Context, id string, payload *m
 	if labels != nil && payload == nil {
 		eventType = "labels_updated"
 	}
-	if err := insertResourceEventPostgres(ctx, tx, s.table("resource_events"), "request", id, eventType, current.Payload, updatedPayload, current.Labels, updatedLabels); err != nil {
+	if err := insertResourceEventPostgres(ctx, tx, s.table("resource_events"), ResourceEventParams{
+		ResourceType:  "request",
+		ResourceID:    id,
+		EventType:     eventType,
+		OldPayloadMap: current.Payload,
+		NewPayloadMap: updatedPayload,
+		OldLabelsMap:  current.Labels,
+		NewLabelsMap:  updatedLabels,
+	}); err != nil {
 		return fmt.Errorf("insert request event: %w", err)
 	}
 
@@ -1057,6 +1148,12 @@ func (s *postgresStore) DeleteRequest(ctx context.Context, id string) error {
 	}
 	defer rollbackTx(tx, "rollback request delete transaction")
 
+	if sp, ok := SignatureParamsFromContext(ctx); ok && sp.HostID != "" {
+		if err := s.recordSignatureTx(ctx, tx, sp.HostID, sp.Timestamp, sp.Nonce, sp.ExpiresAt); err != nil {
+			return err
+		}
+	}
+
 	stmt := fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, s.table("requests"))
 	res, err := tx.ExecContext(ctx, stmt, id)
 	if err != nil {
@@ -1070,7 +1167,13 @@ func (s *postgresStore) DeleteRequest(ctx context.Context, id string) error {
 	if count == 0 {
 		return ErrRequestNotFound
 	}
-	if err := insertResourceEventPostgres(ctx, tx, s.table("resource_events"), "request", id, "deleted", current.Payload, nil, current.Labels, nil); err != nil {
+	if err := insertResourceEventPostgres(ctx, tx, s.table("resource_events"), ResourceEventParams{
+		ResourceType:  "request",
+		ResourceID:    id,
+		EventType:     "deleted",
+		OldPayloadMap: current.Payload,
+		OldLabelsMap:  current.Labels,
+	}); err != nil {
 		return fmt.Errorf("insert request event: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -1092,7 +1195,7 @@ func (s *postgresStore) CreateRegister(ctx context.Context, reg Register) (Regis
 		return Register{}, err
 	}
 
-	reg.ID = generateID()
+	normalizeEntityIDAndTimestamps(ctx, &reg.ID, &reg.CreatedAt, &reg.UpdatedAt)
 
 	s.logDBOperation("registers", "create", logrus.Fields{
 		"register_id":          reg.ID,
@@ -1115,7 +1218,13 @@ func (s *postgresStore) CreateRegister(ctx context.Context, reg Register) (Regis
 	}
 	defer rollbackTx(tx, "rollback create register transaction")
 
-	stmt := fmt.Sprintf(`INSERT INTO %s (id, host_id, schema_definition_id, unique_key, data, mutable) VALUES ($1, $2, $3, $4, $5, $6)`, s.table("registers"))
+	if sp, ok := SignatureParamsFromContext(ctx); ok && sp.HostID != "" {
+		if err := s.recordSignatureTx(ctx, tx, sp.HostID, sp.Timestamp, sp.Nonce, sp.ExpiresAt); err != nil {
+			return Register{}, err
+		}
+	}
+
+	stmt := fmt.Sprintf(`INSERT INTO %s (id, host_id, schema_definition_id, unique_key, data, mutable, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7::timestamptz, NOW()), COALESCE($8::timestamptz, NOW()))`, s.table("registers"))
 	var uniqueKey any
 	if reg.UniqueKey != "" {
 		uniqueKey = reg.UniqueKey
@@ -1124,25 +1233,27 @@ func (s *postgresStore) CreateRegister(ctx context.Context, reg Register) (Regis
 	if reg.SchemaDefinitionID != "" {
 		schemaDefinitionID = reg.SchemaDefinitionID
 	}
-	if _, err := tx.ExecContext(ctx, stmt, reg.ID, reg.HostID, schemaDefinitionID, uniqueKey, payloadValue, reg.Mutable); err != nil {
-		if isUniqueConstraintError(err) {
-			if isUniqueRegisterKeyConstraintError(err) {
-				return Register{}, fmt.Errorf("%w: %w", ErrRegisterUniqueKeyConflict, err)
-			}
+	if _, err := tx.ExecContext(ctx, stmt, reg.ID, reg.HostID, schemaDefinitionID, uniqueKey, payloadValue, reg.Mutable, nullableTime(reg.CreatedAt), nullableTime(reg.UpdatedAt)); err != nil {
+		switch TranslateConstraintError(err) {
+		case ErrKeyAlreadyExists:
+			return Register{}, fmt.Errorf("%w: %w", ErrRegisterUniqueKeyConflict, err)
+		case ErrAlreadyExists:
 			return Register{}, fmt.Errorf("%w: %w", ErrRegisterAlreadyExists, err)
+		default:
+			return Register{}, fmt.Errorf("insert register: %w", err)
 		}
-		return Register{}, fmt.Errorf("insert register: %w", err)
 	}
 
 	if err := insertLabelsPostgres(ctx, tx, s.table("register_labels"), "register_id", reg.ID, reg.Labels); err != nil {
 		return Register{}, fmt.Errorf("insert register labels: %w", err)
 	}
-	if err := insertRegisterEventPostgres(ctx, tx, s.table("resource_events"), RegisterEvent{
-		ID:         generateID(),
-		RegisterID: reg.ID,
-		EventType:  "created",
-		NewPayload: reg.Payload,
-		NewLabels:  reg.Labels,
+	if err := insertResourceEventPostgres(ctx, tx, s.table("resource_events"), ResourceEventParams{
+		ResourceType:  "register",
+		ResourceID:    reg.ID,
+		EventType:     "created",
+		NewPayloadMap: reg.Payload,
+		NewLabelsMap:  reg.Labels,
+		Timestamp:     reg.CreatedAt,
 	}); err != nil {
 		return Register{}, fmt.Errorf("insert register event: %w", err)
 	}
@@ -1275,6 +1386,12 @@ func (s *postgresStore) UpdateRegister(ctx context.Context, id string, payload *
 	}
 	defer rollbackTx(tx, "rollback register update transaction")
 
+	if sp, ok := SignatureParamsFromContext(ctx); ok && sp.HostID != "" {
+		if err := s.recordSignatureTx(ctx, tx, sp.HostID, sp.Timestamp, sp.Nonce, sp.ExpiresAt); err != nil {
+			return err
+		}
+	}
+
 	if labels != nil {
 		if err := replaceLabelsPostgres(ctx, tx, s.table("register_labels"), "register_id", id, *labels); err != nil {
 			return fmt.Errorf("replace register labels: %w", err)
@@ -1291,7 +1408,7 @@ func (s *postgresStore) UpdateRegister(ctx context.Context, id string, payload *
 		}
 	}
 
-	if err := setUpdatedAtPostgres(ctx, tx, s.table("registers"), "id", id, "NOW()"); err != nil {
+	if err := setUpdatedAtPostgres(ctx, tx, s.table("registers"), "id", id); err != nil {
 		return fmt.Errorf("refresh register timestamp: %w", err)
 	}
 
@@ -1310,14 +1427,14 @@ func (s *postgresStore) UpdateRegister(ctx context.Context, id string, payload *
 	if labels != nil && payload == nil {
 		eventType = "labels_updated"
 	}
-	if err := insertRegisterEventPostgres(ctx, tx, s.table("resource_events"), RegisterEvent{
-		ID:         generateID(),
-		RegisterID: id,
-		EventType:  eventType,
-		OldPayload: current.Payload,
-		NewPayload: updatedPayload,
-		OldLabels:  current.Labels,
-		NewLabels:  updatedLabels,
+	if err := insertResourceEventPostgres(ctx, tx, s.table("resource_events"), ResourceEventParams{
+		ResourceType:  "register",
+		ResourceID:    id,
+		EventType:     eventType,
+		OldPayloadMap: current.Payload,
+		NewPayloadMap: updatedPayload,
+		OldLabelsMap:  current.Labels,
+		NewLabelsMap:  updatedLabels,
 	}); err != nil {
 		return fmt.Errorf("insert register event: %w", err)
 	}
@@ -1390,6 +1507,12 @@ func (s *postgresStore) DeleteRegister(ctx context.Context, id string) error {
 	}
 	defer rollbackTx(tx, "rollback register delete transaction")
 
+	if sp, ok := SignatureParamsFromContext(ctx); ok && sp.HostID != "" {
+		if err := s.recordSignatureTx(ctx, tx, sp.HostID, sp.Timestamp, sp.Nonce, sp.ExpiresAt); err != nil {
+			return err
+		}
+	}
+
 	stmt := fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, s.table("registers"))
 	res, err := tx.ExecContext(ctx, stmt, id)
 	if err != nil {
@@ -1403,12 +1526,12 @@ func (s *postgresStore) DeleteRegister(ctx context.Context, id string) error {
 	if count == 0 {
 		return ErrRegisterNotFound
 	}
-	if err := insertRegisterEventPostgres(ctx, tx, s.table("resource_events"), RegisterEvent{
-		ID:         generateID(),
-		RegisterID: id,
-		EventType:  "deleted",
-		OldPayload: current.Payload,
-		OldLabels:  current.Labels,
+	if err := insertResourceEventPostgres(ctx, tx, s.table("resource_events"), ResourceEventParams{
+		ResourceType:  "register",
+		ResourceID:    id,
+		EventType:     "deleted",
+		OldPayloadMap: current.Payload,
+		OldLabelsMap:  current.Labels,
 	}); err != nil {
 		return fmt.Errorf("insert register event: %w", err)
 	}
@@ -1443,14 +1566,14 @@ func (s *postgresStore) CreateGrant(ctx context.Context, grant Grant) (Grant, er
 	}
 	requestVersionInput := grant.RequestVersion
 
-	grant.ID = generateID()
+	normalizeEntityIDAndTimestamps(ctx, &grant.ID, &grant.CreatedAt, &grant.UpdatedAt)
 
 	s.logDBOperation("grants", "create", logrus.Fields{
-		"grant_id":        grant.ID,
-		"request_id":      grant.RequestID,
+		"grant_id":              grant.ID,
+		"request_id":            grant.RequestID,
 		"request_version_input": requestVersionInput,
-		"request_version": grant.RequestVersion,
-		"payload":         grant.Payload,
+		"request_version":       grant.RequestVersion,
+		"payload":               grant.Payload,
 	})
 
 	payloadValue, err := encodeJSON(grant.Payload)
@@ -1468,25 +1591,25 @@ func (s *postgresStore) CreateGrant(ctx context.Context, grant Grant) (Grant, er
 	var insertArgs []any
 	if requestVersionInput > 0 {
 		insertStmt = fmt.Sprintf(`
-INSERT INTO %s (id, request_id, payload, request_version)
-SELECT $1, r.id, $2::jsonb, r.version
+INSERT INTO %s (id, request_id, payload, request_version, created_at, updated_at)
+SELECT $1, r.id, $2::jsonb, r.version, COALESCE($5::timestamptz, NOW()), COALESCE($6::timestamptz, NOW())
 FROM %s r
 WHERE r.id = $3 AND r.version = $4
 RETURNING request_version
 `, s.table("grants"), s.table("requests"))
-		insertArgs = []any{grant.ID, payloadValue, grant.RequestID, requestVersionInput}
+		insertArgs = []any{grant.ID, payloadValue, grant.RequestID, requestVersionInput, nullableTime(grant.CreatedAt), nullableTime(grant.UpdatedAt)}
 	} else {
 		insertStmt = fmt.Sprintf(`
-INSERT INTO %s (id, request_id, payload, request_version)
-SELECT $1, r.id, $2::jsonb, r.version
+INSERT INTO %s (id, request_id, payload, request_version, created_at, updated_at)
+SELECT $1, r.id, $2::jsonb, r.version, COALESCE($4::timestamptz, NOW()), COALESCE($5::timestamptz, NOW())
 FROM %s r
 WHERE r.id = $3
 RETURNING request_version
 `, s.table("grants"), s.table("requests"))
-		insertArgs = []any{grant.ID, payloadValue, grant.RequestID}
+		insertArgs = []any{grant.ID, payloadValue, grant.RequestID, nullableTime(grant.CreatedAt), nullableTime(grant.UpdatedAt)}
 	}
 	if err := tx.QueryRowContext(ctx, insertStmt, insertArgs...).Scan(&grant.RequestVersion); err != nil {
-		if isUniqueConstraintError(err) {
+		if IsUniqueConstraintError(err) {
 			return Grant{}, fmt.Errorf("%w: %w", ErrGrantAlreadyExists, err)
 		}
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1505,7 +1628,13 @@ RETURNING request_version
 		}
 		return Grant{}, fmt.Errorf("insert grant: %w", err)
 	}
-	if err := insertResourceEventPostgres(ctx, tx, s.table("resource_events"), "grant", grant.ID, "created", nil, grant.Payload, nil, nil); err != nil {
+	if err := insertResourceEventPostgres(ctx, tx, s.table("resource_events"), ResourceEventParams{
+		ResourceType:  "grant",
+		ResourceID:    grant.ID,
+		EventType:     "created",
+		NewPayloadMap: grant.Payload,
+		Timestamp:     grant.CreatedAt,
+	}); err != nil {
 		return Grant{}, fmt.Errorf("insert grant event: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -1614,8 +1743,8 @@ func (s *postgresStore) UpdateGrant(ctx context.Context, id string, payload map[
 	}
 
 	s.logDBOperation("grants", "update", logrus.Fields{
-		"grant_id": id,
-		"payload":  payload,
+		"grant_id":              id,
+		"payload":               payload,
 		"request_version_input": requestVersion,
 	})
 
@@ -1692,10 +1821,16 @@ WHERE id = $1
 		}
 		return fmt.Errorf("update grant payload: no rows affected")
 	}
-	if err := setUpdatedAtPostgres(ctx, tx, s.table("grants"), "id", id, "NOW()"); err != nil {
+	if err := setUpdatedAtPostgres(ctx, tx, s.table("grants"), "id", id); err != nil {
 		return fmt.Errorf("refresh grant timestamp: %w", err)
 	}
-	if err := insertResourceEventPostgres(ctx, tx, s.table("resource_events"), "grant", id, "updated", current.Payload, payload, nil, nil); err != nil {
+	if err := insertResourceEventPostgres(ctx, tx, s.table("resource_events"), ResourceEventParams{
+		ResourceType:  "grant",
+		ResourceID:    id,
+		EventType:     "updated",
+		OldPayloadMap: current.Payload,
+		NewPayloadMap: payload,
+	}); err != nil {
 		return fmt.Errorf("insert grant event: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -1738,7 +1873,12 @@ func (s *postgresStore) DeleteGrant(ctx context.Context, id string) error {
 	if count == 0 {
 		return ErrGrantNotFound
 	}
-	if err := insertResourceEventPostgres(ctx, tx, s.table("resource_events"), "grant", id, "deleted", current.Payload, nil, nil, nil); err != nil {
+	if err := insertResourceEventPostgres(ctx, tx, s.table("resource_events"), ResourceEventParams{
+		ResourceType:  "grant",
+		ResourceID:    id,
+		EventType:     "deleted",
+		OldPayloadMap: current.Payload,
+	}); err != nil {
 		return fmt.Errorf("insert grant event: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -1757,7 +1897,7 @@ func (s *postgresStore) CreateSchemaDefinition(ctx context.Context, def SchemaDe
 		return SchemaDefinition{}, fmt.Errorf("schema is required")
 	}
 
-	def.ID = generateID()
+	normalizeEntityIDAndTimestamps(ctx, &def.ID, &def.CreatedAt, nil)
 
 	s.logDBOperation("schema_definitions", "create", logrus.Fields{
 		"schema_definition_id": def.ID,
@@ -1776,12 +1916,12 @@ func (s *postgresStore) CreateSchemaDefinition(ctx context.Context, def SchemaDe
 	}
 	defer rollbackTx(tx, "rollback schema definition transaction")
 
-	stmt := fmt.Sprintf(`INSERT INTO %s (id, unique_key, schema) VALUES ($1, $2, $3)`, s.table("schema_definitions"))
-	if _, err := tx.ExecContext(ctx, stmt, def.ID, nullableText(def.UniqueKey), schemaValue); err != nil {
-		switch {
-		case isUniqueSchemaDefinitionKeyConstraintError(err):
+	stmt := fmt.Sprintf(`INSERT INTO %s (id, unique_key, schema, created_at) VALUES ($1, $2, $3, COALESCE($4::timestamptz, NOW()))`, s.table("schema_definitions"))
+	if _, err := tx.ExecContext(ctx, stmt, def.ID, nullableText(def.UniqueKey), schemaValue, nullableTime(def.CreatedAt)); err != nil {
+		switch TranslateConstraintError(err) {
+		case ErrKeyAlreadyExists:
 			return SchemaDefinition{}, fmt.Errorf("%w: %w", ErrSchemaDefinitionUniqueKeyConflict, err)
-		case isUniqueConstraintError(err):
+		case ErrAlreadyExists:
 			return SchemaDefinition{}, fmt.Errorf("%w: %w", ErrSchemaDefinitionAlreadyExists, err)
 		default:
 			return SchemaDefinition{}, fmt.Errorf("insert schema definition: %w", err)
@@ -1952,8 +2092,11 @@ func insertLabelsPostgres(ctx context.Context, tx *sql.Tx, table, idColumn, id s
 		return nil
 	}
 
+	keys := sortedMapKeys(labels)
+
 	stmt := fmt.Sprintf(`INSERT INTO %s (%s, key, value) VALUES ($1, $2, $3)`, table, idColumn)
-	for key, value := range labels {
+	for _, key := range keys {
+		value := labels[key]
 		if len(key) > maxLabelLength {
 			return fmt.Errorf("label key %q exceeds %d characters", key, maxLabelLength)
 		}
@@ -1975,8 +2118,15 @@ func replaceLabelsPostgres(ctx context.Context, tx *sql.Tx, table, idColumn, id 
 	return insertLabelsPostgres(ctx, tx, table, idColumn, id, labels)
 }
 
-func setUpdatedAtPostgres(ctx context.Context, tx *sql.Tx, table, idColumn, id, nowExpr string) error {
-	stmt := fmt.Sprintf(`UPDATE %s SET updated_at = %s WHERE %s = $1`, table, nowExpr, idColumn)
+func setUpdatedAtPostgres(ctx context.Context, tx *sql.Tx, table, idColumn, id string) error {
+	if t, ok := DeterministicTimeFromContext(ctx); ok {
+		stmt := fmt.Sprintf(`UPDATE %s SET updated_at = $1 WHERE %s = $2`, table, idColumn)
+		if _, err := tx.ExecContext(ctx, stmt, t, id); err != nil {
+			return fmt.Errorf("update %s timestamp: %w", table, err)
+		}
+		return nil
+	}
+	stmt := fmt.Sprintf(`UPDATE %s SET updated_at = NOW() WHERE %s = $1`, table, idColumn)
 	if _, err := tx.ExecContext(ctx, stmt, id); err != nil {
 		return fmt.Errorf("update %s timestamp: %w", table, err)
 	}
@@ -1987,43 +2137,53 @@ func insertResourceEventPostgres(
 	ctx context.Context,
 	tx *sql.Tx,
 	table string,
-	resourceType string,
-	resourceID string,
-	eventType string,
-	oldPayloadMap map[string]any,
-	newPayloadMap map[string]any,
-	oldLabelsMap map[string]string,
-	newLabelsMap map[string]string,
+	params ResourceEventParams,
 ) error {
-	oldPayload, err := encodeJSON(oldPayloadMap)
+	ts := params.Timestamp
+	if ts.IsZero() {
+		if ctxTS, ok := DeterministicTimeFromContext(ctx); ok {
+			ts = ctxTS
+		}
+	}
+
+	oldPayload, err := encodeJSON(params.OldPayloadMap)
 	if err != nil {
 		return fmt.Errorf("encode old_payload: %w", err)
 	}
-	newPayload, err := encodeJSON(newPayloadMap)
+	newPayload, err := encodeJSON(params.NewPayloadMap)
 	if err != nil {
 		return fmt.Errorf("encode new_payload: %w", err)
 	}
-	oldLabels, err := encodeJSON(oldLabelsMap)
+	oldLabels, err := encodeJSON(params.OldLabelsMap)
 	if err != nil {
 		return fmt.Errorf("encode old_labels: %w", err)
 	}
-	newLabels, err := encodeJSON(newLabelsMap)
+	newLabels, err := encodeJSON(params.NewLabelsMap)
 	if err != nil {
 		return fmt.Errorf("encode new_labels: %w", err)
 	}
 
-	stmt := fmt.Sprintf(`
-INSERT INTO %s (id, resource_type, resource_id, event_type, old_payload, new_payload, old_labels, new_labels)
-VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb)
+	if !ts.IsZero() {
+		eventID := DeterministicResourceEventID(params, ts, oldPayload, newPayload, oldLabels, newLabels)
+		stmt := fmt.Sprintf(`
+INSERT INTO %s (id, resource_type, resource_id, event_type, old_payload, new_payload, old_labels, new_labels, created_at)
+VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, $9)
+ON CONFLICT (id) DO NOTHING
 `, table)
-	if _, err := tx.ExecContext(ctx, stmt, generateID(), resourceType, resourceID, eventType, oldPayload, newPayload, oldLabels, newLabels); err != nil {
+		if _, err := tx.ExecContext(ctx, stmt, eventID, params.ResourceType, params.ResourceID, params.EventType, oldPayload, newPayload, oldLabels, newLabels, ts); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	stmt := fmt.Sprintf(`
+INSERT INTO %s (id, resource_type, resource_id, event_type, old_payload, new_payload, old_labels, new_labels, created_at)
+VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, NOW())
+`, table)
+	if _, err := tx.ExecContext(ctx, stmt, GenerateID(), params.ResourceType, params.ResourceID, params.EventType, oldPayload, newPayload, oldLabels, newLabels); err != nil {
 		return err
 	}
 	return nil
-}
-
-func insertRegisterEventPostgres(ctx context.Context, tx *sql.Tx, table string, event RegisterEvent) error {
-	return insertResourceEventPostgres(ctx, tx, table, "register", event.RegisterID, event.EventType, event.OldPayload, event.NewPayload, event.OldLabels, event.NewLabels)
 }
 
 func (s *postgresStore) migratePostgresSchemaDefinitions(ctx context.Context, tx *sql.Tx) error {
@@ -2125,7 +2285,7 @@ WHERE schema_definition_id IS NOT NULL
 		if remaining == 0 {
 			continue
 		}
-		grantDefID := generateID()
+		grantDefID := GenerateID()
 		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`INSERT INTO %s (id, schema) VALUES ($1, $2)`, s.table("schema_definitions")), grantDefID, entry.grantValue); err != nil {
 			return fmt.Errorf("create grant schema definition: %w", err)
 		}
@@ -2156,62 +2316,17 @@ SELECT EXISTS (
 	return exists, nil
 }
 
-func quoteIdent(value string) string {
+// QuoteIdent quotes a PostgreSQL identifier (schema, table, column) using double quotes,
+// escaping inner double quotes as needed.
+func QuoteIdent(value string) string {
 	escaped := strings.ReplaceAll(value, `"`, `""`)
 	return `"` + escaped + `"`
 }
 
-func isUniqueConstraintError(err error) bool {
-	if err == nil {
-		return false
+// nullableTime returns t when non-zero, or nil when zero for nullable timestamptz query parameters.
+func nullableTime(t time.Time) any {
+	if t.IsZero() {
+		return nil
 	}
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		return pgErr.Code == "23505"
-	}
-	return strings.Contains(err.Error(), "UNIQUE constraint failed")
-}
-
-func isUniqueKeyConstraintError(err error) bool {
-	if err == nil {
-		return false
-	}
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		return pgErr.ConstraintName == "requests_unique_key_idx"
-	}
-	return strings.Contains(err.Error(), "requests.unique_key")
-}
-
-func isUniqueRegisterKeyConstraintError(err error) bool {
-	if err == nil {
-		return false
-	}
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		return pgErr.ConstraintName == "registers_unique_key_idx"
-	}
-	return strings.Contains(err.Error(), "registers.unique_key")
-}
-
-func isUniqueHostKeyConstraintError(err error) bool {
-	if err == nil {
-		return false
-	}
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		return pgErr.ConstraintName == "hosts_unique_key_idx"
-	}
-	return strings.Contains(err.Error(), "hosts.unique_key")
-}
-
-func isUniqueSchemaDefinitionKeyConstraintError(err error) bool {
-	if err == nil {
-		return false
-	}
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		return pgErr.ConstraintName == "schema_definitions_unique_key_idx"
-	}
-	return strings.Contains(err.Error(), "schema_definitions.unique_key")
+	return t
 }

@@ -5,13 +5,24 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"sort"
+	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Store defines the persistence API used by the server.
 type Store interface {
 	Close() error
 	DB() *sql.DB
+	// SetNamespace configures the active tenant namespace for subsequent operations.
+	// Implementation note:
+	// - SQLite backend uses isolated database files per namespace (e.g. data/<ns>.db);
+	//   SetNamespace updates internal tracking/logging without affecting underlying isolation.
+	// - PostgreSQL backend uses a single shared database with dedicated schemas per namespace;
+	//   SetNamespace mutates the search path / qualified table names for subsequent SQL queries.
 	SetNamespace(namespace string)
 	Migrate(ctx context.Context) error
 
@@ -159,8 +170,6 @@ var (
 	ErrRequestImmutable = errors.New("request is immutable")
 	// ErrGrantNotFound is returned when a grant cannot be located.
 	ErrGrantNotFound = errors.New("grant not found")
-	// ErrGrantAlreadyCurrent is returned when a grant already matches the request version.
-	ErrGrantAlreadyCurrent = errors.New("grant already current")
 	// ErrGrantRequestVersionConflict is returned when provided request version does not match current request version.
 	ErrGrantRequestVersionConflict = errors.New("request version conflict")
 	// ErrRegisterNotFound is returned when a register entry cannot be located.
@@ -183,6 +192,11 @@ var (
 	ErrReplayDetected = errors.New("replay detected")
 	// ErrTimestampRegressed is returned when a signature timestamp is older than the last recorded one.
 	ErrTimestampRegressed = errors.New("timestamp regressed")
+
+	// ErrNotLeader is returned when a write operation is attempted on a node that is not the cluster leader.
+	ErrNotLeader = errors.New("not cluster leader")
+	// ErrLeadershipLost is returned when leadership changes while a replicated operation is in flight.
+	ErrLeadershipLost = errors.New("cluster leader changed during operation")
 )
 
 const (
@@ -190,3 +204,147 @@ const (
 	// for out-of-order request timestamps from the same host to accommodate concurrency and network jitter.
 	SignatureTimestampGracePeriodSeconds int64 = 30
 )
+
+type contextKey int
+
+const deterministicTimeKey contextKey = 1
+
+// WithDeterministicTime attaches a deterministic timestamp to the context.
+// Storage backends that support deterministic mutation will use this timestamp
+// for created_at, updated_at, and resource_events instead of the system clock.
+func WithDeterministicTime(ctx context.Context, t time.Time) context.Context {
+	return context.WithValue(ctx, deterministicTimeKey, t)
+}
+
+// DeterministicTimeFromContext extracts a deterministic timestamp from the context if present.
+func DeterministicTimeFromContext(ctx context.Context) (time.Time, bool) {
+	if ctx == nil {
+		return time.Time{}, false
+	}
+	t, ok := ctx.Value(deterministicTimeKey).(time.Time)
+	return t, ok && !t.IsZero()
+}
+
+// GenerateID returns a new unique identifier (UUID v4).
+func GenerateID() string {
+	return uuid.NewString()
+}
+
+func normalizeEntityIDAndTimestamps(ctx context.Context, id *string, createdAt *time.Time, updatedAt *time.Time) {
+	if id != nil && *id == "" {
+		*id = GenerateID()
+	}
+	now := time.Now().UTC()
+	if t, ok := DeterministicTimeFromContext(ctx); ok {
+		now = t
+	}
+	if createdAt != nil && createdAt.IsZero() {
+		*createdAt = now
+	}
+	if updatedAt != nil && updatedAt.IsZero() {
+		if createdAt != nil && !createdAt.IsZero() {
+			*updatedAt = *createdAt
+		} else {
+			*updatedAt = now
+		}
+	}
+}
+
+func sortedMapKeys(m map[string]string) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func encodeJSON(value any) (*string, error) {
+	if value == nil {
+		return nil, nil
+	}
+	b, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	s := string(b)
+	return &s, nil
+}
+
+func decodeAnyMap(value sql.NullString) (map[string]any, error) {
+	if !value.Valid || value.String == "" {
+		return nil, nil
+	}
+	var dest map[string]any
+	if err := json.Unmarshal([]byte(value.String), &dest); err != nil {
+		return nil, err
+	}
+	return dest, nil
+}
+
+func decodeStringMap(value sql.NullString) (map[string]string, error) {
+	if !value.Valid || value.String == "" {
+		return nil, nil
+	}
+	var dest map[string]string
+	if err := json.Unmarshal([]byte(value.String), &dest); err != nil {
+		return nil, err
+	}
+	return dest, nil
+}
+
+func decodeRawJSON(value sql.NullString) (json.RawMessage, error) {
+	if !value.Valid || value.String == "" {
+		return nil, nil
+	}
+	if !json.Valid([]byte(value.String)) {
+		return nil, fmt.Errorf("invalid JSON payload")
+	}
+	return json.RawMessage([]byte(value.String)), nil
+}
+
+func nullableText(value string) any {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	return trimmed
+}
+
+// ResourceEventParams encapsulates parameters for inserting an audit event.
+type ResourceEventParams struct {
+	ResourceType  string
+	ResourceID    string
+	EventType     string
+	OldPayloadMap map[string]any
+	NewPayloadMap map[string]any
+	OldLabelsMap  map[string]string
+	NewLabelsMap  map[string]string
+	Timestamp     time.Time
+}
+
+func derefString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+// DeterministicResourceEventID computes a deterministic SHA-1 UUID for a resource event.
+func DeterministicResourceEventID(params ResourceEventParams, ts time.Time, oldPayload, newPayload, oldLabels, newLabels *string) string {
+	ts = ts.Truncate(time.Millisecond)
+	hashInput := fmt.Sprintf("%s:%s:%s:%d:%s:%s:%s:%s",
+		params.ResourceType,
+		params.ResourceID,
+		params.EventType,
+		ts.UnixNano(),
+		derefString(oldPayload),
+		derefString(newPayload),
+		derefString(oldLabels),
+		derefString(newLabels),
+	)
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(hashInput)).String()
+}

@@ -32,13 +32,13 @@ func newPostgresTestStore(t *testing.T) (*postgresStore, func()) {
 	schemaName := fmt.Sprintf("inttest_%d", time.Now().UnixNano())
 	pgStore.SetNamespace(schemaName)
 
-	_, err = pgStore.db.ExecContext(ctx, fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %s`, quoteIdent(schemaName)))
+	_, err = pgStore.db.ExecContext(ctx, fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %s`, QuoteIdent(schemaName)))
 	require.NoError(t, err)
 
 	require.NoError(t, pgStore.Migrate(ctx))
 
 	cleanup := func() {
-		_, _ = pgStore.db.ExecContext(ctx, fmt.Sprintf(`DROP SCHEMA IF EXISTS %s CASCADE`, quoteIdent(schemaName)))
+		_, _ = pgStore.db.ExecContext(ctx, fmt.Sprintf(`DROP SCHEMA IF EXISTS %s CASCADE`, QuoteIdent(schemaName)))
 		_ = pgStore.Close()
 	}
 	return pgStore, cleanup

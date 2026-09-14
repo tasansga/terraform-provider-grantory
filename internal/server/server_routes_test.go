@@ -3,17 +3,25 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
+	hashiraft "github.com/hashicorp/raft"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -21,6 +29,7 @@ import (
 	"github.com/tasansga/terraform-provider-grantory/internal/api"
 	"github.com/tasansga/terraform-provider-grantory/internal/config"
 	"github.com/tasansga/terraform-provider-grantory/internal/storage"
+	"github.com/tasansga/terraform-provider-grantory/internal/store"
 )
 
 func newTestApp(t *testing.T) (*fiber.App, func()) {
@@ -43,7 +52,7 @@ func newTestApp(t *testing.T) (*fiber.App, func()) {
 	}
 
 	storePath := filepath.Join(dataDir, "cli-test.db")
-	store, err := storage.New(context.Background(), storePath)
+	sqlStore, err := storage.New(context.Background(), storePath)
 	if err != nil {
 		if cerr := srv.Close(); cerr != nil {
 			t.Errorf("close server: %v", cerr)
@@ -51,10 +60,10 @@ func newTestApp(t *testing.T) (*fiber.App, func()) {
 		assert.NoError(t, err, "storage.New() error")
 		t.FailNow()
 	}
-	store.SetNamespace(DefaultNamespace)
+	sqlStore.SetNamespace(store.DefaultNamespace)
 
-	if err := store.Migrate(context.Background()); err != nil {
-		if cerr := store.Close(); cerr != nil {
+	if err := sqlStore.Migrate(context.Background()); err != nil {
+		if cerr := sqlStore.Close(); cerr != nil {
 			t.Errorf("close store: %v", cerr)
 		}
 		if cerr := srv.Close(); cerr != nil {
@@ -73,10 +82,11 @@ func newTestApp(t *testing.T) (*fiber.App, func()) {
 	api := app.Group("/", func(c *fiber.Ctx) error {
 		namespace := c.Get("REMOTE_USER")
 		if namespace == "" {
-			namespace = DefaultNamespace
+			namespace = store.DefaultNamespace
 		}
-		c.Locals(storeCtxKey, localStore{store: store})
+		c.Locals(storeCtxKey, sqlStore)
 		c.Locals(namespaceCtxKey, namespace)
+		defer c.Locals(storeCtxKey, nil)
 		return c.Next()
 	})
 	registerHostRoutes(api)
@@ -92,7 +102,7 @@ func newTestApp(t *testing.T) (*fiber.App, func()) {
 	api.Get("/schema.html", srv.handleSchemaPage)
 
 	cleanup := func() {
-		if err := store.Close(); err != nil {
+		if err := sqlStore.Close(); err != nil {
 			t.Errorf("close store: %v", err)
 		}
 		if err := srv.Close(); err != nil {
@@ -909,7 +919,7 @@ func TestMissingResourcesReturnNotFound(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, res.StatusCode, "missing grant update should 404")
 }
 
-func TestHandlersReturnInternalServerErrorWhenStoreClosed(t *testing.T) {
+func TestHandlersReturnServiceUnavailableWhenStoreClosed(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.Config{Database: t.TempDir()}
@@ -921,15 +931,15 @@ func TestHandlersReturnInternalServerErrorWhenStoreClosed(t *testing.T) {
 		}
 	}()
 
-	store, err := srv.nsStore.StoreFor(context.Background(), DefaultNamespace)
+	closedStore, err := srv.nsStore.StoreFor(context.Background(), store.DefaultNamespace)
 	require.NoError(t, err)
-	require.NoError(t, store.Close())
+	require.NoError(t, closedStore.Close())
 
 	app := fiber.New(fiber.Config{DisableStartupMessage: true})
 	app.Use(requestLoggingMiddleware())
 	app.Use(func(c *fiber.Ctx) error {
-		c.Locals(storeCtxKey, localStore{store: store})
-		c.Locals(namespaceCtxKey, DefaultNamespace)
+		c.Locals(storeCtxKey, closedStore)
+		c.Locals(namespaceCtxKey, store.DefaultNamespace)
 		return c.Next()
 	})
 	registerHostRoutes(app)
@@ -967,7 +977,7 @@ func TestHandlersReturnInternalServerErrorWhenStoreClosed(t *testing.T) {
 
 	for _, scenario := range scenarios {
 		res := sendTestRequest(t, app, scenario.method, scenario.path, headers, scenario.body)
-		assert.Equal(t, http.StatusInternalServerError, res.StatusCode, "%s %s should error when store closed", scenario.method, scenario.path)
+		assert.Equal(t, http.StatusServiceUnavailable, res.StatusCode, "%s %s should return 503 when store closed", scenario.method, scenario.path)
 	}
 }
 
@@ -1241,4 +1251,423 @@ func TestNamespaceValidationMiddleware(t *testing.T) {
 	headers := map[string]string{"REMOTE_USER": "bad space"}
 	res := sendTestRequest(t, app, http.MethodGet, "/probe", headers, nil)
 	assert.Equal(t, http.StatusBadRequest, res.StatusCode, "invalid namespace should be rejected")
+}
+
+func generateTestCertAndKey(t *testing.T, dir string) (certPath, keyPath string) {
+	t.Helper()
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			Organization: []string{"Grantory Test"},
+		},
+		NotBefore: time.Now().Add(-1 * time.Hour),
+		NotAfter:  time.Now().Add(24 * time.Hour),
+		KeyUsage:  x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+
+	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
+	require.NoError(t, err)
+
+	certPath = filepath.Join(dir, "cert.pem")
+	certOut, err := os.Create(certPath)
+	require.NoError(t, err)
+	require.NoError(t, pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}))
+	require.NoError(t, certOut.Close())
+
+	keyPath = filepath.Join(dir, "key.pem")
+	keyOut, err := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	require.NoError(t, err)
+	privBytes, err := x509.MarshalPKCS8PrivateKey(priv)
+	require.NoError(t, err)
+	require.NoError(t, pem.Encode(keyOut, &pem.Block{Type: "PRIVATE KEY", Bytes: privBytes}))
+	require.NoError(t, keyOut.Close())
+
+	return certPath, keyPath
+}
+
+func TestBuildProxyClient_FailFast(t *testing.T) {
+	t.Run("non-existent RaftCAFile", func(t *testing.T) {
+		cfg := config.Config{
+			RaftCAFile: "/non/existent/ca.pem",
+		}
+		client, err := buildProxyClient(cfg)
+		require.Error(t, err)
+		assert.Nil(t, client)
+		assert.Contains(t, err.Error(), "read raft CA file")
+	})
+
+	t.Run("invalid PEM in RaftCAFile", func(t *testing.T) {
+		dir := t.TempDir()
+		invalidCA := filepath.Join(dir, "invalid-ca.pem")
+		require.NoError(t, os.WriteFile(invalidCA, []byte("NOT-A-PEM-FILE"), 0o644))
+
+		cfg := config.Config{
+			RaftCAFile: invalidCA,
+		}
+		client, err := buildProxyClient(cfg)
+		require.Error(t, err)
+		assert.Nil(t, client)
+		assert.Contains(t, err.Error(), "failed to append certs from raft CA file")
+	})
+
+	t.Run("non-existent TLSCert", func(t *testing.T) {
+		cfg := config.Config{
+			TLSCert: "/non/existent/tls.crt",
+		}
+		client, err := buildProxyClient(cfg)
+		require.Error(t, err)
+		assert.Nil(t, client)
+		assert.Contains(t, err.Error(), "read TLS cert file")
+	})
+
+	t.Run("invalid PEM in TLSCert", func(t *testing.T) {
+		dir := t.TempDir()
+		invalidCert := filepath.Join(dir, "invalid-cert.pem")
+		require.NoError(t, os.WriteFile(invalidCert, []byte("NOT-A-PEM-FILE"), 0o644))
+
+		cfg := config.Config{
+			TLSCert: invalidCert,
+		}
+		client, err := buildProxyClient(cfg)
+		require.Error(t, err)
+		assert.Nil(t, client)
+		assert.Contains(t, err.Error(), "failed to append certs from TLS cert file")
+	})
+}
+
+func TestBuildProxyClient_ClientCertificates(t *testing.T) {
+	dir := t.TempDir()
+	certPath, keyPath := generateTestCertAndKey(t, dir)
+
+	t.Run("loads client cert via RaftCertFile and RaftKeyFile", func(t *testing.T) {
+		cfg := config.Config{
+			RaftCertFile: certPath,
+			RaftKeyFile:  keyPath,
+		}
+		client, err := buildProxyClient(cfg)
+		require.NoError(t, err)
+		require.NotNil(t, client)
+		require.NotNil(t, client.TLSConfig)
+		assert.Len(t, client.TLSConfig.Certificates, 1)
+	})
+
+	t.Run("loads client cert via TLSCert and TLSKey", func(t *testing.T) {
+		cfg := config.Config{
+			TLSCert: certPath,
+			TLSKey:  keyPath,
+		}
+		client, err := buildProxyClient(cfg)
+		require.NoError(t, err)
+		require.NotNil(t, client)
+		require.NotNil(t, client.TLSConfig)
+		assert.Len(t, client.TLSConfig.Certificates, 1)
+	})
+}
+
+func TestBuildProxyClient_Timeouts(t *testing.T) {
+	client, err := buildProxyClient(config.Config{})
+	require.NoError(t, err)
+	require.NotNil(t, client)
+	assert.Equal(t, 30*time.Second, client.ReadTimeout)
+	assert.Equal(t, 10*time.Second, client.WriteTimeout)
+	assert.Equal(t, 60*time.Second, client.MaxConnDuration)
+}
+
+func TestBuildProxyClient_ServerName(t *testing.T) {
+	t.Run("default empty server name", func(t *testing.T) {
+		client, err := buildProxyClient(config.Config{})
+		require.NoError(t, err)
+		require.NotNil(t, client)
+		require.NotNil(t, client.TLSConfig)
+		assert.Empty(t, client.TLSConfig.ServerName)
+	})
+
+	t.Run("configured RaftTLSServerName", func(t *testing.T) {
+		client, err := buildProxyClient(config.Config{
+			RaftTLSServerName: "peer.grantory.internal",
+		})
+		require.NoError(t, err)
+		require.NotNil(t, client)
+		require.NotNil(t, client.TLSConfig)
+		assert.Equal(t, "peer.grantory.internal", client.TLSConfig.ServerName)
+	})
+}
+
+func TestServerNew_RaftEnabledFailFastProxyClient(t *testing.T) {
+	cfg := config.Config{
+		Database:     t.TempDir(),
+		RaftBind:     "127.0.0.1:18099",
+		RaftCAFile:   "/non/existent/ca.pem",
+		RaftCertFile: "/non/existent/cert.pem",
+		RaftKeyFile:  "/non/existent/key.pem",
+	}
+	srv, err := New(context.Background(), cfg)
+	require.Error(t, err)
+	assert.Nil(t, srv)
+	assert.Contains(t, err.Error(), "proxy client")
+}
+
+func TestReadinessEndpoint_RaftLeaderCheck(t *testing.T) {
+	t.Run("returns 503 when raft enabled but no leader elected", func(t *testing.T) {
+		cfg := config.Config{
+			Database: t.TempDir(),
+			RaftBind: "127.0.0.1:0",
+		}
+		srv, err := New(context.Background(), cfg)
+		require.NoError(t, err)
+		defer func() { _ = srv.Close() }()
+
+		app := fiber.New(fiber.Config{DisableStartupMessage: true})
+		app.Get("/readyz", srv.handleReadiness)
+
+		res := sendTestRequest(t, app, http.MethodGet, "/readyz", nil, nil)
+		assert.Equal(t, http.StatusServiceUnavailable, res.StatusCode)
+		assert.Equal(t, "1", res.Header.Get("Retry-After"))
+	})
+
+	t.Run("returns 200 when raft enabled and leader elected", func(t *testing.T) {
+		cfg := config.Config{
+			Database:            t.TempDir(),
+			RaftBind:            "127.0.0.1:0",
+			RaftBootstrapExpect: 1,
+			RaftNodeID:          "node-1",
+		}
+		srv, err := New(context.Background(), cfg)
+		require.NoError(t, err)
+		defer func() { _ = srv.Close() }()
+
+		require.Eventually(t, func() bool {
+			return srv.RaftNode().IsLeader() || srv.RaftNode().LeaderAddr() != ""
+		}, 5*time.Second, 50*time.Millisecond)
+
+		app := fiber.New(fiber.Config{DisableStartupMessage: true})
+		app.Get("/readyz", srv.handleReadiness)
+
+		res := sendTestRequest(t, app, http.MethodGet, "/readyz", nil, nil)
+		assert.Equal(t, http.StatusOK, res.StatusCode)
+	})
+
+	t.Run("returns 200 when raft disabled", func(t *testing.T) {
+		cfg := config.Config{
+			Database: t.TempDir(),
+		}
+		srv, err := New(context.Background(), cfg)
+		require.NoError(t, err)
+		defer func() { _ = srv.Close() }()
+
+		app := fiber.New(fiber.Config{DisableStartupMessage: true})
+		app.Get("/readyz", srv.handleReadiness)
+
+		res := sendTestRequest(t, app, http.MethodGet, "/readyz", nil, nil)
+		assert.Equal(t, http.StatusOK, res.StatusCode)
+	})
+}
+
+func TestServerNewEmptyDatabaseWithRaftEnabled(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	cfg := config.Config{
+		Database:            "",
+		RaftBind:            "127.0.0.1:0",
+		RaftBootstrapExpect: 1,
+		RaftNodeID:          "node-empty-db",
+	}
+	srv, err := New(context.Background(), cfg)
+	require.NoError(t, err)
+	require.NotNil(t, srv)
+	defer func() { _ = srv.Close() }()
+
+	require.NotNil(t, srv.RaftNode())
+}
+
+func TestServerFollowerClusterJoinRoutesThroughClusterRoutingMiddleware(t *testing.T) {
+	cfg := config.Config{
+		Database:            t.TempDir(),
+		RaftBind:            "127.0.0.1:0",
+		RaftAdvertise:       "127.0.0.1:9090",
+		RaftBootstrapExpect: 3,
+		RaftNodeID:          "follower-node-1",
+		RaftPeers:           []string{"follower-node-1=127.0.0.1:0", "peer-2=127.0.0.1:9091", "peer-3=127.0.0.1:9092"},
+		RaftClusterSecret:   "test-cluster-secret",
+	}
+
+	srv, err := New(context.Background(), cfg)
+	require.NoError(t, err)
+	defer func() { _ = srv.Close() }()
+
+	require.False(t, srv.RaftNode().IsLeader())
+
+	app := srv.buildApp()
+
+	joinPayload := map[string]any{
+		"node_id": "new-node",
+		"address": "127.0.0.1:9999",
+	}
+	removePayload := map[string]any{
+		"node_id": "remove-node",
+	}
+
+	// 1. Unauthenticated POST /api/v1/cluster/join on follower returns 401 Unauthorized
+	unauthJoinRes := sendTestRequest(t, app, http.MethodPost, "/api/v1/cluster/join", nil, joinPayload)
+	assert.Equal(t, http.StatusUnauthorized, unauthJoinRes.StatusCode)
+
+	// 2. Unauthenticated POST /api/v1/cluster/remove on follower returns 401 Unauthorized
+	unauthRemoveRes := sendTestRequest(t, app, http.MethodPost, "/api/v1/cluster/remove", nil, removePayload)
+	assert.Equal(t, http.StatusUnauthorized, unauthRemoveRes.StatusCode)
+
+	// 3. Authenticated requests pass auth and route through clusterRoutingMiddleware.
+	// With no leader elected, clusterRoutingMiddleware returns HTTP 503 Service Unavailable with Retry-After: 1.
+	headers := map[string]string{
+		"X-Grantory-Cluster-Secret": "test-cluster-secret",
+	}
+	res := sendTestRequest(t, app, http.MethodPost, "/api/v1/cluster/join", headers, joinPayload)
+	assert.Equal(t, http.StatusServiceUnavailable, res.StatusCode)
+	assert.Equal(t, "1", res.Header.Get("Retry-After"))
+
+	resRemove := sendTestRequest(t, app, http.MethodPost, "/api/v1/cluster/remove", headers, removePayload)
+	assert.Equal(t, http.StatusServiceUnavailable, resRemove.StatusCode)
+	assert.Equal(t, "1", resRemove.Header.Get("Retry-After"))
+}
+
+func TestServerFollowerClusterEndpointsUnconfiguredSecret(t *testing.T) {
+	cfg := config.Config{
+		Database:            t.TempDir(),
+		RaftBind:            "127.0.0.1:0",
+		RaftAdvertise:       "127.0.0.1:9090",
+		RaftBootstrapExpect: 3,
+		RaftNodeID:          "follower-node-1",
+		RaftPeers:           []string{"follower-node-1=127.0.0.1:0", "peer-2=127.0.0.1:9091", "peer-3=127.0.0.1:9092"},
+		RaftClusterSecret:   "",
+	}
+
+	srv, err := New(context.Background(), cfg)
+	require.NoError(t, err)
+	defer func() { _ = srv.Close() }()
+
+	app := srv.buildApp()
+
+	joinPayload := map[string]any{
+		"node_id": "new-node",
+		"address": "127.0.0.1:9999",
+	}
+	removePayload := map[string]any{
+		"node_id": "remove-node",
+	}
+
+	resJoin := sendTestRequest(t, app, http.MethodPost, "/api/v1/cluster/join", nil, joinPayload)
+	assert.Equal(t, http.StatusForbidden, resJoin.StatusCode)
+
+	resRemove := sendTestRequest(t, app, http.MethodPost, "/api/v1/cluster/remove", nil, removePayload)
+	assert.Equal(t, http.StatusForbidden, resRemove.StatusCode)
+}
+
+func TestServerWriteEndpoints_RaftFailoverReturns503WithRetryAfter(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	sqlStore, err := storage.New(ctx, dir+"/test.db")
+	require.NoError(t, err)
+	defer func() { _ = sqlStore.Close() }()
+	require.NoError(t, sqlStore.Migrate(ctx))
+
+	proposer := &mockProposer{}
+	raftStore := newRaftStore(sqlStore, proposer, store.DefaultNamespace)
+
+	createdHost, err := sqlStore.CreateHost(ctx, storage.Host{UniqueKey: "h-1-key"})
+	require.NoError(t, err)
+	createdReq, err := sqlStore.CreateRequest(ctx, storage.Request{HostID: createdHost.ID, Version: 1})
+	require.NoError(t, err)
+
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app.Use(requestLoggingMiddleware())
+	api := app.Group("/", func(c *fiber.Ctx) error {
+		c.Locals(storeCtxKey, raftStore)
+		c.Locals(namespaceCtxKey, store.DefaultNamespace)
+		return c.Next()
+	})
+	registerHostRoutes(api)
+	registerRequestRoutes(api)
+	registerRegisterRoutes(api)
+	registerSchemaDefinitionRoutes(api)
+	registerGrantRoutes(api)
+
+	for _, tc := range []struct {
+		err         error
+		expectedMsg string
+	}{
+		{hashiraft.ErrNotLeader, "not cluster leader"},
+		{hashiraft.ErrLeadershipLost, "cluster leader changed during operation"},
+	} {
+		t.Run("failover error "+tc.err.Error(), func(t *testing.T) {
+			proposer.propErr = tc.err
+
+			// 1. POST /hosts
+			res := sendTestRequest(t, app, http.MethodPost, "/hosts", nil, map[string]any{
+				"unique_key": "host-failover",
+			})
+			assert.Equal(t, http.StatusServiceUnavailable, res.StatusCode)
+			assert.Equal(t, "1", res.Header.Get("Retry-After"))
+			body, err := io.ReadAll(res.Body)
+			require.NoError(t, err)
+			assert.Contains(t, string(body), tc.expectedMsg)
+
+			// 2. POST /requests
+			res = sendTestRequest(t, app, http.MethodPost, "/requests", nil, map[string]any{
+				"host_id": createdHost.ID,
+				"payload": map[string]any{"action": "test"},
+			})
+			assert.Equal(t, http.StatusServiceUnavailable, res.StatusCode)
+			assert.Equal(t, "1", res.Header.Get("Retry-After"))
+			body, err = io.ReadAll(res.Body)
+			require.NoError(t, err)
+			assert.Contains(t, string(body), tc.expectedMsg)
+
+			// 3. POST /registers
+			res = sendTestRequest(t, app, http.MethodPost, "/registers", nil, map[string]any{
+				"host_id":    createdHost.ID,
+				"unique_key": "reg-failover",
+			})
+			assert.Equal(t, http.StatusServiceUnavailable, res.StatusCode)
+			assert.Equal(t, "1", res.Header.Get("Retry-After"))
+			body, err = io.ReadAll(res.Body)
+			require.NoError(t, err)
+			assert.Contains(t, string(body), tc.expectedMsg)
+
+			// 4. POST /schema-definitions
+			res = sendTestRequest(t, app, http.MethodPost, "/schema-definitions", nil, map[string]any{
+				"unique_key": "schema-failover",
+				"schema":     map[string]any{"type": "object"},
+			})
+			assert.Equal(t, http.StatusServiceUnavailable, res.StatusCode)
+			assert.Equal(t, "1", res.Header.Get("Retry-After"))
+			body, err = io.ReadAll(res.Body)
+			require.NoError(t, err)
+			assert.Contains(t, string(body), tc.expectedMsg)
+
+			// 5. POST /grants
+			res = sendTestRequest(t, app, http.MethodPost, "/grants", nil, map[string]any{
+				"request_id":      createdReq.ID,
+				"request_version": 1,
+				"payload":         map[string]any{"status": "ok"},
+			})
+			assert.Equal(t, http.StatusServiceUnavailable, res.StatusCode)
+			assert.Equal(t, "1", res.Header.Get("Retry-After"))
+			body, err = io.ReadAll(res.Body)
+			require.NoError(t, err)
+			assert.Contains(t, string(body), tc.expectedMsg)
+
+			// 6. DELETE /hosts/:id
+			res = sendTestRequest(t, app, http.MethodDelete, "/hosts/"+createdHost.ID, nil, nil)
+			assert.Equal(t, http.StatusServiceUnavailable, res.StatusCode)
+			assert.Equal(t, "1", res.Header.Get("Retry-After"))
+			body, err = io.ReadAll(res.Body)
+			require.NoError(t, err)
+			assert.Contains(t, string(body), tc.expectedMsg)
+		})
+	}
 }

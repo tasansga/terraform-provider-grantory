@@ -34,10 +34,10 @@ func TestPostgresMigrateSchemaDefinitionsAndRequests(t *testing.T) {
 	schemaName := fmt.Sprintf("inttest_%d", time.Now().UnixNano()+int64(rand.Intn(1000)))
 	pgStore.SetNamespace(schemaName)
 
-	_, err = pgStore.db.ExecContext(ctx, fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %s`, quoteIdent(schemaName)))
+	_, err = pgStore.db.ExecContext(ctx, fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %s`, QuoteIdent(schemaName)))
 	require.NoError(t, err)
 	defer func() {
-		_, _ = pgStore.db.ExecContext(ctx, fmt.Sprintf(`DROP SCHEMA IF EXISTS %s CASCADE`, quoteIdent(schemaName)))
+		_, _ = pgStore.db.ExecContext(ctx, fmt.Sprintf(`DROP SCHEMA IF EXISTS %s CASCADE`, QuoteIdent(schemaName)))
 	}()
 
 	_, err = pgStore.db.ExecContext(ctx, fmt.Sprintf(`
