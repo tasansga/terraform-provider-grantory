@@ -7,11 +7,13 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"math/big"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -801,6 +803,8 @@ func TestLeaderHTTPAddrRefreshOptimizations(t *testing.T) {
 	// refresh is triggered. Even if GetConfiguration() fails (e.g. invalid state), lastConfigRefresh must update.
 	node.mu.Lock()
 	delete(node.serverIDByAddr, node.LeaderAddr())
+	delete(node.httpAddrs, node.LeaderAddr())
+	delete(node.httpAddrs, node.nodeID)
 	node.lastConfigRefresh = oldRefresh
 	node.mu.Unlock()
 
@@ -2742,6 +2746,82 @@ func TestBootstrapDNSStabilization_ContextCanceled(t *testing.T) {
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "wait for DNS bootstrap peers")
+}
+
+func TestHeadlessDNSStabilization_LeaderDiscovery(t *testing.T) {
+	leaderListener, err := net.Listen("tcp", "127.0.0.2:0")
+	require.NoError(t, err)
+	_, leaderPort, err := net.SplitHostPort(leaderListener.Addr().String())
+	require.NoError(t, err)
+	leaderURL := "http://" + leaderListener.Addr().String()
+
+	leaderServer := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/cluster/status":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(ClusterStatusResponse{
+				NodeID:     "node-leader",
+				Role:       "leader",
+				IsLeader:   true,
+				LeaderAddr: "127.0.0.2:9300",
+			})
+		case "/api/v1/cluster/join":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})}
+	go func() { _ = leaderServer.Serve(leaderListener) }()
+	defer func() { _ = leaderServer.Close() }()
+
+	var mu sync.Mutex
+	lookups := 0
+	mockLookup := func(host string) ([]net.IP, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		lookups++
+		if lookups == 1 {
+			return nil, net.UnknownNetworkError("temporary failure")
+		}
+		return []net.IP{net.ParseIP("127.0.0.2")}, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	dir := t.TempDir()
+	nsStore, err := store.NewNamespaceStore(ctx, dir)
+	require.NoError(t, err)
+
+	cfg := config.Config{
+		RaftBind:            "127.0.0.1:0",
+		RaftAdvertise:       "127.0.0.1:19091",
+		RaftNodeID:          "node-follower",
+		RaftAutoJoin:        true,
+		RaftClusterSecret:   "cluster-secret",
+		RaftBootstrapExpect: 3,
+		RaftPeers:           []string{"headless.grantory:" + leaderPort},
+		RaftPeerHTTPAddrs:   []string{"127.0.0.2:9300=" + leaderURL, "127.0.0.2:" + leaderPort + "=" + leaderURL},
+	}
+
+	node, err := NewRaftNode(ctx, cfg, nsStore, dir,
+		WithDNSResolver(newDNSResolver(10*time.Millisecond, mockLookup)),
+		WithDNSWaitTimeout(2*time.Second),
+		WithDNSRetryInterval(20*time.Millisecond),
+	)
+	require.NoError(t, err)
+	defer func() { _ = node.Close() }()
+
+	mu.Lock()
+	count := lookups
+	mu.Unlock()
+	assert.GreaterOrEqual(t, count, 2, "should have retried DNS lookup until leader discovered")
+
+	// Verify that because active leader was discovered, bootstrap was skipped
+	confFuture := node.raft.GetConfiguration()
+	require.NoError(t, confFuture.Error())
+	assert.Empty(t, confFuture.Configuration().Servers, "cluster should not be bootstrapped when leader was discovered")
 }
 
 func TestLeaderHTTPAddr_DirectAddrResolutionPostRefresh(t *testing.T) {

@@ -261,3 +261,25 @@ func TestLookupHTTPAddrLocked(t *testing.T) {
 	assert.Empty(t, addr)
 	assert.False(t, knownServerID)
 }
+
+func TestInitStaticPeers_MultiIPHeadlessDNS(t *testing.T) {
+	t.Parallel()
+
+	node := &RaftNode{}
+	peers := []parsedPeerConfig{
+		{
+			id:          "peer-headless",
+			raftAddr:    "headless.service.local:9300",
+			httpAddr:    "http://fallback.service.local:8080",
+			resolvedIPs: []string{"10.0.0.1:9300", "10.0.0.2:9300"},
+			httpAddrsByIP: map[string]string{
+				"10.0.0.1:9300": "http://10.0.0.1:8080",
+				"10.0.0.2:9300": "http://10.0.0.2:8080",
+			},
+		},
+	}
+	node.initStaticPeers(peers, nil)
+
+	assert.Equal(t, "http://10.0.0.1:8080", node.HTTPAddrFor("10.0.0.1:9300"))
+	assert.Equal(t, "http://10.0.0.2:8080", node.HTTPAddrFor("10.0.0.2:9300"))
+}

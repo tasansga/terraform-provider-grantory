@@ -225,7 +225,7 @@ grantory serve \
   --raft-cluster-secret "shared-secret"
 ```
 
-Configure `--raft-cluster-secret` (or `RAFT_CLUSTER_SECRET`) to authenticate cluster management requests and proxy routing. Mutual TLS is supported via `--raft-ca-file`, `--raft-cert-file`, and `--raft-key-file`. Use `grantory cluster --help` for administrative commands (`status`, `step-down`, `remove`, `recover`).
+Configure `--raft-cluster-secret` (or `RAFT_CLUSTER_SECRET`) to authenticate cluster management requests and proxy routing between cluster nodes. Nodes can also automatically join an existing cluster when peers are reachable via `--raft-auto-join` (or `RAFT_AUTO_JOIN`, enabled by default). Mutual TLS is supported via `--raft-ca-file`, `--raft-cert-file`, and `--raft-key-file`. Use `grantory cluster --help` for administrative commands (`status`, `join`, `step-down`, `remove`, `recover`).
 
 ## Docker image
 

@@ -42,9 +42,13 @@ func (n *RaftNode) initStaticPeers(parsedPeers []parsedPeerConfig, peerHTTPAddrs
 			n.addrByServerID[p.id] = p.raftAddr
 		}
 		for _, rip := range p.resolvedIPs {
-			if p.httpAddr != "" {
-				n.registerHTTPAddrLocked(rip, p.httpAddr)
-				n.staticHTTPAddrs[rip] = p.httpAddr
+			addr := p.httpAddr
+			if p.httpAddrsByIP != nil && p.httpAddrsByIP[rip] != "" {
+				addr = p.httpAddrsByIP[rip]
+			}
+			if addr != "" {
+				n.registerHTTPAddrLocked(rip, addr)
+				n.staticHTTPAddrs[rip] = addr
 			}
 			if p.id != "" {
 				n.serverIDByAddr[rip] = p.id

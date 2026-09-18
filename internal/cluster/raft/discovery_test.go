@@ -217,3 +217,200 @@ func TestDNSResolver_SingleflightDeduplication(t *testing.T) {
 
 	assert.Equal(t, int64(1), lookupCalls.Load(), "lookupIP should be called exactly once for concurrent requests")
 }
+
+func TestApplyPeerHTTPAddrs_UnmatchedEntriesNotAppended(t *testing.T) {
+	t.Parallel()
+
+	peers := []parsedPeerConfig{
+		{id: "node1", raftAddr: "192.168.1.10:8081", resolvedIPs: []string{"192.168.1.10:8081"}},
+	}
+	httpAddrs := []string{
+		"node1=http://192.168.1.10:8080",
+		"unmatched-node=http://192.168.1.99:8080",
+		"phantom-host=http://phantom:8080",
+	}
+
+	result := applyPeerHTTPAddrs(peers, httpAddrs)
+	assert.Len(t, result, 1, "unmatched entries must not be appended to peers")
+	assert.Equal(t, "http://192.168.1.10:8080", result[0].httpAddr)
+}
+
+func TestApplyPeerHTTPAddrs_MultiIPHeadlessDNS(t *testing.T) {
+	t.Parallel()
+
+	peers := []parsedPeerConfig{
+		{
+			id:          "headless",
+			raftAddr:    "headless.svc:9300",
+			resolvedIPs: []string{"10.0.0.1:9300", "10.0.0.2:9300"},
+		},
+	}
+	httpAddrs := []string{
+		"10.0.0.1:9300=http://10.0.0.1:8080",
+		"10.0.0.2:9300=http://10.0.0.2:8080",
+	}
+
+	result := applyPeerHTTPAddrs(peers, httpAddrs)
+	require.Len(t, result, 1)
+	assert.Equal(t, "http://10.0.0.1:8080", result[0].httpAddr, "fallback httpAddr should remain the first matched address")
+	require.NotNil(t, result[0].httpAddrsByIP)
+	assert.Equal(t, "http://10.0.0.1:8080", result[0].httpAddrsByIP["10.0.0.1:9300"])
+	assert.Equal(t, "http://10.0.0.2:8080", result[0].httpAddrsByIP["10.0.0.2:9300"])
+}
+
+
+func TestBuildBootstrapServers_UnmatchedRaftPeerHTTPAddrs_Ignored(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Config{
+		RaftBootstrapExpect: 2,
+		RaftAdvertise:       "192.168.1.1:8081",
+		RaftPeers:           []string{"node1=192.168.1.10:8081"},
+		RaftPeerHTTPAddrs: []string{
+			"unmatched-node=http://192.168.1.99:8080",
+			"phantom-host=http://phantom:8080",
+		},
+	}
+
+	peers := parsePeers(cfg.RaftPeers, "8081", false, nil)
+	peers = applyPeerHTTPAddrs(peers, cfg.RaftPeerHTTPAddrs)
+
+	servers, err := buildBootstrapServers(cfg, "local-node", "192.168.1.1:8081", peers, nil)
+	require.NoError(t, err)
+
+	assert.Len(t, servers, 2, "bootstrap servers should only contain local node and matching peer")
+	for _, s := range servers {
+		assert.NotEqual(t, hashiraft.ServerID("unmatched-node"), s.ID)
+		assert.NotEqual(t, hashiraft.ServerID("phantom-host"), s.ID)
+	}
+}
+
+func TestMatchPeerAddr_PortHandling(t *testing.T) {
+	t.Parallel()
+
+	// When both specify ports:
+	assert.False(t, matchPeerAddr("127.0.0.1:9301", "127.0.0.1:9302"))
+	assert.True(t, matchPeerAddr("127.0.0.1:9301", "127.0.0.1:9301"))
+
+	// When one address lacks a port, compares host to host:
+	assert.True(t, matchPeerAddr("127.0.0.1:9301", "127.0.0.1"))
+	assert.True(t, matchPeerAddr("127.0.0.1", "127.0.0.1:9301"))
+	assert.False(t, matchPeerAddr("127.0.0.1:9301", "127.0.0.2"))
+}
+
+func TestMatchPeerAddr_IPv6Brackets(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, matchPeerAddr("[::1]:9300", "[::1]"))
+	assert.True(t, matchPeerAddr("[::1]", "[::1]:9300"))
+	assert.True(t, matchPeerAddr("[::1]:9300", "::1"))
+	assert.True(t, matchPeerAddr("::1", "[::1]:9300"))
+	assert.True(t, matchPeerAddr("[::1]", "::1"))
+	assert.True(t, matchPeerAddr("::1", "[::1]"))
+	assert.False(t, matchPeerAddr("[::1]:9300", "[::2]"))
+	assert.True(t, matchPeerAddr("[::1]:9300", "[0:0:0:0:0:0:0:1]"))
+}
+
+func TestSplitHost_UnbracketedIPv6WithoutPort(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "2001:db8::1000:2", splitHost("2001:db8::1000:2"))
+	assert.Equal(t, "fe80::20c:29ff:fe49:17a7", splitHost("fe80::20c:29ff:fe49:17a7"))
+
+	h, p, err := splitHostAndPort("2001:db8::1000:2")
+	assert.Error(t, err)
+	assert.Empty(t, h)
+	assert.Empty(t, p)
+
+	h, p, err = splitHostAndPort("fe80::20c:29ff:fe49:17a7")
+	assert.Error(t, err)
+	assert.Empty(t, h)
+	assert.Empty(t, p)
+}
+
+func TestMatchPeerAddr_UnbracketedIPv6WithoutPort(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, matchPeerAddr("2001:db8::1000:2", "[2001:db8::1000:2]:9300"))
+	assert.True(t, matchPeerAddr("[2001:db8::1000:2]:9300", "2001:db8::1000:2"))
+	assert.True(t, matchPeerAddr("2001:db8::1000:2", "2001:db8::1000:2"))
+	assert.False(t, matchPeerAddr("2001:db8::1000:2", "2001:db8::1000:3"))
+}
+
+func TestApplyPeerHTTPAddrs_HeadlessDNS_PeerIDMapsResolvedIPs(t *testing.T) {
+	t.Parallel()
+
+	peers := []parsedPeerConfig{
+		{
+			id:          "headless",
+			raftAddr:    "headless.default.svc.cluster.local:9300",
+			resolvedIPs: []string{"10.0.0.1:9300", "10.0.0.2:9300", "10.0.0.3:9300"},
+		},
+	}
+	httpAddrs := []string{
+		"headless=http://10.0.0.1:8080",
+	}
+
+	result := applyPeerHTTPAddrs(peers, httpAddrs)
+	require.Len(t, result, 1)
+	assert.Equal(t, "http://10.0.0.1:8080", result[0].httpAddr)
+	require.NotNil(t, result[0].httpAddrsByIP)
+	assert.Equal(t, "http://10.0.0.1:8080", result[0].httpAddrsByIP["headless"])
+	assert.Equal(t, "http://10.0.0.1:8080", result[0].httpAddrsByIP["10.0.0.1:9300"])
+	assert.Equal(t, "http://10.0.0.1:8080", result[0].httpAddrsByIP["10.0.0.2:9300"])
+	assert.Equal(t, "http://10.0.0.1:8080", result[0].httpAddrsByIP["10.0.0.3:9300"])
+}
+
+func TestApplyPeerHTTPAddrs_OverridesInlineHTTPAddr(t *testing.T) {
+	t.Parallel()
+
+	peers := []parsedPeerConfig{
+		{
+			id:       "node-1",
+			raftAddr: "10.0.0.1:9300",
+			httpAddr: "http://10.0.0.1:8080",
+		},
+	}
+	httpAddrs := []string{
+		"node-1=http://override-host:8080",
+	}
+
+	result := applyPeerHTTPAddrs(peers, httpAddrs)
+	require.Len(t, result, 1)
+	assert.Equal(t, "http://override-host:8080", result[0].httpAddr, "explicit flag mapping should override inline HTTP address")
+}
+
+func TestApplyPeerHTTPAddrs_SpecificIPNotClobberedByGenericPeerID(t *testing.T) {
+	t.Parallel()
+
+	peers := []parsedPeerConfig{
+		{
+			id:          "headless",
+			raftAddr:    "headless.svc:9300",
+			resolvedIPs: []string{"10.0.0.1:9300", "10.0.0.2:9300"},
+		},
+	}
+	httpAddrs := []string{
+		"10.0.0.1:9300=http://10.0.0.1:8080",
+		"headless=http://fallback:8080",
+	}
+
+	result := applyPeerHTTPAddrs(peers, httpAddrs)
+	require.Len(t, result, 1)
+	require.NotNil(t, result[0].httpAddrsByIP)
+	assert.Equal(t, "http://10.0.0.1:8080", result[0].httpAddrsByIP["10.0.0.1:9300"], "specific IP mapping must not be clobbered by generic peer ID mapping")
+	assert.Equal(t, "http://fallback:8080", result[0].httpAddrsByIP["10.0.0.2:9300"], "unmapped resolved IP should receive generic peer ID mapping")
+	assert.Equal(t, "http://fallback:8080", result[0].httpAddrsByIP["headless"], "peer ID should receive generic peer ID mapping")
+}
+
+func TestIsDNSHostname_And_HasDNSPeer_WithIDPrefix(t *testing.T) {
+	t.Parallel()
+
+	assert.False(t, isDNSHostname("node-1=192.168.1.10:9300"))
+	assert.False(t, isDNSHostname("node-2=10.0.0.2:9300@http://10.0.0.2:8080"))
+	assert.False(t, isDNSHostname("node-3=[2001:db8::1]:9300"))
+	assert.True(t, isDNSHostname("node-4=raft.internal.local:9300"))
+
+	assert.False(t, hasDNSPeer([]string{"node-1=192.168.1.10:9300", "node-2=10.0.0.2:9300"}))
+	assert.True(t, hasDNSPeer([]string{"node-1=192.168.1.10:9300", "node-4=raft.internal.local:9300"}))
+}

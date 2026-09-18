@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,6 +39,8 @@ const (
 var (
 	randRead                         = cryptorand.Read
 	ErrNotFound                      = errors.New("server not found in cluster")
+	ErrRaftNotInitialized            = errors.New("raft not initialized")
+	ErrNotLeader                     = errors.New("not the cluster leader")
 	defaultBootstrapDNSWaitTimeout   = 15 * time.Second
 	defaultBootstrapDNSRetryInterval = 500 * time.Millisecond
 )
@@ -81,6 +84,15 @@ type RaftNode struct {
 
 	closeOnce sync.Once
 	closeErr  error
+
+	parsedPeers      []parsedPeerConfig
+	localAliases     map[string]bool
+	defPort          string
+	preferV6         bool
+	advAddr          string
+	lastJoinedLeader string
+	autoJoinStatus   string
+	autoJoinBackoff  func(attempt int) time.Duration
 }
 
 // RaftNodeOption configures a RaftNode during creation.
@@ -132,6 +144,12 @@ func NewRaftNode(ctx context.Context, cfg config.Config, nsStore *store.Namespac
 	}
 	if dataDir == "" {
 		return nil, errors.New("dataDir is required")
+	}
+
+	if cfg.IsTLSEnabled() || cfg.RaftCAFile != "" || cfg.RaftCertFile != "" || cfg.RaftKeyFile != "" || cfg.TLSCert != "" || cfg.TLSKey != "" {
+		if _, err := config.BuildClusterTLSConfig(cfg); err != nil {
+			return nil, fmt.Errorf("build cluster TLS config: %w", err)
+		}
 	}
 
 	nOpts := nodeOptions{
@@ -244,6 +262,7 @@ func NewRaftNode(ctx context.Context, cfg config.Config, nsStore *store.Namespac
 		hopSecret:         hopSecret,
 		httpPort:          httpPort,
 		tlsEnabled:        tlsEnabled,
+		advAddr:           advAddr,
 		httpAddrs:         make(map[string]string),
 		staticHTTPAddrs:   make(map[string]string),
 		serverIDByAddr:    make(map[string]string),
@@ -275,6 +294,7 @@ func NewRaftNode(ctx context.Context, cfg config.Config, nsStore *store.Namespac
 	}
 
 	parsedPeers := parsePeers(cfg.RaftPeers, defPort, preferV6, node.resolver)
+	parsedPeers = applyPeerHTTPAddrs(parsedPeers, cfg.RaftPeerHTTPAddrs)
 
 	localID := cfg.RaftNodeID
 	if localID == "" {
@@ -313,7 +333,78 @@ func NewRaftNode(ctx context.Context, cfg config.Config, nsStore *store.Namespac
 		raftConfig.TrailingLogs = cfg.RaftTrailingLogs
 	}
 
-	if !hasState && cfg.RaftBootstrapExpect > 0 {
+	var activeLeaderHTTP string
+	var dnsStabilizationWaited bool
+	if !hasState && cfg.RaftAutoJoin && (len(parsedPeers) > 0 || hasDNSPeer(cfg.RaftPeers)) {
+		if strings.TrimSpace(cfg.RaftClusterSecret) != "" {
+			if len(parsedPeers) > 0 {
+				activeLeaderHTTP = DiscoverActiveLeader(nodeCtx, cfg, parsedPeers, localAliases, node.resolver)
+			}
+			if activeLeaderHTTP == "" && hasDNSPeer(cfg.RaftPeers) {
+				logrus.Info("waiting for headless DNS discovery stabilization before concluding no leader")
+				dnsStabilizationWaited = true
+				var ctxDone <-chan struct{}
+				if ctx != nil {
+					ctxDone = ctx.Done()
+				}
+
+				timer := time.NewTimer(nOpts.dnsWaitTimeout)
+				defer timer.Stop()
+				ticker := time.NewTicker(nOpts.dnsRetryInterval)
+				defer ticker.Stop()
+
+				discoveryClient, err := BuildClusterHTTPClient(cfg)
+				if err != nil {
+					nodeCancel()
+					_ = transport.Close()
+					_ = boltStore.Close()
+					return nil, err
+				}
+				defer discoveryClient.CloseIdleConnections()
+
+				var waitedAtLeastOnce bool
+			leaderRetryLoop:
+				for {
+					if waitedAtLeastOnce && activeLeaderHTTP == "" && cfg.RaftBootstrapExpect > 0 && len(parsedPeers) > 0 {
+						if bootstrapCandidates, err := buildBootstrapServers(cfg, localID, string(transport.LocalAddr()), parsedPeers, node.resolver); err == nil && len(bootstrapCandidates) >= cfg.RaftBootstrapExpect {
+							logrus.WithField("servers", len(bootstrapCandidates)).
+								Info("headless DNS stabilized with all expected bootstrap servers and no active leader; proceeding to bootstrap")
+							break leaderRetryLoop
+						}
+					}
+					select {
+					case <-ctxDone:
+						nodeCancel()
+						_ = transport.Close()
+						_ = boltStore.Close()
+						return nil, fmt.Errorf("wait for DNS leader discovery: %w", ctx.Err())
+					case <-timer.C:
+						break leaderRetryLoop
+					case <-ticker.C:
+						waitedAtLeastOnce = true
+						if node.resolver != nil {
+							node.resolver.flush()
+						}
+						parsedPeers = parsePeers(cfg.RaftPeers, defPort, preferV6, node.resolver)
+						parsedPeers = applyPeerHTTPAddrs(parsedPeers, cfg.RaftPeerHTTPAddrs)
+						if len(parsedPeers) > 0 {
+							activeLeaderHTTP = DiscoverActiveLeader(nodeCtx, cfg, parsedPeers, localAliases, node.resolver, discoveryClient)
+							if activeLeaderHTTP != "" {
+								break leaderRetryLoop
+							}
+						}
+					}
+				}
+			}
+		} else {
+			logrus.Debug("raft cluster secret not configured; skipping auto-join to allow static bootstrap")
+		}
+	}
+
+	if activeLeaderHTTP != "" {
+		logrus.WithField("leader", activeLeaderHTTP).
+			Info("discovered active Raft cluster leader; skipping bootstrap to join existing cluster")
+	} else if !hasState && cfg.RaftBootstrapExpect > 0 {
 		servers, err := buildBootstrapServers(cfg, localID, string(transport.LocalAddr()), parsedPeers, node.resolver)
 		if err != nil {
 			_ = transport.Close()
@@ -321,7 +412,7 @@ func NewRaftNode(ctx context.Context, cfg config.Config, nsStore *store.Namespac
 			return nil, fmt.Errorf("build bootstrap configuration: %w", err)
 		}
 
-		if len(servers) < cfg.RaftBootstrapExpect && cfg.RaftBootstrapExpect > 1 && hasDNSPeer(cfg.RaftPeers) {
+		if !dnsStabilizationWaited && len(servers) < cfg.RaftBootstrapExpect && cfg.RaftBootstrapExpect > 1 && hasDNSPeer(cfg.RaftPeers) {
 			logrus.WithField("discovered", len(servers)).
 				WithField("expected", cfg.RaftBootstrapExpect).
 				Info("waiting for headless DNS discovery stabilization before bootstrap")
@@ -340,6 +431,7 @@ func NewRaftNode(ctx context.Context, cfg config.Config, nsStore *store.Namespac
 			for {
 				select {
 				case <-ctxDone:
+					nodeCancel()
 					_ = transport.Close()
 					_ = boltStore.Close()
 					return nil, fmt.Errorf("wait for DNS bootstrap peers: %w", ctx.Err())
@@ -348,6 +440,7 @@ func NewRaftNode(ctx context.Context, cfg config.Config, nsStore *store.Namespac
 				case <-ticker.C:
 					node.resolver.flush()
 					updatedPeers := parsePeers(cfg.RaftPeers, defPort, preferV6, node.resolver)
+					updatedPeers = applyPeerHTTPAddrs(updatedPeers, cfg.RaftPeerHTTPAddrs)
 					newServers, err := buildBootstrapServers(cfg, localID, string(transport.LocalAddr()), updatedPeers, node.resolver)
 					if err == nil {
 						servers = newServers
@@ -376,6 +469,7 @@ func NewRaftNode(ctx context.Context, cfg config.Config, nsStore *store.Namespac
 				_ = boltStore.Close()
 				return nil, fmt.Errorf("bootstrap cluster: %w", err)
 			}
+			hasState = true
 		} else {
 			logrus.WithField("discovered", len(servers)).
 				WithField("expected", cfg.RaftBootstrapExpect).
@@ -403,6 +497,11 @@ func NewRaftNode(ctx context.Context, cfg config.Config, nsStore *store.Namespac
 	success = true
 
 	node.mu.Lock()
+	node.nodeID = localID
+	node.parsedPeers = parsedPeers
+	node.localAliases = localAliases
+	node.defPort = defPort
+	node.preferV6 = preferV6
 	// Populate initial configuration into cache if available
 	configFuture := raftInstance.GetConfiguration()
 	if err := configFuture.Error(); err == nil {
@@ -419,7 +518,36 @@ func NewRaftNode(ctx context.Context, cfg config.Config, nsStore *store.Namespac
 	}
 	node.mu.Unlock()
 
+	clusterSecretConfigured := strings.TrimSpace(cfg.RaftClusterSecret) != ""
+	shouldAutoJoin := !hasState && cfg.RaftAutoJoin && clusterSecretConfigured && !node.IsLeader()
+	localHTTPAddr := node.determineLocalHTTPAddr(parsedPeers, localAliases, defPort, preferV6, advAddr)
+	if activeLeaderHTTP != "" {
+		go node.startAutoJoinRetry(activeLeaderHTTP, localID, advAddr, localHTTPAddr)
+	} else if shouldAutoJoin {
+		// Follower that didn't bootstrap or has BootstrapExpect==0 must continuously discover and join in background
+		go node.startAutoJoinRetry("", localID, advAddr, localHTTPAddr)
+	}
+
 	return node, nil
+}
+
+// AutoJoinStatus returns the current auto-join lifecycle status ("joining", "joined", "exhausted", or empty string).
+func (n *RaftNode) AutoJoinStatus() string {
+	if n == nil {
+		return ""
+	}
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.autoJoinStatus
+}
+
+func (n *RaftNode) setAutoJoinStatus(status string) {
+	if n == nil {
+		return
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.autoJoinStatus = status
 }
 
 // IsLeader reports whether this node is currently the cluster leader.
@@ -440,10 +568,10 @@ func (n *RaftNode) IsLeader() bool {
 // It returns an error if the node is nil, uninitialized, or not the active leader.
 func (n *RaftNode) StepDown() error {
 	if n == nil || (n.raft == nil && n.stepDownOverride == nil) {
-		return errors.New("raft not initialized")
+		return ErrRaftNotInitialized
 	}
 	if !n.IsLeader() {
-		return errors.New("not the cluster leader")
+		return ErrNotLeader
 	}
 	if n.stepDownOverride != nil {
 		return n.stepDownOverride()
@@ -465,6 +593,8 @@ func (n *RaftNode) NodeID() string {
 	if n == nil {
 		return ""
 	}
+	n.mu.RLock()
+	defer n.mu.RUnlock()
 	return n.nodeID
 }
 
@@ -519,7 +649,7 @@ func (n *RaftNode) resolveHostPort(target string) []string {
 // AddVoter registers a new voting member in the Raft cluster configuration.
 func (n *RaftNode) AddVoter(id string, addr string, prevIndex uint64, timeout time.Duration) error {
 	if n == nil || n.raft == nil {
-		return errors.New("raft not initialized")
+		return ErrRaftNotInitialized
 	}
 	future := n.raft.AddVoter(hashiraft.ServerID(id), hashiraft.ServerAddress(addr), prevIndex, timeout)
 	if err := future.Error(); err != nil {
@@ -567,7 +697,7 @@ func (n *RaftNode) AddVoter(id string, addr string, prevIndex uint64, timeout ti
 // AddNonvoter registers a non-voting member in the Raft cluster configuration.
 func (n *RaftNode) AddNonvoter(id string, addr string, prevIndex uint64, timeout time.Duration) error {
 	if n == nil || n.raft == nil {
-		return errors.New("raft not initialized")
+		return ErrRaftNotInitialized
 	}
 	future := n.raft.AddNonvoter(hashiraft.ServerID(id), hashiraft.ServerAddress(addr), prevIndex, timeout)
 	if err := future.Error(); err != nil {
@@ -592,7 +722,7 @@ func (n *RaftNode) AddNonvoter(id string, addr string, prevIndex uint64, timeout
 // RemoveServer removes a member from the Raft cluster configuration.
 func (n *RaftNode) RemoveServer(id string, prevIndex uint64, timeout time.Duration) error {
 	if n == nil || n.raft == nil {
-		return errors.New("raft not initialized")
+		return ErrRaftNotInitialized
 	}
 	cfgFuture := n.raft.GetConfiguration()
 	if err := cfgFuture.Error(); err != nil {
@@ -699,8 +829,166 @@ func (n *RaftNode) SetHTTPPort(port string) {
 		return
 	}
 	n.mu.Lock()
-	defer n.mu.Unlock()
 	n.httpPort = port
+	nodeID := n.nodeID
+	raftAddr := n.advAddr
+	defPort := n.defPort
+	preferV6 := n.preferV6
+	isDynamic := config.ExtractPort(n.cfg.TLSBind) == "0" || config.ExtractPort(n.cfg.BindAddr) == "0"
+	ctx := n.nodeCtx
+	cfg := n.cfg
+	peers := n.cloneParsedPeersLocked()
+	aliases := n.cloneLocalAliasesLocked()
+	n.mu.Unlock()
+
+	httpAddr := n.determineLocalHTTPAddr(peers, aliases, defPort, preferV6, raftAddr)
+	if httpAddr != "" {
+		n.RegisterHTTPAddr(nodeID, httpAddr)
+		if raftAddr != "" {
+			n.RegisterHTTPAddr(raftAddr, httpAddr)
+		}
+	}
+
+	go n.coordinateDynamicHTTPPort(port, httpAddr, nodeID, raftAddr, peers, aliases, defPort, preferV6, isDynamic, cfg, ctx)
+}
+
+func (n *RaftNode) coordinateDynamicHTTPPort(
+	port string,
+	httpAddr string,
+	nodeID string,
+	raftAddr string,
+	peers []parsedPeerConfig,
+	aliases map[string]bool,
+	defPort string,
+	preferV6 bool,
+	isDynamic bool,
+	cfg config.Config,
+	ctx context.Context,
+) {
+	if port == "" || port == "0" || httpAddr == "" {
+		return
+	}
+	if !isDynamic && !n.IsLeader() {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	var client *http.Client
+	defer func() {
+		if client != nil {
+			client.CloseIdleConnections()
+		}
+	}()
+
+	maxAttempts := 30
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		if n.HTTPPort() != port {
+			return
+		}
+
+		if n.IsLeader() {
+			cmd, err := NewCommand("", CmdRegisterNodeHTTPAddr, time.Now().UTC(), RegisterNodeHTTPAddrPayload{
+				ServerID: nodeID,
+				Address:  raftAddr,
+				HTTPAddr: httpAddr,
+			})
+			if err == nil {
+				callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				_, propErr := n.Propose(callCtx, cmd)
+				cancel()
+				if propErr == nil {
+					return // Successfully registered dynamic port via Raft consensus
+				}
+				if errors.Is(propErr, ErrRaftNotInitialized) {
+					return
+				}
+				logrus.WithError(propErr).Warn("failed to propose dynamic HTTP address registration as leader; retrying")
+			}
+		} else {
+			if strings.TrimSpace(cfg.RaftClusterSecret) == "" {
+				logrus.Debug("dynamic HTTP port join update skipped: no cluster secret configured to authenticate with leader")
+				return
+			}
+			leader := n.LeaderHTTPAddr()
+			if leader == "" {
+				if lAddr := n.LeaderAddr(); lAddr != "" {
+					currentPeers := n.getParsedPeers()
+					if len(currentPeers) == 0 {
+						currentPeers = peers
+					}
+					currentAliases := n.getLocalAliases()
+					if len(currentAliases) == 0 {
+						currentAliases = aliases
+					}
+					if cands := resolveLeaderCandidateURLs(lAddr, currentPeers, cfg, currentAliases, port); len(cands) > 0 {
+						leader = cands[0]
+					}
+				}
+			}
+			if leader == "" {
+				n.mu.RLock()
+				leader = n.lastJoinedLeader
+				n.mu.RUnlock()
+			}
+			if leader != "" {
+				if !isDynamic {
+					return
+				}
+				if client == nil {
+					var err error
+					client, err = BuildClusterHTTPClient(cfg)
+					if err != nil {
+						logrus.WithError(err).Error("failed to build cluster HTTP client for dynamic port coordination")
+					}
+				}
+				if client != nil {
+					callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+					err := RequestClusterJoin(callCtx, client, leader, nodeID, raftAddr, httpAddr, cfg.RaftClusterSecret)
+					cancel()
+					if err == nil {
+						return
+					}
+					logrus.WithError(err).WithField("leader", leader).Warn("failed to update leader with dynamic HTTP address")
+				}
+			}
+		}
+
+		var delay time.Duration
+		if n.autoJoinBackoff != nil {
+			delay = n.autoJoinBackoff(attempt)
+		} else {
+			delay = time.Duration(1<<min(attempt, 5)) * 200 * time.Millisecond
+			if delay > 5*time.Second {
+				delay = 5 * time.Second
+			}
+		}
+
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+// LastJoinedLeader returns the URL of the last joined or targeted cluster leader.
+func (n *RaftNode) LastJoinedLeader() string {
+	if n == nil {
+		return ""
+	}
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.lastJoinedLeader
 }
 
 // HTTPPort returns the configured HTTP port.
@@ -740,7 +1028,7 @@ func (n *RaftNode) IsTLS() bool {
 // may still commit and apply in the background.
 func (n *RaftNode) Propose(ctx context.Context, cmd RaftCommand) (ApplyResponse, error) {
 	if n == nil || n.raft == nil {
-		return ApplyResponse{}, errors.New("raft not initialized")
+		return ApplyResponse{}, ErrRaftNotInitialized
 	}
 
 	if n.nodeCtx != nil && n.nodeCtx.Err() != nil {

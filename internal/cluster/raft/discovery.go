@@ -3,6 +3,7 @@ package raft
 import (
 	"net"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -228,10 +229,11 @@ func resolveHostPort(target string, defPort string, preferV6 bool, resolver ...*
 }
 
 type parsedPeerConfig struct {
-	id          string
-	raftAddr    string
-	httpAddr    string
-	resolvedIPs []string
+	id            string
+	raftAddr      string
+	httpAddr      string
+	httpAddrsByIP map[string]string
+	resolvedIPs   []string
 }
 
 func parsePeerConfig(raw string, defPort string, preferV6 bool, resolver ...*dnsResolver) parsedPeerConfig {
@@ -269,6 +271,137 @@ func parsePeers(peers []string, defPort string, preferV6 bool, resolver ...*dnsR
 	return parsedPeers
 }
 
+// normalizeHost strips outer brackets and whitespace from a host string.
+func normalizeHost(h string) string {
+	return strings.Trim(strings.TrimSpace(h), "[]")
+}
+
+func splitHostAndPort(addr string) (string, string, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err == nil {
+		return host, port, nil
+	}
+	clean := strings.Trim(strings.TrimSpace(addr), "[]")
+	if net.ParseIP(clean) != nil {
+		return "", "", err // addr itself is a valid IP without port
+	}
+	if idx := strings.LastIndex(addr, ":"); idx != -1 {
+		h := addr[:idx]
+		p := addr[idx+1:]
+		if portNum, portErr := strconv.Atoi(p); portErr == nil && portNum > 0 && portNum <= 65535 {
+			if net.ParseIP(strings.Trim(h, "[]")) != nil {
+				return h, p, nil
+			}
+		}
+	}
+	return "", "", err
+}
+
+// splitHost extracts the normalized host part of an address, removing port if present.
+func splitHost(addr string) string {
+	if h, _, err := splitHostAndPort(addr); err == nil {
+		return normalizeHost(h)
+	}
+	return normalizeHost(addr)
+}
+
+// matchHostOrIP checks if two hostnames or IP addresses match, taking into account
+// case-insensitivity, IP equivalence, and loopback/localhost equivalence.
+func matchHostOrIP(h1, h2 string) bool {
+	n1, n2 := normalizeHost(h1), normalizeHost(h2)
+	if strings.EqualFold(n1, n2) {
+		return true
+	}
+	ip1 := net.ParseIP(n1)
+	ip2 := net.ParseIP(n2)
+	if ip1 != nil && ip2 != nil && ip1.Equal(ip2) {
+		return true
+	}
+	if ip1 != nil && ip1.IsLoopback() && strings.EqualFold(n2, "localhost") {
+		return true
+	}
+	if ip2 != nil && ip2.IsLoopback() && strings.EqualFold(n1, "localhost") {
+		return true
+	}
+	return false
+}
+
+func matchPeerAddr(addr, target string) bool {
+	addr = strings.TrimSpace(addr)
+	target = strings.TrimSpace(target)
+	if addr == target {
+		return true
+	}
+	hostAddr, portAddr, errAddr := splitHostAndPort(addr)
+	hostTarget, portTarget, errTarget := splitHostAndPort(target)
+
+	// Note: When the target lacks a port (e.g. "127.0.0.1"), it matches any peer on that host IP.
+	// If multiple cluster nodes share the same IP across different ports on the same host,
+	// operators must specify exact host:port keys in --raft-peer-http-addrs to avoid ambiguous matching.
+	if errAddr == nil && errTarget != nil {
+		return matchHostOrIP(hostAddr, target)
+	}
+	if errTarget == nil && errAddr != nil {
+		return matchHostOrIP(hostTarget, addr)
+	}
+	if errAddr == nil && errTarget == nil {
+		return matchHostOrIP(hostAddr, hostTarget) && portAddr == portTarget
+	}
+	return matchHostOrIP(addr, target)
+}
+
+func applyPeerHTTPAddrs(peers []parsedPeerConfig, peerHTTPAddrs []string) []parsedPeerConfig {
+	for _, entry := range peerHTTPAddrs {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		idx := strings.Index(entry, "=")
+		if idx == -1 {
+			continue
+		}
+		k := strings.TrimSpace(entry[:idx])
+		v := strings.TrimSpace(entry[idx+1:])
+		if k == "" || v == "" {
+			continue
+		}
+
+		for i := range peers {
+			if peers[i].httpAddrsByIP == nil {
+				peers[i].httpAddrsByIP = make(map[string]string)
+			}
+			if peers[i].id == k || matchPeerAddr(peers[i].raftAddr, k) {
+				if peers[i].httpAddrsByIP[k] == "" {
+					peers[i].httpAddrsByIP[k] = v
+				}
+				if peers[i].raftAddr != "" {
+					if peers[i].httpAddrsByIP[peers[i].raftAddr] == "" {
+						peers[i].httpAddrsByIP[peers[i].raftAddr] = v
+					}
+				}
+				for _, rip := range peers[i].resolvedIPs {
+					if peers[i].httpAddrsByIP[rip] == "" {
+						peers[i].httpAddrsByIP[rip] = v
+					}
+				}
+				peers[i].httpAddr = v
+				continue
+			}
+			for _, rip := range peers[i].resolvedIPs {
+				if matchPeerAddr(rip, k) {
+					peers[i].httpAddrsByIP[k] = v
+					peers[i].httpAddrsByIP[rip] = v
+					if peers[i].httpAddr == "" {
+						peers[i].httpAddr = v
+					}
+					break
+				}
+			}
+		}
+	}
+	return peers
+}
+
 func resolveParsedPeers(peers []parsedPeerConfig) []string {
 	var resolved []string
 	seen := make(map[string]bool)
@@ -295,11 +428,7 @@ func isDNSHostname(target string) bool {
 	if atIdx := strings.Index(target, "@"); atIdx != -1 {
 		target = strings.TrimSpace(target[:atIdx])
 	}
-	host, _, err := net.SplitHostPort(target)
-	if err != nil {
-		host = target
-	}
-	host = strings.Trim(strings.TrimSpace(host), "[]")
+	host := splitHost(target)
 	if host == "" || strings.EqualFold(host, "localhost") {
 		return false
 	}
@@ -318,6 +447,10 @@ func hasDNSPeer(peers []string) bool {
 // isLocalAddress determines whether the candidate address resolves or matches
 // any of the known local alias addresses for this node.
 func isLocalAddress(addr string, localAliases map[string]bool, defPort string, preferV6 bool, resolver ...*dnsResolver) bool {
+	addr = strings.TrimSpace(addr)
+	if addr == "" || len(localAliases) == 0 {
+		return false
+	}
 	res := getResolver(resolver)
 	if localAliases[addr] {
 		return true

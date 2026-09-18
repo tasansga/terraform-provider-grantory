@@ -1524,7 +1524,7 @@ func TestServerFollowerClusterJoinRoutesThroughClusterRoutingMiddleware(t *testi
 	// 3. Authenticated requests pass auth and route through clusterRoutingMiddleware.
 	// With no leader elected, clusterRoutingMiddleware returns HTTP 503 Service Unavailable with Retry-After: 1.
 	headers := map[string]string{
-		"X-Grantory-Cluster-Secret": "test-cluster-secret",
+		"Authorization": "Bearer test-cluster-secret",
 	}
 	res := sendTestRequest(t, app, http.MethodPost, "/api/v1/cluster/join", headers, joinPayload)
 	assert.Equal(t, http.StatusServiceUnavailable, res.StatusCode)
