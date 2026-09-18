@@ -13,12 +13,12 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/sirupsen/logrus"
-	"github.com/tasansga/terraform-provider-grantory/internal/cluster/raft"
+	clusterraft "github.com/tasansga/terraform-provider-grantory/internal/cluster/raft"
 )
 
 // CommandProposer is an optional interface for replicating commands across the cluster.
 type CommandProposer interface {
-	Propose(ctx context.Context, cmd raft.RaftCommand) (raft.ApplyResponse, error)
+	Propose(ctx context.Context, cmd clusterraft.RaftCommand) (clusterraft.ApplyResponse, error)
 }
 
 // LeaderStepDowner is an optional interface for transferring cluster leadership.
@@ -28,35 +28,22 @@ type LeaderStepDowner interface {
 
 // ClusterMembersReporter is an optional interface for querying cluster server members.
 type ClusterMembersReporter interface {
-	ClusterServers() []raft.ServerInfo
+	ClusterServers() []clusterraft.ServerInfo
 }
 
-const (
-	// HeaderClusterSecret is the header used to authenticate cluster management requests.
-	HeaderClusterSecret = "X-Grantory-Cluster-Secret"
-)
+// AutoJoinStatusReporter optionally reports the node's auto-join lifecycle state.
+type AutoJoinStatusReporter interface {
+	AutoJoinStatus() string
+}
 
 // ClusterStatusResponse describes the current cluster status of this node.
-type ClusterStatusResponse struct {
-	NodeID     string            `json:"node_id"`
-	Role       string            `json:"role"`
-	IsLeader   bool              `json:"is_leader"`
-	LeaderAddr string            `json:"leader_addr"`
-	Servers    []raft.ServerInfo `json:"servers,omitempty"`
-}
+type ClusterStatusResponse = clusterraft.ClusterStatusResponse
 
 // ClusterJoinRequest payload to dynamically add a voter to the cluster.
-type ClusterJoinRequest struct {
-	NodeID      string `json:"node_id"`
-	Address     string `json:"address"`
-	HTTPAddress string `json:"http_address,omitempty"`
-}
+type ClusterJoinRequest = clusterraft.ClusterJoinRequest
 
 // ClusterRemoveRequest payload to dynamically remove a node from the cluster.
-type ClusterRemoveRequest struct {
-	NodeID  string `json:"node_id"`
-	Address string `json:"address,omitempty"`
-}
+type ClusterRemoveRequest = clusterraft.ClusterRemoveRequest
 
 // registerClusterAdminAuth applies admin authentication middleware for cluster modification routes.
 func registerClusterAdminAuth(app fiber.Router, secret string) {
@@ -75,7 +62,7 @@ func registerClusterRoutes(app fiber.Router, node ClusterManager) {
 
 // clusterAdminAuthMiddleware verifies authentication for cluster management endpoints.
 func clusterAdminAuthMiddleware(secret string) fiber.Handler {
-	secret = strings.TrimSpace(secret)
+	secret = clusterraft.ExtractBearerToken(secret)
 	return func(c *fiber.Ctx) error {
 		if secret == "" {
 			logrus.Warn("cluster management endpoint invoked but cluster secret is not configured")
@@ -83,15 +70,8 @@ func clusterAdminAuthMiddleware(secret string) fiber.Handler {
 		}
 
 		authHeader := c.Get("Authorization")
-		if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
-			token := strings.TrimSpace(authHeader[7:])
-			if subtle.ConstantTimeCompare([]byte(token), []byte(secret)) == 1 {
-				return c.Next()
-			}
-		}
-
-		clusterSecret := strings.TrimSpace(c.Get(HeaderClusterSecret))
-		if clusterSecret != "" && subtle.ConstantTimeCompare([]byte(clusterSecret), []byte(secret)) == 1 {
+		token := clusterraft.ExtractBearerToken(authHeader)
+		if token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(secret)) == 1 {
 			return c.Next()
 		}
 
@@ -122,17 +102,23 @@ func handleClusterStatus(node ClusterManager) fiber.Handler {
 			role = "leader"
 		}
 
-		var servers []raft.ServerInfo
+		var servers []clusterraft.ServerInfo
 		if rep, ok := node.(ClusterMembersReporter); ok {
 			servers = rep.ClusterServers()
 		}
 
+		var autoJoinStatus string
+		if ajs, ok := node.(AutoJoinStatusReporter); ok {
+			autoJoinStatus = ajs.AutoJoinStatus()
+		}
+
 		return c.Status(http.StatusOK).JSON(ClusterStatusResponse{
-			NodeID:     nodeID,
-			Role:       role,
-			IsLeader:   node.IsLeader(),
-			LeaderAddr: node.LeaderAddr(),
-			Servers:    servers,
+			NodeID:         nodeID,
+			Role:           role,
+			IsLeader:       node.IsLeader(),
+			LeaderAddr:     node.LeaderAddr(),
+			Servers:        servers,
+			AutoJoinStatus: autoJoinStatus,
 		})
 	}
 }
@@ -184,7 +170,7 @@ func handleClusterJoin(node ClusterManager) fiber.Handler {
 
 		if err := mm.AddVoter(req.NodeID, req.Address, 0, 10*time.Second); err != nil {
 			logrus.WithError(err).WithField("node_id", req.NodeID).WithField("address", req.Address).Error("failed to add voter")
-			if raft.IsMembershipConflict(err) {
+			if clusterraft.IsMembershipConflict(err) {
 				return fiber.NewError(fiber.StatusConflict, fmt.Sprintf("configuration conflict: %v", err))
 			}
 			return fiber.NewError(fiber.StatusInternalServerError, fmt.Sprintf("failed to add voter: %v", err))
@@ -193,7 +179,7 @@ func handleClusterJoin(node ClusterManager) fiber.Handler {
 		var warningMsg string
 		if req.HTTPAddress != "" {
 			if prop, ok := node.(CommandProposer); ok {
-				cmd, err := raft.NewCommand("", raft.CmdRegisterNodeHTTPAddr, time.Now().UTC(), raft.RegisterNodeHTTPAddrPayload{
+				cmd, err := clusterraft.NewCommand("", clusterraft.CmdRegisterNodeHTTPAddr, time.Now().UTC(), clusterraft.RegisterNodeHTTPAddrPayload{
 					ServerID: req.NodeID,
 					Address:  req.Address,
 					HTTPAddr: req.HTTPAddress,
@@ -304,7 +290,7 @@ func handleClusterRemove(node ClusterManager) fiber.Handler {
 			if strings.Contains(err.Error(), "cannot remove active cluster leader") {
 				return fiber.NewError(fiber.StatusBadRequest, err.Error())
 			}
-			if errors.Is(err, raft.ErrNotFound) {
+			if errors.Is(err, clusterraft.ErrNotFound) {
 				return fiber.NewError(fiber.StatusNotFound, fmt.Sprintf("server %s not found in cluster", targetID))
 			}
 			return fiber.NewError(fiber.StatusInternalServerError, fmt.Sprintf("failed to remove server: %v", err))
@@ -312,7 +298,7 @@ func handleClusterRemove(node ClusterManager) fiber.Handler {
 
 		var warningMsg string
 		if prop, ok := node.(CommandProposer); ok {
-			cmd, err := raft.NewCommand("", raft.CmdDeregisterNodeHTTPAddr, time.Now().UTC(), raft.DeregisterNodeHTTPAddrPayload{
+			cmd, err := clusterraft.NewCommand("", clusterraft.CmdDeregisterNodeHTTPAddr, time.Now().UTC(), clusterraft.DeregisterNodeHTTPAddrPayload{
 				ServerID: targetID,
 				Address:  raftAddr,
 			})
@@ -341,7 +327,7 @@ func handleClusterRemove(node ClusterManager) fiber.Handler {
 
 		resp := map[string]any{
 			"status":  "removed",
-			"node_id": req.NodeID,
+			"node_id": targetID,
 		}
 		if warningMsg != "" {
 			resp["warning"] = warningMsg

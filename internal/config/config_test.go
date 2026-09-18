@@ -38,6 +38,7 @@ func TestFromFlagSetDefaults(t *testing.T) {
 	assert.Equal(t, uint64(1000), cfg.RaftTrailingLogs, "default raft trailing logs")
 	assert.Equal(t, "", cfg.RaftClusterSecret, "default raft cluster secret")
 	assert.Equal(t, "", cfg.RaftTLSServerName, "default raft tls server name")
+	assert.True(t, cfg.RaftAutoJoin, "default raft auto join")
 	assert.False(t, cfg.IsRaftEnabled(), "default raft enabled")
 }
 
@@ -62,6 +63,7 @@ func TestFromFlagSetEnvOverrides(t *testing.T) {
 	t.Setenv(EnvRaftTrailingLogs, "500")
 	t.Setenv(EnvRaftClusterSecret, "secret-env-123")
 	t.Setenv(EnvRaftTLSServerName, "custom.raft.server")
+	t.Setenv(EnvRaftAutoJoin, "false")
 
 	fs := newTestFlagSet(t)
 	assert.NoError(t, fs.Parse([]string{}), "unable to parse empty args")
@@ -89,6 +91,7 @@ func TestFromFlagSetEnvOverrides(t *testing.T) {
 	assert.Equal(t, uint64(500), cfg.RaftTrailingLogs, "raft trailing logs from env")
 	assert.Equal(t, "secret-env-123", cfg.RaftClusterSecret, "raft cluster secret from env")
 	assert.Equal(t, "custom.raft.server", cfg.RaftTLSServerName, "raft tls server name from env")
+	assert.False(t, cfg.RaftAutoJoin, "raft auto join from env")
 	assert.True(t, cfg.IsRaftEnabled(), "raft enabled from env")
 }
 

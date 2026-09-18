@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -24,15 +25,18 @@ func TestCLISigning(t *testing.T) {
 	// 1. Setup server with RequireSignatures: true
 	dataDir := t.TempDir()
 
-	// We need to use a random port, but srv.Serve() doesn't easily expose it if we use Listen(":0").
-	// We'll use a fixed but hopefully free port for simplicity in this integration test.
-	port := 58080
-	serverURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	_, portStr, err := net.SplitHostPort(l.Addr().String())
+	require.NoError(t, err)
+	require.NoError(t, l.Close())
+
+	serverURL := fmt.Sprintf("http://127.0.0.1:%s", portStr)
 
 	cfg := config.Config{
 		Database:          dataDir,
 		RequireSignatures: true,
-		BindAddr:          fmt.Sprintf("127.0.0.1:%d", port),
+		BindAddr:          fmt.Sprintf("127.0.0.1:%s", portStr),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -47,8 +51,14 @@ func TestCLISigning(t *testing.T) {
 		errCh <- srv.Serve(ctx)
 	}()
 
-	// Wait for server to start
-	time.Sleep(200 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		conn, dialErr := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%s", portStr), 50*time.Millisecond)
+		if dialErr == nil {
+			_ = conn.Close()
+			return true
+		}
+		return false
+	}, 5*time.Second, 20*time.Millisecond, "server should start listening")
 
 	// 2. Generate key pair and register host
 	// Use DefaultNamespace ("_def") explicitly to match CLI and Server default

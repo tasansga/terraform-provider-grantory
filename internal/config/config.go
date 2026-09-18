@@ -37,6 +37,7 @@ const (
 	EnvRaftPeerHTTPAddrs     = "RAFT_PEER_HTTP_ADDRS"
 	EnvRaftClusterSecret     = "RAFT_CLUSTER_SECRET"
 	EnvRaftTLSServerName     = "RAFT_TLS_SERVER_NAME"
+	EnvRaftAutoJoin          = "RAFT_AUTO_JOIN"
 )
 
 const (
@@ -76,6 +77,7 @@ type Config struct {
 	RaftPeerHTTPAddrs    []string
 	RaftClusterSecret    string
 	RaftTLSServerName    string
+	RaftAutoJoin         bool
 }
 
 func (c Config) IsRaftEnabled() bool {
@@ -202,6 +204,7 @@ func RegisterFlags(fs *pflag.FlagSet) {
 	fs.StringSlice("raft-peer-http-addrs", nil, "comma-separated mappings of raft-address-or-id=http-address (env: "+EnvRaftPeerHTTPAddrs+")")
 	fs.String("raft-cluster-secret", "", "shared secret for authenticating cluster join and remove operations (env: "+EnvRaftClusterSecret+")")
 	fs.String("raft-tls-server-name", "", "expected TLS server name (DNS SAN) for peer verification (env: "+EnvRaftTLSServerName+"); required when peer certificates use DNS SANs but peers dial via IP addresses")
+	fs.Bool("raft-auto-join", true, "automatically join existing cluster if peers are reachable (env: "+EnvRaftAutoJoin+")")
 }
 
 // FromFlagSet builds a Config from the flag set and environment variables.
@@ -255,6 +258,7 @@ func FromFlagSet(fs *pflag.FlagSet) (Config, error) {
 	raftPeerHTTPAddrs := stringSliceValue(fs, "raft-peer-http-addrs", EnvRaftPeerHTTPAddrs)
 	raftClusterSecret := stringValue(fs, "raft-cluster-secret", EnvRaftClusterSecret, "")
 	raftTLSServerName := stringValue(fs, "raft-tls-server-name", EnvRaftTLSServerName, "")
+	raftAutoJoin := boolValue(fs, "raft-auto-join", EnvRaftAutoJoin, true)
 
 	return Config{
 		Database:              database,
@@ -279,6 +283,7 @@ func FromFlagSet(fs *pflag.FlagSet) (Config, error) {
 		RaftPeerHTTPAddrs:     raftPeerHTTPAddrs,
 		RaftClusterSecret:     raftClusterSecret,
 		RaftTLSServerName:     raftTLSServerName,
+		RaftAutoJoin:          raftAutoJoin,
 	}, nil
 }
 

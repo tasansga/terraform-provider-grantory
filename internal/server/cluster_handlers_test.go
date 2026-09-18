@@ -510,6 +510,37 @@ func TestHandleClusterRemove_RejectLeaderRemoval(t *testing.T) {
 	})
 }
 
+func TestHandleClusterRemove_ResolvedNodeIDInResponse(t *testing.T) {
+	app := fiber.New()
+	node := &mockNonProposerNode{
+		isLeader:   true,
+		leaderAddr: "10.0.0.1:8080",
+		nodeID:     "leader-1",
+		serverIDByAddr: map[string]string{
+			"10.0.0.2:9090": "node-2",
+		},
+		addrByServerID: map[string]string{
+			"node-2": "10.0.0.2:9090",
+		},
+	}
+	registerClusterRoutes(app, node)
+
+	payload := `{"node_id":"10.0.0.2:9090"}`
+	req := httptest.NewRequest("POST", "/api/v1/cluster/remove", bytes.NewBufferString(payload))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var respBody map[string]any
+	err = json.NewDecoder(resp.Body).Decode(&respBody)
+	require.NoError(t, err)
+	assert.Equal(t, "removed", respBody["status"])
+	assert.Equal(t, "node-2", respBody["node_id"])
+	assert.Equal(t, "node-2", node.removedNode)
+}
+
 // minimalNonStepDownerNode implements ClusterManager but not LeaderStepDowner.
 type minimalNonStepDownerNode struct {
 	isLeader   bool
@@ -641,12 +672,12 @@ func TestHandleClusterStepDown(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, http.StatusUnauthorized, respWrongAuth.StatusCode)
 
-		// 3. Valid secret in X-Grantory-Cluster-Secret -> 200 OK
+		// 3. X-Grantory-Cluster-Secret alone is no longer accepted -> 401 Unauthorized
 		reqSecret := httptest.NewRequest("POST", "/api/v1/cluster/step-down", nil)
 		reqSecret.Header.Set("X-Grantory-Cluster-Secret", secret)
 		respSecret, err := app.Test(reqSecret)
 		require.NoError(t, err)
-		assert.Equal(t, http.StatusOK, respSecret.StatusCode)
+		assert.Equal(t, http.StatusUnauthorized, respSecret.StatusCode)
 
 		// 4. Valid secret in Bearer Authorization header -> 200 OK
 		reqBearer := httptest.NewRequest("POST", "/api/v1/cluster/step-down", nil)
@@ -654,6 +685,17 @@ func TestHandleClusterStepDown(t *testing.T) {
 		respBearer, err := app.Test(reqBearer)
 		require.NoError(t, err)
 		assert.Equal(t, http.StatusOK, respBearer.StatusCode)
+
+		// 5. Server initialized with "Bearer supersecret" accepts "Bearer supersecret" -> 200 OK
+		appWithBearer := fiber.New()
+		registerClusterAdminAuth(appWithBearer, "Bearer supersecret")
+		registerClusterRoutes(appWithBearer, node)
+
+		reqBearerPrefix := httptest.NewRequest("POST", "/api/v1/cluster/step-down", nil)
+		reqBearerPrefix.Header.Set("Authorization", "Bearer supersecret")
+		respBearerPrefix, err := appWithBearer.Test(reqBearerPrefix)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, respBearerPrefix.StatusCode)
 	})
 }
 
@@ -751,4 +793,133 @@ func TestHandleClusterStatus_MembersReporter(t *testing.T) {
 		assert.Equal(t, "10.0.0.1:8080", status.LeaderAddr)
 		assert.Equal(t, expectedServers, status.Servers)
 	})
+}
+
+type mockAutoJoinStatusNode struct {
+	mockNonProposerNode
+	autoJoinStatus string
+}
+
+var _ AutoJoinStatusReporter = (*mockAutoJoinStatusNode)(nil)
+
+func (m *mockAutoJoinStatusNode) AutoJoinStatus() string {
+	return m.autoJoinStatus
+}
+
+func TestHandleClusterStatus_AutoJoinStatus(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+	node := &mockAutoJoinStatusNode{
+		mockNonProposerNode: mockNonProposerNode{
+			nodeID:     "node-1",
+			isLeader:   false,
+			leaderAddr: "10.0.0.1:8080",
+		},
+		autoJoinStatus: "joining",
+	}
+	registerClusterRoutes(app, node)
+
+	req := httptest.NewRequest("GET", "/api/v1/cluster/status", nil)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var status ClusterStatusResponse
+	err = json.NewDecoder(resp.Body).Decode(&status)
+	require.NoError(t, err)
+	assert.Equal(t, "joining", status.AutoJoinStatus)
+}
+
+func TestClusterAdminAuthMiddleware_ExtractBearerToken(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		secret         string
+		authHeader     string
+		expectedStatus int
+	}{
+		{
+			name:           "valid Bearer token matching secret",
+			secret:         "my-super-secret",
+			authHeader:     "Bearer my-super-secret",
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "case-insensitive lowercase bearer prefix",
+			secret:         "my-super-secret",
+			authHeader:     "bearer my-super-secret",
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "case-insensitive uppercase BEARER prefix with extra spaces",
+			secret:         "my-super-secret",
+			authHeader:     "  BEARER   my-super-secret  ",
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "secret configured with Bearer prefix matches incoming Bearer token",
+			secret:         "Bearer my-super-secret",
+			authHeader:     "Bearer my-super-secret",
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "secret configured with Bearer prefix matches incoming raw token",
+			secret:         "Bearer my-super-secret",
+			authHeader:     "my-super-secret",
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "raw token matching secret without Bearer prefix",
+			secret:         "my-super-secret",
+			authHeader:     "my-super-secret",
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "invalid token returns 401",
+			secret:         "my-super-secret",
+			authHeader:     "Bearer wrong-token",
+			expectedStatus: http.StatusUnauthorized,
+		},
+		{
+			name:           "missing Authorization header returns 401",
+			secret:         "my-super-secret",
+			authHeader:     "",
+			expectedStatus: http.StatusUnauthorized,
+		},
+		{
+			name:           "unconfigured secret returns 403",
+			secret:         "",
+			authHeader:     "Bearer my-super-secret",
+			expectedStatus: http.StatusForbidden,
+		},
+		{
+			name:           "whitespace-only secret returns 403",
+			secret:         "   ",
+			authHeader:     "Bearer my-super-secret",
+			expectedStatus: http.StatusForbidden,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			app := fiber.New()
+			app.Use(clusterAdminAuthMiddleware(tc.secret))
+			app.Get("/test", func(c *fiber.Ctx) error {
+				return c.SendStatus(http.StatusOK)
+			})
+
+			req := httptest.NewRequest(http.MethodGet, "/test", nil)
+			if tc.authHeader != "" {
+				req.Header.Set("Authorization", tc.authHeader)
+			}
+
+			resp, err := app.Test(req)
+			require.NoError(t, err)
+			assert.Equal(t, tc.expectedStatus, resp.StatusCode)
+		})
+	}
 }

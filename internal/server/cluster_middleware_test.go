@@ -1487,7 +1487,7 @@ func TestClusterManagementRoutes(t *testing.T) {
 		payload := `{"node_id":"node-2","address":"10.0.0.2:9090"}`
 		req := httptest.NewRequest("POST", "/api/v1/cluster/join", bytes.NewBufferString(payload))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Grantory-Cluster-Secret", "test-cluster-secret")
+		req.Header.Set("Authorization", "Bearer test-cluster-secret")
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
@@ -1504,7 +1504,7 @@ func TestClusterManagementRoutes(t *testing.T) {
 		payload := `{"node_id":""}`
 		req := httptest.NewRequest("POST", "/api/v1/cluster/join", bytes.NewBufferString(payload))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Grantory-Cluster-Secret", "test-cluster-secret")
+		req.Header.Set("Authorization", "Bearer test-cluster-secret")
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
@@ -1524,7 +1524,7 @@ func TestClusterManagementRoutes(t *testing.T) {
 		payload := `{"node_id":"node-3","address":"10.0.0.3:9090"}`
 		req := httptest.NewRequest("POST", "/api/v1/cluster/join", bytes.NewBufferString(payload))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Grantory-Cluster-Secret", "test-cluster-secret")
+		req.Header.Set("Authorization", "Bearer test-cluster-secret")
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
@@ -1551,7 +1551,7 @@ func TestClusterManagementRoutes(t *testing.T) {
 		payload := `{"node_id":"node-2"}`
 		req := httptest.NewRequest("POST", "/api/v1/cluster/remove", bytes.NewBufferString(payload))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Grantory-Cluster-Secret", "test-cluster-secret")
+		req.Header.Set("Authorization", "Bearer test-cluster-secret")
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
@@ -1596,7 +1596,7 @@ func TestClusterManagementRoutes(t *testing.T) {
 		payload := `{"node_id":"10.0.0.2:9090"}`
 		req := httptest.NewRequest("POST", "/api/v1/cluster/remove", bytes.NewBufferString(payload))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Grantory-Cluster-Secret", "test-cluster-secret")
+		req.Header.Set("Authorization", "Bearer test-cluster-secret")
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
@@ -1630,7 +1630,7 @@ func TestClusterManagementRoutes(t *testing.T) {
 		payload := `{"node_id":"leader-node"}`
 		req := httptest.NewRequest("POST", "/api/v1/cluster/remove", bytes.NewBufferString(payload))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Grantory-Cluster-Secret", "test-cluster-secret")
+		req.Header.Set("Authorization", "Bearer test-cluster-secret")
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
@@ -1656,7 +1656,7 @@ func TestClusterManagementRoutes(t *testing.T) {
 		payload := `{"node_id":"node-3"}`
 		req := httptest.NewRequest("POST", "/api/v1/cluster/remove", bytes.NewBufferString(payload))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Grantory-Cluster-Secret", "test-cluster-secret")
+		req.Header.Set("Authorization", "Bearer test-cluster-secret")
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
@@ -1684,7 +1684,7 @@ func TestClusterManagementRoutes(t *testing.T) {
 				payload := `{"node_id":"node-2","address":"10.0.0.2:9090"}`
 				req := httptest.NewRequest("POST", "/api/v1/cluster/join", bytes.NewBufferString(payload))
 				req.Header.Set("Content-Type", "application/json")
-				req.Header.Set("X-Grantory-Cluster-Secret", "test-cluster-secret")
+				req.Header.Set("Authorization", "Bearer test-cluster-secret")
 
 				resp, err := app.Test(req)
 				require.NoError(t, err)
@@ -1707,7 +1707,7 @@ func TestClusterManagementRoutes(t *testing.T) {
 		payload := `{"node_id":"node-2","address":"10.0.0.2:9090"}`
 		req := httptest.NewRequest("POST", "/api/v1/cluster/join", bytes.NewBufferString(payload))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Grantory-Cluster-Secret", "test-cluster-secret")
+		req.Header.Set("Authorization", "Bearer test-cluster-secret")
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
@@ -1729,7 +1729,7 @@ func TestClusterManagementRoutes(t *testing.T) {
 		payload := `{"node_id":"node-2"}`
 		req := httptest.NewRequest("POST", "/api/v1/cluster/remove", bytes.NewBufferString(payload))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Grantory-Cluster-Secret", "test-cluster-secret")
+		req.Header.Set("Authorization", "Bearer test-cluster-secret")
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
@@ -1754,7 +1754,7 @@ func TestClusterManagementRoutes(t *testing.T) {
 		payload := `{"node_id":"node-99"}`
 		req := httptest.NewRequest("POST", "/api/v1/cluster/remove", bytes.NewBufferString(payload))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Grantory-Cluster-Secret", "test-cluster-secret")
+		req.Header.Set("Authorization", "Bearer test-cluster-secret")
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
@@ -1779,7 +1779,7 @@ func TestClusterManagementRoutes(t *testing.T) {
 		payload := `{"node_id":"node-missing"}`
 		req := httptest.NewRequest("POST", "/api/v1/cluster/remove", bytes.NewBufferString(payload))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Grantory-Cluster-Secret", "test-cluster-secret")
+		req.Header.Set("Authorization", "Bearer test-cluster-secret")
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
@@ -1806,7 +1806,7 @@ func TestClusterManagementRoutes(t *testing.T) {
 		payload := `{"node_id":"node-2","address":"10.0.0.2:9090","http_address":"http://10.0.0.2:8080"}`
 		req := httptest.NewRequest("POST", "/api/v1/cluster/join", bytes.NewBufferString(payload))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Grantory-Cluster-Secret", "test-cluster-secret")
+		req.Header.Set("Authorization", "Bearer test-cluster-secret")
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
@@ -1836,7 +1836,7 @@ func TestClusterManagementRoutes(t *testing.T) {
 		payload := `{"node_id":"node-2","address":"10.0.0.2:9090","http_address":"http://10.0.0.2:8080"}`
 		req := httptest.NewRequest("POST", "/api/v1/cluster/join", bytes.NewBufferString(payload))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Grantory-Cluster-Secret", "test-cluster-secret")
+		req.Header.Set("Authorization", "Bearer test-cluster-secret")
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
@@ -1865,7 +1865,7 @@ func TestClusterManagementRoutes(t *testing.T) {
 		payload := `{"node_id":"node-2"}`
 		req := httptest.NewRequest("POST", "/api/v1/cluster/remove", bytes.NewBufferString(payload))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Grantory-Cluster-Secret", "test-cluster-secret")
+		req.Header.Set("Authorization", "Bearer test-cluster-secret")
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
@@ -1895,7 +1895,7 @@ func TestClusterManagementRoutes(t *testing.T) {
 		payload := `{"node_id":"node-2"}`
 		req := httptest.NewRequest("POST", "/api/v1/cluster/remove", bytes.NewBufferString(payload))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Grantory-Cluster-Secret", "test-cluster-secret")
+		req.Header.Set("Authorization", "Bearer test-cluster-secret")
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
@@ -2037,7 +2037,7 @@ func TestClusterAdminAuthMiddleware(t *testing.T) {
 		assert.Equal(t, "node-2", mock.removedNode)
 	})
 
-	t.Run("authorized request with X-Grantory-Cluster-Secret header succeeds", func(t *testing.T) {
+	t.Run("request with X-Grantory-Cluster-Secret header alone is rejected with 401", func(t *testing.T) {
 		app, mock := setupApp(secret)
 
 		req := httptest.NewRequest("POST", "/api/v1/cluster/join", bytes.NewBufferString(joinPayload))
@@ -2045,24 +2045,24 @@ func TestClusterAdminAuthMiddleware(t *testing.T) {
 		req.Header.Set("X-Grantory-Cluster-Secret", secret)
 		resp, err := app.Test(req)
 		require.NoError(t, err)
-		assert.Equal(t, http.StatusOK, resp.StatusCode)
-		assert.Equal(t, "node-2", mock.joinedNodeID)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+		assert.Empty(t, mock.joinedNodeID)
 
 		req = httptest.NewRequest("POST", "/api/v1/cluster/remove", bytes.NewBufferString(removePayload))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Grantory-Cluster-Secret", secret)
 		resp, err = app.Test(req)
 		require.NoError(t, err)
-		assert.Equal(t, http.StatusOK, resp.StatusCode)
-		assert.Equal(t, "node-2", mock.removedNode)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+		assert.Empty(t, mock.removedNode)
 	})
 
-	t.Run("authorized request with whitespace-padded X-Grantory-Cluster-Secret header succeeds", func(t *testing.T) {
+	t.Run("authorized request with whitespace-padded Bearer token succeeds", func(t *testing.T) {
 		app, mock := setupApp(secret)
 
 		req := httptest.NewRequest("POST", "/api/v1/cluster/join", bytes.NewBufferString(joinPayload))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Grantory-Cluster-Secret", "  "+secret+" \t\n")
+		req.Header.Set("Authorization", "Bearer   "+secret+" \t\n")
 		resp, err := app.Test(req)
 		require.NoError(t, err)
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
@@ -2084,6 +2084,18 @@ func TestClusterAdminAuthMiddleware(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 	})
+
+	t.Run("server initialized with Bearer prefix in secret accepts Bearer authorization header", func(t *testing.T) {
+		app, mock := setupApp("Bearer supersecret")
+
+		req := httptest.NewRequest("POST", "/api/v1/cluster/join", bytes.NewBufferString(joinPayload))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer supersecret")
+		resp, err := app.Test(req)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "node-2", mock.joinedNodeID)
+	})
 }
 
 func TestClusterJoinDynamicHTTPAddress(t *testing.T) {
@@ -2098,7 +2110,7 @@ func TestClusterJoinDynamicHTTPAddress(t *testing.T) {
 	payload := `{"node_id":"node-2","address":"10.0.0.2:9090","http_address":"http://10.0.0.2:8080"}`
 	req := httptest.NewRequest("POST", "/api/v1/cluster/join", bytes.NewBufferString(payload))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Grantory-Cluster-Secret", "test-cluster-secret")
+	req.Header.Set("Authorization", "Bearer test-cluster-secret")
 
 	resp, err := app.Test(req)
 	require.NoError(t, err)
@@ -2145,7 +2157,7 @@ func TestClusterRemoveDynamicHTTPAddress(t *testing.T) {
 	payload := `{"node_id":"node-2"}`
 	req := httptest.NewRequest("POST", "/api/v1/cluster/remove", bytes.NewBufferString(payload))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Grantory-Cluster-Secret", "test-cluster-secret")
+	req.Header.Set("Authorization", "Bearer test-cluster-secret")
 
 	resp, err := app.Test(req)
 	require.NoError(t, err)
@@ -2191,7 +2203,7 @@ func TestClusterJoinMalformedAddress(t *testing.T) {
 			payload := `{"node_id":"node-bad","address":"` + badAddr + `"}`
 			req := httptest.NewRequest("POST", "/api/v1/cluster/join", bytes.NewBufferString(payload))
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Grantory-Cluster-Secret", "test-cluster-secret")
+			req.Header.Set("Authorization", "Bearer test-cluster-secret")
 
 			resp, err := app.Test(req)
 			require.NoError(t, err)
@@ -2223,7 +2235,7 @@ func TestClusterJoinInvalidHTTPAddress(t *testing.T) {
 			payload := `{"node_id":"node-bad","address":"10.0.0.2:9090","http_address":"` + badHTTP + `"}`
 			req := httptest.NewRequest("POST", "/api/v1/cluster/join", bytes.NewBufferString(payload))
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Grantory-Cluster-Secret", "test-cluster-secret")
+			req.Header.Set("Authorization", "Bearer test-cluster-secret")
 
 			resp, err := app.Test(req)
 			require.NoError(t, err)
@@ -2273,7 +2285,7 @@ func TestClusterJoinUnspecifiedIP(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest("POST", "/api/v1/cluster/join", bytes.NewBufferString(tc.payload))
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Grantory-Cluster-Secret", "test-cluster-secret")
+			req.Header.Set("Authorization", "Bearer test-cluster-secret")
 
 			resp, err := app.Test(req)
 			require.NoError(t, err)
@@ -2967,7 +2979,7 @@ func TestClusterJoinAndRemove_ProposeFailureHandlingAndLogging(t *testing.T) {
 		payload := `{"node_id":"node-2","address":"10.0.0.2:9090","http_address":"http://10.0.0.2:8080"}`
 		req := httptest.NewRequest("POST", "/api/v1/cluster/join", bytes.NewBufferString(payload))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Grantory-Cluster-Secret", "test-cluster-secret")
+		req.Header.Set("Authorization", "Bearer test-cluster-secret")
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
@@ -2989,7 +3001,7 @@ func TestClusterJoinAndRemove_ProposeFailureHandlingAndLogging(t *testing.T) {
 		payload := `{"node_id":"node-2","address":"10.0.0.2:9090","http_address":"http://10.0.0.2:8080"}`
 		req := httptest.NewRequest("POST", "/api/v1/cluster/join", bytes.NewBufferString(payload))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Grantory-Cluster-Secret", "test-cluster-secret")
+		req.Header.Set("Authorization", "Bearer test-cluster-secret")
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
@@ -3010,7 +3022,7 @@ func TestClusterJoinAndRemove_ProposeFailureHandlingAndLogging(t *testing.T) {
 		payload := `{"node_id":"node-2"}`
 		req := httptest.NewRequest("POST", "/api/v1/cluster/remove", bytes.NewBufferString(payload))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Grantory-Cluster-Secret", "test-cluster-secret")
+		req.Header.Set("Authorization", "Bearer test-cluster-secret")
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
@@ -3031,7 +3043,7 @@ func TestClusterJoinAndRemove_ProposeFailureHandlingAndLogging(t *testing.T) {
 		payload := `{"node_id":"node-2"}`
 		req := httptest.NewRequest("POST", "/api/v1/cluster/remove", bytes.NewBufferString(payload))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Grantory-Cluster-Secret", "test-cluster-secret")
+		req.Header.Set("Authorization", "Bearer test-cluster-secret")
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
@@ -3057,7 +3069,7 @@ func TestClusterJoinAndRemove_ProposeFailureHandlingAndLogging(t *testing.T) {
 		payload := `{"node_id":"node-alias"}`
 		req := httptest.NewRequest("POST", "/api/v1/cluster/remove", bytes.NewBufferString(payload))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Grantory-Cluster-Secret", "test-cluster-secret")
+		req.Header.Set("Authorization", "Bearer test-cluster-secret")
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
