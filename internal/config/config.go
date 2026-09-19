@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/pflag"
@@ -24,60 +25,64 @@ const (
 	EnvLogLevel          = "LOG_LEVEL"
 	EnvRequireSignatures = "REQUIRE_SIGNATURES"
 
-	EnvRaftBind             = "RAFT_BIND"
-	EnvRaftAdvertise        = "RAFT_ADVERTISE"
-	EnvRaftNodeID           = "RAFT_NODE_ID"
-	EnvRaftBootstrapExpect  = "RAFT_BOOTSTRAP_EXPECT"
-	EnvRaftPeers            = "RAFT_PEERS"
-	EnvRaftCAFile           = "RAFT_CA_FILE"
-	EnvRaftCertFile         = "RAFT_CERT_FILE"
-	EnvRaftKeyFile           = "RAFT_KEY_FILE"
-	EnvRaftSnapshotThreshold = "RAFT_SNAPSHOT_THRESHOLD"
-	EnvRaftTrailingLogs      = "RAFT_TRAILING_LOGS"
-	EnvRaftPeerHTTPAddrs     = "RAFT_PEER_HTTP_ADDRS"
-	EnvRaftClusterSecret     = "RAFT_CLUSTER_SECRET"
-	EnvRaftTLSServerName     = "RAFT_TLS_SERVER_NAME"
-	EnvRaftAutoJoin          = "RAFT_AUTO_JOIN"
+	EnvRaftBind                = "RAFT_BIND"
+	EnvRaftAdvertise           = "RAFT_ADVERTISE"
+	EnvRaftNodeID              = "RAFT_NODE_ID"
+	EnvRaftBootstrapExpect     = "RAFT_BOOTSTRAP_EXPECT"
+	EnvRaftPeers               = "RAFT_PEERS"
+	EnvRaftCAFile              = "RAFT_CA_FILE"
+	EnvRaftCertFile            = "RAFT_CERT_FILE"
+	EnvRaftKeyFile             = "RAFT_KEY_FILE"
+	EnvRaftSnapshotThreshold   = "RAFT_SNAPSHOT_THRESHOLD"
+	EnvRaftTrailingLogs        = "RAFT_TRAILING_LOGS"
+	EnvRaftPeerHTTPAddrs       = "RAFT_PEER_HTTP_ADDRS"
+	EnvRaftClusterSecret       = "RAFT_CLUSTER_SECRET"
+	EnvRaftTLSServerName       = "RAFT_TLS_SERVER_NAME"
+	EnvRaftAutoJoin            = "RAFT_AUTO_JOIN"
+	EnvRaftLockTimeout         = "RAFT_LOCK_TIMEOUT"
+	EnvGrantoryRaftLockTimeout = "GRANTORY_RAFT_LOCK_TIMEOUT"
+	EnvGrantoryLockTimeout     = "GRANTORY_LOCK_TIMEOUT"
 )
 
 const (
-	DefaultDataDir              = "data"
-	DefaultBindAddr             = "0.0.0.0:8080"
-	DefaultTLSBind              = "0.0.0.0:8443"
-	DefaultUnixSocket           = ""
-	DefaultUnixSocketMode       = os.FileMode(0o660)
+	DefaultDataDir               = "data"
+	DefaultBindAddr              = "0.0.0.0:8080"
+	DefaultTLSBind               = "0.0.0.0:8443"
+	DefaultUnixSocket            = ""
+	DefaultUnixSocketMode        = os.FileMode(0o660)
 	DefaultRaftSnapshotThreshold = 10000
 	DefaultRaftTrailingLogs      = 1000
+	DefaultRaftLockTimeout       = 3 * time.Second
 )
 
 const DefaultLogLevel = logrus.InfoLevel
 
 // Config holds the runtime configuration for the Grantory server.
 type Config struct {
-	Database             string
-	BindAddr             string
-	TLSBind              string
-	TLSCert              string
-	TLSKey               string
-	UnixSocket           string
-	UnixSocketMode       os.FileMode
-	LogLevel             logrus.Level
-	RequireSignatures    bool
-	ServerVersion        string
-	RaftBind             string
-	RaftAdvertise        string
-	RaftNodeID           string
-	RaftBootstrapExpect  int
-	RaftPeers            []string
+	Database              string
+	BindAddr              string
+	TLSBind               string
+	TLSCert               string
+	TLSKey                string
+	UnixSocket            string
+	UnixSocketMode        os.FileMode
+	LogLevel              logrus.Level
+	RequireSignatures     bool
+	ServerVersion         string
+	RaftBind              string
+	RaftAdvertise         string
+	RaftNodeID            string
+	RaftBootstrapExpect   int
+	RaftPeers             []string
 	RaftCAFile            string
 	RaftCertFile          string
 	RaftKeyFile           string
 	RaftSnapshotThreshold uint64
 	RaftTrailingLogs      uint64
-	RaftPeerHTTPAddrs    []string
-	RaftClusterSecret    string
-	RaftTLSServerName    string
-	RaftAutoJoin         bool
+	RaftPeerHTTPAddrs     []string
+	RaftClusterSecret     string
+	RaftTLSServerName     string
+	RaftAutoJoin          bool
 }
 
 func (c Config) IsRaftEnabled() bool {

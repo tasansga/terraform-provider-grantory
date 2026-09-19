@@ -23,6 +23,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/bbolt"
+	bbolterrors "go.etcd.io/bbolt/errors"
 
 	clusterraft "github.com/tasansga/terraform-provider-grantory/internal/cluster/raft"
 	"github.com/tasansga/terraform-provider-grantory/internal/config"
@@ -56,6 +58,8 @@ func TestClusterRecoverEmptyDirDoesNotCreateRaftDB(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "refusing recovery: no existing Raft state found in database directory")
 	assert.NoFileExists(t, filepath.Join(dir, "raft", "raft.db"))
+	_, statErr := os.Stat(filepath.Join(dir, "raft", "snapshots"))
+	assert.True(t, os.IsNotExist(statErr), "snapshots directory must not be created when recovery is refused")
 }
 
 func TestClusterRecoverBoltStoreOpenFailure(t *testing.T) {
@@ -63,7 +67,7 @@ func TestClusterRecoverBoltStoreOpenFailure(t *testing.T) {
 	raftDir := filepath.Join(dir, "raft")
 	require.NoError(t, os.MkdirAll(raftDir, 0o755))
 
-	// Create a directory where raft.db should be to cause raftboltdb.NewBoltStore to fail
+	// Create a directory where raft.db should be to cause raftboltdb.New to fail
 	dbPath := filepath.Join(raftDir, "raft.db")
 	require.NoError(t, os.Mkdir(dbPath, 0o755))
 
@@ -75,7 +79,409 @@ func TestClusterRecoverBoltStoreOpenFailure(t *testing.T) {
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "open bolt store")
+	assert.NotContains(t, err.Error(), "ensure grantory serve is stopped before running cluster recovery")
+}
+
+func TestClusterRecoverBoltStoreLockTimeout(t *testing.T) {
+	dir := t.TempDir()
+	raftDir := filepath.Join(dir, "raft")
+	require.NoError(t, os.MkdirAll(raftDir, 0o755))
+
+	dbPath := filepath.Join(raftDir, "raft.db")
+	// Hold an exclusive lock on raft.db with bbolt to simulate running grantory serve
+	db, err := bbolt.Open(dbPath, 0600, nil)
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	cmd := newClusterRecoverCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{
+		"--database", dir,
+		"--node-id", "survivor-1",
+		"--bind", "127.0.0.1:8081",
+		"--lock-timeout", "100ms",
+	})
+
+	err = cmd.Execute()
+	require.Error(t, err)
+	assert.ErrorIs(t, err, bbolterrors.ErrTimeout)
+	assert.Contains(t, err.Error(), "open bolt store")
 	assert.Contains(t, err.Error(), "ensure grantory serve is stopped before running cluster recovery")
+}
+
+func TestClusterRecoverBoltStoreLockTimeoutEnvVar(t *testing.T) {
+	cases := []struct {
+		name    string
+		setEnvs map[string]string
+	}{
+		{
+			name: "primary_RAFT_LOCK_TIMEOUT",
+			setEnvs: map[string]string{
+				config.EnvRaftLockTimeout: "50ms",
+			},
+		},
+		{
+			name: "secondary_GRANTORY_RAFT_LOCK_TIMEOUT",
+			setEnvs: map[string]string{
+				config.EnvGrantoryRaftLockTimeout: "50ms",
+			},
+		},
+		{
+			name: "fallback_GRANTORY_LOCK_TIMEOUT",
+			setEnvs: map[string]string{
+				config.EnvGrantoryLockTimeout: "50ms",
+			},
+		},
+		{
+			name: "precedence_RAFT_LOCK_TIMEOUT_over_GRANTORY_RAFT_LOCK_TIMEOUT",
+			setEnvs: map[string]string{
+				config.EnvRaftLockTimeout:         "50ms",
+				config.EnvGrantoryRaftLockTimeout: "5s",
+			},
+		},
+		{
+			name: "precedence_GRANTORY_RAFT_LOCK_TIMEOUT_over_GRANTORY_LOCK_TIMEOUT",
+			setEnvs: map[string]string{
+				config.EnvGrantoryRaftLockTimeout: "50ms",
+				config.EnvGrantoryLockTimeout:     "5s",
+			},
+		},
+		{
+			name: "precedence_RAFT_LOCK_TIMEOUT_over_all",
+			setEnvs: map[string]string{
+				config.EnvRaftLockTimeout:         "50ms",
+				config.EnvGrantoryRaftLockTimeout: "5s",
+				config.EnvGrantoryLockTimeout:     "10s",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(config.EnvRaftLockTimeout, "")
+			t.Setenv(config.EnvGrantoryRaftLockTimeout, "")
+			t.Setenv(config.EnvGrantoryLockTimeout, "")
+			for k, v := range tc.setEnvs {
+				t.Setenv(k, v)
+			}
+
+			dir := t.TempDir()
+			raftDir := filepath.Join(dir, "raft")
+			require.NoError(t, os.MkdirAll(raftDir, 0o755))
+
+			dbPath := filepath.Join(raftDir, "raft.db")
+			db, err := bbolt.Open(dbPath, 0600, nil)
+			require.NoError(t, err)
+			defer func() { _ = db.Close() }()
+
+			cmd := newClusterRecoverCmd()
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetArgs([]string{
+				"--database", dir,
+				"--node-id", "survivor-1",
+				"--bind", "127.0.0.1:8081",
+			})
+
+			start := time.Now()
+			err = cmd.Execute()
+			elapsed := time.Since(start)
+
+			require.Error(t, err)
+			assert.ErrorIs(t, err, bbolterrors.ErrTimeout)
+			assert.Contains(t, err.Error(), "open bolt store")
+			assert.Contains(t, err.Error(), "ensure grantory serve is stopped before running cluster recovery")
+			assert.Less(t, elapsed, 2*time.Second)
+		})
+	}
+}
+
+func TestClusterRecoverLockTimeoutFlagPrecedenceOverEnv(t *testing.T) {
+	t.Setenv(config.EnvRaftLockTimeout, "5s")
+	t.Setenv(config.EnvGrantoryRaftLockTimeout, "10s")
+	t.Setenv(config.EnvGrantoryLockTimeout, "15s")
+
+	dir := t.TempDir()
+	raftDir := filepath.Join(dir, "raft")
+	require.NoError(t, os.MkdirAll(raftDir, 0o755))
+
+	dbPath := filepath.Join(raftDir, "raft.db")
+	db, err := bbolt.Open(dbPath, 0600, nil)
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	cmd := newClusterRecoverCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{
+		"--database", dir,
+		"--node-id", "survivor-1",
+		"--bind", "127.0.0.1:8081",
+		"--lock-timeout", "50ms",
+	})
+
+	start := time.Now()
+	err = cmd.Execute()
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, bbolterrors.ErrTimeout)
+	assert.Contains(t, err.Error(), "open bolt store")
+	assert.Contains(t, err.Error(), "ensure grantory serve is stopped before running cluster recovery")
+	assert.Less(t, elapsed, 2*time.Second)
+}
+
+func TestClusterRecoverLockTimeoutValidation(t *testing.T) {
+	tests := []struct {
+		name        string
+		args        []string
+		envKey      string
+		envVal      string
+		expectedErr string
+	}{
+		{
+			name:        "flag_empty_duration",
+			args:        []string{"--lock-timeout", ""},
+			expectedErr: `invalid --lock-timeout "": duration cannot be empty`,
+		},
+		{
+			name:        "flag_whitespace_only_duration",
+			args:        []string{"--lock-timeout", "   "},
+			expectedErr: `duration cannot be empty`,
+		},
+		{
+			name:        "flag_empty_duration_precedence_over_env",
+			args:        []string{"--lock-timeout", ""},
+			envKey:      config.EnvRaftLockTimeout,
+			envVal:      "10s",
+			expectedErr: `duration cannot be empty`,
+		},
+		{
+			name:        "flag_zero_duration",
+			args:        []string{"--lock-timeout", "0s"},
+			expectedErr: `invalid --lock-timeout "0s": duration must be greater than zero`,
+		},
+		{
+			name:        "flag_negative_duration",
+			args:        []string{"--lock-timeout", "-1s"},
+			expectedErr: `invalid --lock-timeout "-1s": duration must be greater than zero`,
+		},
+		{
+			name:        "flag_invalid_duration",
+			args:        []string{"--lock-timeout", "invalid"},
+			expectedErr: `invalid --lock-timeout "invalid"`,
+		},
+		{
+			name:        "env_raft_invalid_duration",
+			envKey:      config.EnvRaftLockTimeout,
+			envVal:      "invalid",
+			expectedErr: `invalid RAFT_LOCK_TIMEOUT "invalid"`,
+		},
+		{
+			name:        "env_grantory_raft_invalid_duration",
+			envKey:      config.EnvGrantoryRaftLockTimeout,
+			envVal:      "invalid",
+			expectedErr: `invalid GRANTORY_RAFT_LOCK_TIMEOUT "invalid"`,
+		},
+		{
+			name:        "env_grantory_invalid_duration",
+			envKey:      config.EnvGrantoryLockTimeout,
+			envVal:      "invalid",
+			expectedErr: `invalid GRANTORY_LOCK_TIMEOUT "invalid"`,
+		},
+		{
+			name:        "env_raft_zero_duration",
+			envKey:      config.EnvRaftLockTimeout,
+			envVal:      "0s",
+			expectedErr: `invalid RAFT_LOCK_TIMEOUT "0s": duration must be greater than zero`,
+		},
+		{
+			name:        "env_grantory_raft_zero_duration",
+			envKey:      config.EnvGrantoryRaftLockTimeout,
+			envVal:      "0s",
+			expectedErr: `invalid GRANTORY_RAFT_LOCK_TIMEOUT "0s": duration must be greater than zero`,
+		},
+		{
+			name:        "env_grantory_zero_duration",
+			envKey:      config.EnvGrantoryLockTimeout,
+			envVal:      "0s",
+			expectedErr: `invalid GRANTORY_LOCK_TIMEOUT "0s": duration must be greater than zero`,
+		},
+		{
+			name:        "env_raft_negative_duration",
+			envKey:      config.EnvRaftLockTimeout,
+			envVal:      "-5s",
+			expectedErr: `invalid RAFT_LOCK_TIMEOUT "-5s": duration must be greater than zero`,
+		},
+		{
+			name:        "env_grantory_raft_negative_duration",
+			envKey:      config.EnvGrantoryRaftLockTimeout,
+			envVal:      "-5s",
+			expectedErr: `invalid GRANTORY_RAFT_LOCK_TIMEOUT "-5s": duration must be greater than zero`,
+		},
+		{
+			name:        "env_grantory_negative_duration",
+			envKey:      config.EnvGrantoryLockTimeout,
+			envVal:      "-5s",
+			expectedErr: `invalid GRANTORY_LOCK_TIMEOUT "-5s": duration must be greater than zero`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(config.EnvRaftLockTimeout, "")
+			t.Setenv(config.EnvGrantoryRaftLockTimeout, "")
+			t.Setenv(config.EnvGrantoryLockTimeout, "")
+			if tc.envKey != "" {
+				t.Setenv(tc.envKey, tc.envVal)
+			}
+
+			dir := t.TempDir()
+			cmd := newClusterRecoverCmd()
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+
+			baseArgs := []string{
+				"--database", dir,
+				"--node-id", "survivor-1",
+				"--bind", "127.0.0.1:8081",
+			}
+			cmd.SetArgs(append(baseArgs, tc.args...))
+
+			err := cmd.Execute()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.expectedErr)
+		})
+	}
+
+	t.Run("flag_whitespace_trimmed_success", func(t *testing.T) {
+		dir := t.TempDir()
+		raftDir := filepath.Join(dir, "raft")
+		require.NoError(t, os.MkdirAll(raftDir, 0o755))
+
+		dbPath := filepath.Join(raftDir, "raft.db")
+		boltStore, err := raftboltdb.NewBoltStore(dbPath)
+		require.NoError(t, err)
+		require.NoError(t, boltStore.SetUint64([]byte("CurrentTerm"), 1))
+		require.NoError(t, boltStore.StoreLog(&hashiraft.Log{
+			Index: 1,
+			Term:  1,
+			Type:  hashiraft.LogNoop,
+			Data:  []byte("noop"),
+		}))
+		require.NoError(t, boltStore.Close())
+
+		cmd := newClusterRecoverCmd()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{
+			"--database", dir,
+			"--node-id", "survivor-1",
+			"--bind", "127.0.0.1:8081",
+			"--lock-timeout", " 100ms ",
+		})
+
+		err = cmd.Execute()
+		require.NoError(t, err)
+		assert.Contains(t, out.String(), "Cluster recovered successfully")
+	})
+}
+
+func TestResolveClusterDurationFlagOrEnvMissingDefault(t *testing.T) {
+	cmd := &cobra.Command{Use: "test"}
+	cmd.Flags().String("test-timeout", "", "test timeout flag with empty default")
+
+	t.Setenv("TEST_TIMEOUT_ENV", "")
+
+	dur, err := resolveClusterDurationFlagOrEnv(cmd, "test-timeout", "TEST_TIMEOUT_ENV")
+	require.Error(t, err)
+	assert.Equal(t, time.Duration(0), dur)
+	assert.Equal(t, "--test-timeout is required", err.Error())
+}
+
+func TestClusterRecoverSideEffectsBeforeValidation(t *testing.T) {
+	t.Run("staging dirs not cleaned up when lock-timeout invalid", func(t *testing.T) {
+		dir := t.TempDir()
+		stagingDir := filepath.Join(dir, "raft", "staging")
+		require.NoError(t, os.MkdirAll(stagingDir, 0o755))
+		snapStage := filepath.Join(stagingDir, "snap-stage-11111")
+		require.NoError(t, os.MkdirAll(snapStage, 0o755))
+
+		cmd := newClusterRecoverCmd()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{
+			"--database", dir,
+			"--node-id", "survivor-1",
+			"--bind", "127.0.0.1:8081",
+			"--lock-timeout", "-1s",
+		})
+
+		err := cmd.Execute()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "duration must be greater than zero")
+		assert.DirExists(t, snapStage, "staging dir must not be cleaned up when validation fails")
+	})
+
+	t.Run("staging dirs not cleaned up when node-id missing", func(t *testing.T) {
+		t.Setenv(config.EnvRaftNodeID, "")
+		dir := t.TempDir()
+		stagingDir := filepath.Join(dir, "raft", "staging")
+		require.NoError(t, os.MkdirAll(stagingDir, 0o755))
+		snapStage := filepath.Join(stagingDir, "snap-stage-22222")
+		require.NoError(t, os.MkdirAll(snapStage, 0o755))
+
+		cmd := newClusterRecoverCmd()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{
+			"--database", dir,
+			"--node-id", "",
+			"--bind", "127.0.0.1:8081",
+		})
+
+		err := cmd.Execute()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--node-id is required")
+		assert.DirExists(t, snapStage, "staging dir must not be cleaned up when validation fails")
+	})
+
+	t.Run("staging dirs not cleaned up when bolt store lock acquisition times out", func(t *testing.T) {
+		dir := t.TempDir()
+		raftDir := filepath.Join(dir, "raft")
+		require.NoError(t, os.MkdirAll(raftDir, 0o755))
+
+		stagingDir := filepath.Join(raftDir, "staging")
+		require.NoError(t, os.MkdirAll(stagingDir, 0o755))
+		snapStage := filepath.Join(stagingDir, "snap-stage-11111")
+		require.NoError(t, os.MkdirAll(snapStage, 0o755))
+
+		restoreStage := filepath.Join(dir, "grantory-restore-22222")
+		require.NoError(t, os.MkdirAll(restoreStage, 0o755))
+
+		dbPath := filepath.Join(raftDir, "raft.db")
+		db, err := bbolt.Open(dbPath, 0600, nil)
+		require.NoError(t, err)
+		defer func() { _ = db.Close() }()
+
+		cmd := newClusterRecoverCmd()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{
+			"--database", dir,
+			"--node-id", "survivor-1",
+			"--bind", "127.0.0.1:8081",
+			"--lock-timeout", "50ms",
+		})
+
+		err = cmd.Execute()
+		require.Error(t, err)
+		assert.ErrorIs(t, err, bbolterrors.ErrTimeout)
+		assert.DirExists(t, snapStage, "staging dir must not be cleaned up when lock acquisition times out")
+		assert.DirExists(t, restoreStage, "restore staging dir must not be cleaned up when lock acquisition times out")
+		assert.NoDirExists(t, filepath.Join(raftDir, "snapshots"), "snapshots directory must not be created when lock acquisition times out")
+	})
 }
 
 func TestClusterRecoverWithExistingState(t *testing.T) {
