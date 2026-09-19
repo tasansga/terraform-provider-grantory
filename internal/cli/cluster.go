@@ -13,18 +13,23 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	hashiraft "github.com/hashicorp/raft"
 	raftboltdb "github.com/hashicorp/raft-boltdb/v2"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"go.etcd.io/bbolt"
+	bbolterrors "go.etcd.io/bbolt/errors"
 
 	clusterraft "github.com/tasansga/terraform-provider-grantory/internal/cluster/raft"
 	"github.com/tasansga/terraform-provider-grantory/internal/config"
 	"github.com/tasansga/terraform-provider-grantory/internal/storage"
 	"github.com/tasansga/terraform-provider-grantory/internal/store"
 )
+
+const FlagLockTimeout = "lock-timeout"
 
 func newClusterCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -65,6 +70,7 @@ func newClusterRecoverCmd() *cobra.Command {
 	cmd.Flags().String("database", config.DefaultDataDir, "database directory path (env: "+config.EnvDatabase+")")
 	cmd.Flags().String("node-id", "", "node ID of surviving node (env: "+config.EnvRaftNodeID+")")
 	cmd.Flags().String("bind", "", "Raft bind/advertise address of surviving node (env: "+config.EnvRaftAdvertise+" or "+config.EnvRaftBind+")")
+	cmd.Flags().String(FlagLockTimeout, config.DefaultRaftLockTimeout.String(), "timeout waiting for exclusive lock on Raft database (env: "+config.EnvRaftLockTimeout+", "+config.EnvGrantoryRaftLockTimeout+", or "+config.EnvGrantoryLockTimeout+")")
 
 	return cmd
 }
@@ -78,8 +84,6 @@ func runClusterRecover(cmd *cobra.Command, _ []string) error {
 	if storage.IsPostgresDSN(dataDir) {
 		return errors.New("raft cluster recovery is not supported for postgresql backend")
 	}
-
-	clusterraft.CleanupStagingDirs(filepath.Join(dataDir, clusterraft.RaftDirName, clusterraft.StagingDirName), dataDir)
 
 	nodeID := resolveClusterFlagOrEnv(cmd, "node-id", config.EnvRaftNodeID)
 	if nodeID == "" {
@@ -99,16 +103,12 @@ func runClusterRecover(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("cluster recover address %q cannot have an unspecified IP host (0.0.0.0 or ::); provide a routable address via --bind or %s", bindAddr, config.EnvRaftAdvertise)
 	}
 
+	lockTimeout, err := resolveClusterDurationFlagOrEnv(cmd, FlagLockTimeout, config.EnvRaftLockTimeout, config.EnvGrantoryRaftLockTimeout, config.EnvGrantoryLockTimeout)
+	if err != nil {
+		return err
+	}
+
 	raftDir := filepath.Join(dataDir, clusterraft.RaftDirName)
-	if err := os.MkdirAll(raftDir, 0o755); err != nil {
-		return fmt.Errorf("create raft directory %q: %w", raftDir, err)
-	}
-
-	snapshotDir := filepath.Join(raftDir, clusterraft.SnapshotsDirName)
-	if err := os.MkdirAll(snapshotDir, 0o755); err != nil {
-		return fmt.Errorf("create snapshot directory %q: %w", snapshotDir, err)
-	}
-
 	dbPath := filepath.Join(raftDir, clusterraft.RaftDBFileName)
 	if _, err := os.Stat(dbPath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -116,11 +116,41 @@ func runClusterRecover(cmd *cobra.Command, _ []string) error {
 		}
 		return fmt.Errorf("stat raft database %q: %w", dbPath, err)
 	}
-	boltStore, err := raftboltdb.NewBoltStore(dbPath)
+
+	logrus.WithFields(logrus.Fields{
+		"node_id":      nodeID,
+		"bind":         bindAddr,
+		"database":     dataDir,
+		"lock_timeout": lockTimeout.String(),
+	}).Info("starting Raft cluster recovery")
+
+	logrus.WithFields(logrus.Fields{
+		"raft_db":      dbPath,
+		"lock_timeout": lockTimeout.String(),
+	}).Info("acquiring exclusive lock on Raft database")
+
+	boltStore, err := raftboltdb.New(raftboltdb.Options{
+		Path: dbPath,
+		BoltOptions: &bbolt.Options{
+			Timeout: lockTimeout,
+		},
+	})
 	if err != nil {
-		return fmt.Errorf("open bolt store %q: %w (ensure grantory serve is stopped before running cluster recovery)", dbPath, err)
+		if errors.Is(err, bbolterrors.ErrTimeout) {
+			return fmt.Errorf("open bolt store %q: %w (ensure grantory serve is stopped before running cluster recovery)", dbPath, err)
+		}
+		return fmt.Errorf("open bolt store %q: %w", dbPath, err)
 	}
 	defer func() { _ = boltStore.Close() }()
+
+	logrus.WithField("raft_db", dbPath).Info("acquired Raft database lock")
+
+	clusterraft.CleanupStagingDirs(filepath.Join(dataDir, clusterraft.RaftDirName, clusterraft.StagingDirName), dataDir)
+
+	snapshotDir := filepath.Join(raftDir, clusterraft.SnapshotsDirName)
+	if err := os.MkdirAll(snapshotDir, 0o755); err != nil {
+		return fmt.Errorf("create snapshot directory %q: %w", snapshotDir, err)
+	}
 
 	snapshotStore, err := hashiraft.NewFileSnapshotStore(snapshotDir, 3, clusterraft.NewRaftLogWriter(logrus.WithField("component", "raft"), logrus.InfoLevel))
 	if err != nil {
@@ -163,6 +193,11 @@ func runClusterRecover(cmd *cobra.Command, _ []string) error {
 			},
 		},
 	}
+
+	logrus.WithFields(logrus.Fields{
+		"node_id": nodeID,
+		"bind":    bindAddr,
+	}).Info("rewriting Raft cluster configuration to single-node")
 
 	if err := hashiraft.RecoverCluster(raftConfig, fsm, boltStore, boltStore, snapshotStore, transport, configuration); err != nil {
 		return fmt.Errorf("recover cluster: %w", err)
@@ -458,24 +493,21 @@ func lookupFlag(cmd *cobra.Command, flagName string) *pflag.Flag {
 		return nil
 	}
 	for curr := cmd; curr != nil; curr = curr.Parent() {
-		if flag := curr.Flags().Lookup(flagName); flag != nil && flag.Changed {
-			return flag
-		}
-		if flag := curr.PersistentFlags().Lookup(flagName); flag != nil && flag.Changed {
+		if flag := curr.Flag(flagName); flag != nil && flag.Changed {
 			return flag
 		}
 	}
 	for curr := cmd; curr != nil; curr = curr.Parent() {
-		if flag := curr.Flags().Lookup(flagName); flag != nil {
-			return flag
-		}
-		if flag := curr.PersistentFlags().Lookup(flagName); flag != nil {
+		if flag := curr.Flag(flagName); flag != nil {
 			return flag
 		}
 	}
 	return nil
 }
 
+// resolveClusterFlagOrEnv resolves a flag value with env var and default fallback,
+// preserving legacy empty-string fallback behavior for string flags, whereas
+// resolveClusterDurationFlagOrEnv enforces strict non-empty syntax on duration flags.
 func resolveClusterFlagOrEnv(cmd *cobra.Command, flagName string, envVars ...string) string {
 	flag := lookupFlag(cmd, flagName)
 	if flag != nil && flag.Changed && strings.TrimSpace(flag.Value.String()) != "" {
@@ -490,6 +522,47 @@ func resolveClusterFlagOrEnv(cmd *cobra.Command, flagName string, envVars ...str
 		return strings.TrimSpace(flag.DefValue)
 	}
 	return ""
+}
+
+func resolveClusterDurationFlagOrEnv(cmd *cobra.Command, flagName string, envVars ...string) (time.Duration, error) {
+	flag := lookupFlag(cmd, flagName)
+	var source, val string
+	if flag != nil && flag.Changed {
+		source = "--" + flagName
+		raw := flag.Value.String()
+		val = strings.TrimSpace(raw)
+		if val == "" {
+			return 0, fmt.Errorf("invalid %s %q: duration cannot be empty", source, raw)
+		}
+	} else {
+		for _, envVar := range envVars {
+			if envVal := strings.TrimSpace(os.Getenv(envVar)); envVal != "" {
+				source = envVar
+				val = envVal
+				break
+			}
+		}
+	}
+
+	if val == "" {
+		if flag != nil && strings.TrimSpace(flag.DefValue) != "" {
+			source = "--" + flagName
+			val = strings.TrimSpace(flag.DefValue)
+		}
+	}
+
+	if val == "" {
+		return 0, fmt.Errorf("--%s is required", flagName)
+	}
+
+	d, err := time.ParseDuration(val)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s %q: %w", source, val, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("invalid %s %q: duration must be greater than zero", source, val)
+	}
+	return d, nil
 }
 
 func resolveClusterNodeAddress(cmd *cobra.Command, nodeID string, nodeIDExplicit bool) string {
