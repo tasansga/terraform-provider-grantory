@@ -366,3 +366,49 @@ func TestUpdateGrantPreservesEmptyPayloadObject(t *testing.T) {
 		t.Fatalf("update grant: %v", err)
 	}
 }
+
+func TestPrivateKeyContext(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	if key := PrivateKeyFromContext(ctx); key != nil {
+		t.Fatalf("expected nil key from background context, got %v", key)
+	}
+
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	ctx = WithPrivateKey(ctx, priv)
+	retrieved := PrivateKeyFromContext(ctx)
+	if retrieved == nil || !retrieved.Equal(priv) {
+		t.Fatalf("expected retrieved key to match original private key")
+	}
+}
+
+func TestAPIErrorsHelpers(t *testing.T) {
+	t.Parallel()
+
+	if IsNotFound(nil) || IsConflict(nil) || IsUnauthorized(nil) {
+		t.Fatalf("expected helpers to return false for nil error")
+	}
+	if IsNotFound(errors.New("other")) || IsConflict(errors.New("other")) || IsUnauthorized(errors.New("other")) {
+		t.Fatalf("expected helpers to return false for standard error")
+	}
+
+	err404 := &APIError{StatusCode: http.StatusNotFound, Message: "not found"}
+	if !IsNotFound(err404) || IsConflict(err404) || IsUnauthorized(err404) {
+		t.Fatalf("expected IsNotFound true, others false for 404")
+	}
+
+	err409 := &APIError{StatusCode: http.StatusConflict, Message: "conflict"}
+	if !IsConflict(err409) || IsNotFound(err409) || IsUnauthorized(err409) {
+		t.Fatalf("expected IsConflict true, others false for 409")
+	}
+
+	err401 := &APIError{StatusCode: http.StatusUnauthorized, Message: "unauthorized"}
+	if !IsUnauthorized(err401) || IsNotFound(err401) || IsConflict(err401) {
+		t.Fatalf("expected IsUnauthorized true, others false for 401")
+	}
+}

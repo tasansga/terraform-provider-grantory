@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"reflect"
 	"strconv"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -26,10 +28,11 @@ const noGrantRequeueDelay = 10 * time.Second
 
 type GrantoryRequestReconciler struct {
 	client.Client
-	Scheme            *runtime.Scheme
-	Recorder          events.EventRecorder
-	GrantoryClient    *apiclient.Client
-	GrantoryNamespace string
+	Scheme              *runtime.Scheme
+	Recorder            events.EventRecorder
+	GrantoryClient      *apiclient.Client
+	GrantoryNamespace   string
+	DefaultHostProvider DefaultHostProvider
 }
 
 func (r *GrantoryRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -42,13 +45,27 @@ func (r *GrantoryRequestReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	if request.DeletionTimestamp != nil {
-		if request.Spec.DeleteOnRemoval && request.Status.ID != "" {
-			if err := r.GrantoryClient.DeleteRequest(ctx, request.Status.ID); err != nil {
-				if apiclient.IsNotFound(err) {
-					// Already deleted.
-				} else {
-					return ctrl.Result{}, err
+		if request.Spec.ShouldDeleteOnRemoval() && request.Status.ID != "" && !hasForceRemoveAnnotation(&request) {
+			if r.DefaultHostProvider != nil && !r.DefaultHostProvider.IsReady() && request.Spec.HostID == "" && request.Spec.HostRef == nil && request.Spec.PrivateKeySecretRef == nil {
+				return ctrl.Result{RequeueAfter: time.Second}, nil
+			}
+			var defaultHostID string
+			if r.DefaultHostProvider != nil {
+				if id, _ := r.DefaultHostProvider.GetDefaultHost(); id != "" {
+					defaultHostID = id
 				}
+			}
+			hostID, _, _ := resolveHostID(ctx, r.Client, request.Namespace, request.Spec.HostID, request.Spec.HostRef, defaultHostID)
+			delCtx, err := resolveSigningContext(ctx, r.Client, request.Namespace, request.Spec.PrivateKeySecretRef, request.Spec.KeyFormat, hostID, request.Spec.HostRef, r.DefaultHostProvider)
+			if err != nil && !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, err
+			}
+			secretMissing := err != nil && apierrors.IsNotFound(err)
+			if err := r.GrantoryClient.DeleteRequest(delCtx, request.Status.ID); err != nil && !apiclient.IsNotFound(err) {
+				if secretMissing && apiclient.IsUnauthorized(err) && r.Recorder != nil {
+					r.Recorder.Eventf(&request, nil, "Warning", "SecretNotFoundCannotSignDelete", "Delete", "Signing secret missing; annotate with %s: 'true' to force finalizer removal", ForceRemoveFinalizerAnnotation)
+				}
+				return ctrl.Result{}, err
 			}
 		}
 		if removeFinalizer(&request) {
@@ -57,12 +74,22 @@ func (r *GrantoryRequestReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, nil
 	}
 
-	if ensureFinalizer(request.Spec.DeleteOnRemoval, &request) {
+	if syncFinalizer(request.Spec.ShouldDeleteOnRemoval(), &request) {
 		return ctrl.Result{}, r.Update(ctx, &request)
 	}
 
-	hostID, result, err := resolveHostID(ctx, r.Client, request.Namespace, request.Spec.HostID, request.Spec.HostRef)
+	var defaultHostID string
+	if r.DefaultHostProvider != nil {
+		if id, _ := r.DefaultHostProvider.GetDefaultHost(); id != "" {
+			defaultHostID = id
+		}
+	}
+
+	hostID, result, err := resolveHostID(ctx, r.Client, request.Namespace, request.Spec.HostID, request.Spec.HostRef, defaultHostID)
 	if err != nil {
+		if r.DefaultHostProvider != nil && request.Spec.HostID == "" && request.Spec.HostRef == nil {
+			return ctrl.Result{RequeueAfter: time.Second}, nil
+		}
 		status := request.Status
 		status.ObservedGeneration = request.Generation
 		status.Conditions = setReadyCondition(status.Conditions, metav1.ConditionFalse, "InvalidHost", err.Error(), request.Generation)
@@ -77,6 +104,22 @@ func (r *GrantoryRequestReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return result, nil
 	}
 
+	ctx, err = resolveSigningContext(ctx, r.Client, request.Namespace, request.Spec.PrivateKeySecretRef, request.Spec.KeyFormat, hostID, request.Spec.HostRef, r.DefaultHostProvider)
+	if err != nil {
+		if apierrors.IsNotFound(err) && request.Spec.PrivateKeySecretRef != nil {
+			status := request.Status
+			status.ObservedGeneration = request.Generation
+			status.Conditions = setReadyCondition(status.Conditions, metav1.ConditionFalse, "WaitingForSecret", fmt.Sprintf("Waiting for referenced secret %s", request.Spec.PrivateKeySecretRef.Name), request.Generation)
+			_ = updateRequestStatus(ctx, r.Client, &request, status)
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		}
+		status := request.Status
+		status.ObservedGeneration = request.Generation
+		status.Conditions = setReadyCondition(status.Conditions, metav1.ConditionFalse, "InvalidPrivateKey", err.Error(), request.Generation)
+		_ = updateRequestStatus(ctx, r.Client, &request, status)
+		return ctrl.Result{}, err
+	}
+
 	var response apiclient.Request
 	desiredPayload, err := rawExtensionToMap(request.Spec.Payload)
 	if err != nil {
@@ -86,6 +129,11 @@ func (r *GrantoryRequestReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		_ = updateRequestStatus(ctx, r.Client, &request, status)
 		return ctrl.Result{}, err
 	}
+	labels := request.Spec.Labels
+	if labels == nil {
+		labels = map[string]string{}
+	}
+
 	if request.Status.ID == "" {
 		created, err := r.GrantoryClient.CreateRequest(ctx, apiclient.RequestCreatePayload{
 			HostID:                    hostID,
@@ -93,7 +141,8 @@ func (r *GrantoryRequestReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			GrantSchemaDefinitionID:   request.Spec.GrantSchemaDefinitionID,
 			UniqueKey:                 request.Spec.UniqueKey,
 			Payload:                   desiredPayload,
-			Labels:                    request.Spec.Labels,
+			Mutable:                   request.Spec.Mutable,
+			Labels:                    labels,
 		})
 		if err != nil {
 			status := request.Status
@@ -110,41 +159,91 @@ func (r *GrantoryRequestReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			r.Recorder.Eventf(&request, nil, "Normal", "Created", "Create", "Created Grantory request %s", created.ID)
 		}
 	} else {
-		labels := request.Spec.Labels
-		if labels == nil {
-			labels = map[string]string{}
-		}
-		updated, err := r.GrantoryClient.UpdateRequestLabels(ctx, request.Status.ID, labels)
+		existing, err := r.GrantoryClient.GetRequest(ctx, request.Status.ID)
 		if err != nil {
 			if apiclient.IsNotFound(err) {
 				status := request.Status
 				status.ID = ""
+				status.HasGrant = false
+				status.GrantID = ""
+				status.GrantPayload = runtime.RawExtension{}
 				status.Conditions = setReadyCondition(status.Conditions, metav1.ConditionFalse, "NotFound", "Request not found in Grantory, will recreate", request.Generation)
 				_ = updateRequestStatus(ctx, r.Client, &request, status)
 				return ctrl.Result{}, nil
 			}
 			status := request.Status
 			status.ObservedGeneration = request.Generation
-			status.Conditions = setReadyCondition(status.Conditions, metav1.ConditionFalse, "UpdateFailed", err.Error(), request.Generation)
+			status.Conditions = setReadyCondition(status.Conditions, metav1.ConditionFalse, "GetFailed", err.Error(), request.Generation)
+			_ = updateRequestStatus(ctx, r.Client, &request, status)
+			return ctrl.Result{}, err
+		}
+
+		if existing.HostID != hostID {
+			err := fmt.Errorf("request host identity is immutable on existing request (status=%s, current=%s, spec=%s); recreating is blocked to prevent signature invalidation", request.Status.ID, existing.HostID, hostID)
+			status := request.Status
+			status.ObservedGeneration = request.Generation
+			status.Conditions = setReadyCondition(status.Conditions, metav1.ConditionFalse, "ImmutableFieldChanged", err.Error(), request.Generation)
 			_ = updateRequestStatus(ctx, r.Client, &request, status)
 			if r.Recorder != nil {
-				r.Recorder.Eventf(&request, nil, "Warning", "UpdateFailed", "Update", "%s", err.Error())
+				r.Recorder.Eventf(&request, nil, "Warning", "ImmutableFieldChanged", "Update", "%s", err.Error())
 			}
 			return ctrl.Result{}, err
 		}
-		response = updated
-	}
 
-	if !requestSpecMatchesResponse(request.Spec, hostID, desiredPayload, response) {
-		if err := r.GrantoryClient.DeleteRequest(ctx, response.ID); err != nil && !apiclient.IsNotFound(err) {
-			return ctrl.Result{}, err
+		immutableFieldChanged := existing.RequestSchemaDefinitionID != request.Spec.RequestSchemaDefinitionID ||
+			existing.GrantSchemaDefinitionID != request.Spec.GrantSchemaDefinitionID ||
+			existing.UniqueKey != request.Spec.UniqueKey ||
+			existing.Mutable != request.Spec.Mutable
+
+		payloadChanged := !reflect.DeepEqual(normalizePayload(desiredPayload), normalizePayload(existing.Payload))
+		labelsChanged := !maps.Equal(existing.Labels, labels)
+
+		if immutableFieldChanged || (!request.Spec.Mutable && payloadChanged) {
+			if err := r.GrantoryClient.DeleteRequest(ctx, existing.ID); err != nil && !apiclient.IsNotFound(err) {
+				return ctrl.Result{}, err
+			}
+			status := request.Status
+			status.ID = ""
+			status.HasGrant = false
+			status.GrantID = ""
+			status.GrantPayload = runtime.RawExtension{}
+			status.ObservedGeneration = request.Generation
+			status.Conditions = setReadyCondition(status.Conditions, metav1.ConditionFalse, "SpecChanged", "Request immutable fields changed, recreating", request.Generation)
+			_ = updateRequestStatus(ctx, r.Client, &request, status)
+			return ctrl.Result{RequeueAfter: time.Second}, nil
 		}
-		status := request.Status
-		status.ID = ""
-		status.ObservedGeneration = request.Generation
-		status.Conditions = setReadyCondition(status.Conditions, metav1.ConditionFalse, "SpecChanged", "Request spec changed, recreating", request.Generation)
-		_ = updateRequestStatus(ctx, r.Client, &request, status)
-		return ctrl.Result{RequeueAfter: time.Second}, nil
+
+		response = existing
+		if request.Spec.Mutable && (payloadChanged || labelsChanged) {
+			updated, err := r.GrantoryClient.UpdateRequest(ctx, request.Status.ID, apiclient.RequestUpdatePayload{
+				Payload: desiredPayload,
+				Labels:  labels,
+			})
+			if err != nil {
+				status := request.Status
+				status.ObservedGeneration = request.Generation
+				status.Conditions = setReadyCondition(status.Conditions, metav1.ConditionFalse, "UpdateFailed", err.Error(), request.Generation)
+				_ = updateRequestStatus(ctx, r.Client, &request, status)
+				if r.Recorder != nil {
+					r.Recorder.Eventf(&request, nil, "Warning", "UpdateFailed", "Update", "%s", err.Error())
+				}
+				return ctrl.Result{}, err
+			}
+			response = updated
+		} else if labelsChanged {
+			updated, err := r.GrantoryClient.UpdateRequestLabels(ctx, request.Status.ID, labels)
+			if err != nil {
+				status := request.Status
+				status.ObservedGeneration = request.Generation
+				status.Conditions = setReadyCondition(status.Conditions, metav1.ConditionFalse, "UpdateFailed", err.Error(), request.Generation)
+				_ = updateRequestStatus(ctx, r.Client, &request, status)
+				if r.Recorder != nil {
+					r.Recorder.Eventf(&request, nil, "Warning", "UpdateFailed", "Update", "%s", err.Error())
+				}
+				return ctrl.Result{}, err
+			}
+			response = updated
+		}
 	}
 
 	status := request.Status
@@ -153,12 +252,18 @@ func (r *GrantoryRequestReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	status.GrantID = response.GrantID
 	status.ObservedGeneration = request.Generation
 	status.Conditions = setReadyCondition(status.Conditions, metav1.ConditionTrue, "Reconciled", "Request synced to Grantory", request.Generation)
+	var grantRaw []byte
 	if response.Grant != nil {
-		grantRaw, err := grantPayloadRaw(response.Grant)
+		raw, err := grantPayloadRaw(response.Grant)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("marshal grant payload: %w", err)
 		}
-		status.GrantPayload = runtime.RawExtension{Raw: grantRaw}
+		grantRaw = raw
+		if !strings.EqualFold(strings.TrimSpace(request.Spec.GrantOutputKind), "secret") {
+			status.GrantPayload = runtime.RawExtension{Raw: raw}
+		} else {
+			status.GrantPayload = runtime.RawExtension{}
+		}
 	} else {
 		status.GrantPayload = runtime.RawExtension{}
 	}
@@ -178,7 +283,7 @@ func (r *GrantoryRequestReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	if request.Spec.GrantOutputKind == "" {
-		if err := r.deleteAllGrantOutputs(ctx, request); err != nil {
+		if err := r.cleanupGrantOutputs(ctx, request, ""); err != nil {
 			return ctrl.Result{}, err
 		}
 		return requeueResult, nil
@@ -188,20 +293,36 @@ func (r *GrantoryRequestReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
-	if len(status.GrantPayload.Raw) == 0 {
+	if len(grantRaw) == 0 {
 		if err := r.deleteGrantOutput(ctx, request, outputName); err != nil {
 			return ctrl.Result{}, err
 		}
 		return requeueResult, nil
 	}
 
-	data, err := buildGrantOutputData(status.GrantPayload.Raw, request.Spec.GrantOutputKeys)
+	data, err := buildGrantOutputData(grantRaw, request.Spec.GrantOutputKeys)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
 	switch strings.ToLower(strings.TrimSpace(request.Spec.GrantOutputKind)) {
 	case "secret":
+		var existing corev1.Secret
+		if err := r.Get(ctx, types.NamespacedName{Name: outputName, Namespace: request.Namespace}, &existing); err == nil {
+			if !isOwnedByRequest(&existing, &request) {
+				err := fmt.Errorf("target output Secret %s/%s already exists and is not owned by this GrantoryRequest", request.Namespace, outputName)
+				status := request.Status
+				status.ObservedGeneration = request.Generation
+				status.Conditions = setReadyCondition(status.Conditions, metav1.ConditionFalse, "OutputConflict", err.Error(), request.Generation)
+				_ = updateRequestStatus(ctx, r.Client, &request, status)
+				if r.Recorder != nil {
+					r.Recorder.Eventf(&request, nil, "Warning", "OutputConflict", "Output", "%s", err.Error())
+				}
+				return ctrl.Result{}, err
+			}
+		} else if !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
 		secret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      outputName,
@@ -218,6 +339,22 @@ func (r *GrantoryRequestReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			return ctrl.Result{}, err
 		}
 	case "configmap":
+		var existing corev1.ConfigMap
+		if err := r.Get(ctx, types.NamespacedName{Name: outputName, Namespace: request.Namespace}, &existing); err == nil {
+			if !isOwnedByRequest(&existing, &request) {
+				err := fmt.Errorf("target output ConfigMap %s/%s already exists and is not owned by this GrantoryRequest", request.Namespace, outputName)
+				status := request.Status
+				status.ObservedGeneration = request.Generation
+				status.Conditions = setReadyCondition(status.Conditions, metav1.ConditionFalse, "OutputConflict", err.Error(), request.Generation)
+				_ = updateRequestStatus(ctx, r.Client, &request, status)
+				if r.Recorder != nil {
+					r.Recorder.Eventf(&request, nil, "Warning", "OutputConflict", "Output", "%s", err.Error())
+				}
+				return ctrl.Result{}, err
+			}
+		} else if !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
 		configMap := &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      outputName,
@@ -246,21 +383,6 @@ func (r *GrantoryRequestReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func rawExtensionToMap(raw runtime.RawExtension) (map[string]any, error) {
-	if len(raw.Raw) == 0 {
-		return nil, nil
-	}
-	var out any
-	if err := json.Unmarshal(raw.Raw, &out); err != nil {
-		return nil, fmt.Errorf("parse payload: %w", err)
-	}
-	mapped, ok := out.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("payload must be a JSON object")
-	}
-	return mapped, nil
-}
-
 func grantPayloadRaw(grant map[string]any) ([]byte, error) {
 	if grant == nil {
 		return nil, nil
@@ -271,50 +393,33 @@ func grantPayloadRaw(grant map[string]any) ([]byte, error) {
 	return json.Marshal(grant)
 }
 
-func requestSpecMatchesResponse(spec v1alpha1.GrantoryRequestSpec, hostID string, payload map[string]any, response apiclient.Request) bool {
-	if response.HostID != hostID {
-		return false
-	}
-	if response.RequestSchemaDefinitionID != spec.RequestSchemaDefinitionID {
-		return false
-	}
-	if response.GrantSchemaDefinitionID != spec.GrantSchemaDefinitionID {
-		return false
-	}
-	if response.UniqueKey != spec.UniqueKey {
-		return false
-	}
-	return reflect.DeepEqual(normalizePayload(payload), normalizePayload(response.Payload))
-}
-
-func normalizePayload(payload map[string]any) map[string]any {
-	if len(payload) == 0 {
-		return nil
-	}
-	return payload
-}
-
 func (r *GrantoryRequestReconciler) deleteGrantOutput(ctx context.Context, request v1alpha1.GrantoryRequest, outputName string) error {
 	switch strings.ToLower(strings.TrimSpace(request.Spec.GrantOutputKind)) {
 	case "secret":
-		secret := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      outputName,
-				Namespace: request.Namespace,
-			},
-		}
-		if err := r.Delete(ctx, secret); err != nil && !apierrors.IsNotFound(err) {
+		var secret corev1.Secret
+		if err := r.Get(ctx, types.NamespacedName{Name: outputName, Namespace: request.Namespace}, &secret); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
 			return err
+		}
+		if isOwnedByRequest(&secret, &request) {
+			if err := r.Delete(ctx, &secret); err != nil && !apierrors.IsNotFound(err) {
+				return err
+			}
 		}
 	case "configmap":
-		configMap := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      outputName,
-				Namespace: request.Namespace,
-			},
-		}
-		if err := r.Delete(ctx, configMap); err != nil && !apierrors.IsNotFound(err) {
+		var configMap corev1.ConfigMap
+		if err := r.Get(ctx, types.NamespacedName{Name: outputName, Namespace: request.Namespace}, &configMap); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
 			return err
+		}
+		if isOwnedByRequest(&configMap, &request) {
+			if err := r.Delete(ctx, &configMap); err != nil && !apierrors.IsNotFound(err) {
+				return err
+			}
 		}
 	default:
 		return fmt.Errorf("unsupported grantOutputKind %q", request.Spec.GrantOutputKind)
@@ -368,37 +473,6 @@ func isOwnedByRequest(obj metav1.Object, request *v1alpha1.GrantoryRequest) bool
 		return false
 	}
 	return owner.UID == request.UID
-}
-
-func (r *GrantoryRequestReconciler) deleteAllGrantOutputs(ctx context.Context, request v1alpha1.GrantoryRequest) error {
-	secretList := &corev1.SecretList{}
-	if err := r.List(ctx, secretList, client.InNamespace(request.Namespace)); err != nil {
-		return err
-	}
-	for i := range secretList.Items {
-		secret := &secretList.Items[i]
-		if !isOwnedByRequest(secret, &request) {
-			continue
-		}
-		if err := r.Delete(ctx, secret); err != nil && !apierrors.IsNotFound(err) {
-			return err
-		}
-	}
-
-	configMapList := &corev1.ConfigMapList{}
-	if err := r.List(ctx, configMapList, client.InNamespace(request.Namespace)); err != nil {
-		return err
-	}
-	for i := range configMapList.Items {
-		configMap := &configMapList.Items[i]
-		if !isOwnedByRequest(configMap, &request) {
-			continue
-		}
-		if err := r.Delete(ctx, configMap); err != nil && !apierrors.IsNotFound(err) {
-			return err
-		}
-	}
-	return nil
 }
 
 func buildGrantOutputData(raw []byte, mappings map[string]string) (map[string]string, error) {

@@ -57,15 +57,38 @@ spec:
                   type: object
                   x-kubernetes-preserve-unknown-fields: true
                   description: JSON payload describing the register entry.
+                mutable:
+                  type: boolean
+                  default: false
+                  description: When true, payload and labels can be updated in-place without recreating the register.
                 labels:
                   type: object
                   additionalProperties:
                     type: string
                   description: Optional labels to attach to the register entry.
+                privateKeySecretRef:
+                  type: object
+                  description: Optional reference to a Secret containing the Ed25519 private key for signing requests.
+                  required:
+                    - name
+                  properties:
+                    name:
+                      type: string
+                      description: Name of the Secret.
+                    key:
+                      type: string
+                      description: Optional key in the Secret data containing the private key.
+                keyFormat:
+                  type: string
+                  enum:
+                    - hex
+                    - pem
+                  default: hex
+                  description: "Format of the private key: hex or pem (PKCS#8 PEM; OpenSSH format is not supported)."
                 deleteOnRemoval:
                   type: boolean
-                  default: false
-                  description: Delete the Grantory register entry when this resource is deleted.
+                  default: true
+                  description: Delete the Grantory register entry when this resource is deleted. Defaults to true.
             status:
               type: object
               properties:

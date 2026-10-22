@@ -42,16 +42,25 @@ func newControllerCmd() *cobra.Command {
 				return err
 			}
 
+			autoCreateHost := resolveBoolFlagOrEnv(cmd, FlagAutoCreateHost, EnvGrantoryControllerAutoCreateHost)
+			autoHostName := resolveStringFlagOrEnv(cmd, FlagAutoHostName, EnvGrantoryControllerAutoHostName, "grantory-cluster")
+			autoHostSecret := resolveStringFlagOrEnv(cmd, FlagAutoHostSecret, EnvGrantoryControllerAutoHostSecret, "grantory-cluster-host")
+			autoHostSecretNs := resolveStringFlagOrEnv(cmd, FlagAutoHostSecretNamespace, EnvGrantoryControllerAutoHostSecretNamespace, "grantory-system")
+
 			return k8scontroller.Start(ctx, k8scontroller.Options{
-				MetricsBindAddress:     metricsAddr,
-				HealthProbeBindAddress: healthAddr,
-				LeaderElect:            leaderElect,
-				LeaderElectionID:       leaderElectionID,
-				GrantoryServerURL:      controllerCfg.serverURL,
-				GrantoryToken:          controllerCfg.token,
-				GrantoryUser:           controllerCfg.user,
-				GrantoryPassword:       controllerCfg.password,
-				GrantoryNamespace:      namespace,
+				MetricsBindAddress:      metricsAddr,
+				HealthProbeBindAddress:  healthAddr,
+				LeaderElect:             leaderElect,
+				LeaderElectionID:        leaderElectionID,
+				GrantoryServerURL:       controllerCfg.serverURL,
+				GrantoryToken:           controllerCfg.token,
+				GrantoryUser:            controllerCfg.user,
+				GrantoryPassword:        controllerCfg.password,
+				GrantoryNamespace:       namespace,
+				AutoCreateHost:          autoCreateHost,
+				AutoHostName:            autoHostName,
+				AutoHostSecret:          autoHostSecret,
+				AutoHostSecretNamespace: autoHostSecretNs,
 			})
 		},
 	}
@@ -60,8 +69,34 @@ func newControllerCmd() *cobra.Command {
 	cmd.Flags().String(flagHealthProbeBindAddress, ":8081", "health probe bind address")
 	cmd.Flags().Bool(flagLeaderElect, false, "enable leader election")
 	cmd.Flags().String(flagLeaderElectionID, "grantory-controller", "leader election ID")
+	cmd.Flags().Bool(FlagAutoCreateHost, false, "automatically create and register a default cluster host identity")
+	cmd.Flags().String(FlagAutoHostName, "grantory-cluster", "unique key / name for auto-created cluster host")
+	cmd.Flags().String(FlagAutoHostSecret, "grantory-cluster-host", "Secret name used to persist cluster host keys")
+	cmd.Flags().String(FlagAutoHostSecretNamespace, "grantory-system", "Namespace for the cluster host secret")
 
 	return cmd
+}
+
+func resolveBoolFlagOrEnv(cmd *cobra.Command, flagName, envName string) bool {
+	if flag := cmd.Flags().Lookup(flagName); flag != nil && flag.Changed {
+		val, _ := cmd.Flags().GetBool(flagName)
+		return val
+	}
+	envVal := strings.TrimSpace(os.Getenv(envName))
+	return strings.EqualFold(envVal, "true") || envVal == "1"
+}
+
+func resolveStringFlagOrEnv(cmd *cobra.Command, flagName, envName, defaultVal string) string {
+	if flag := cmd.Flags().Lookup(flagName); flag != nil && flag.Changed {
+		val, _ := cmd.Flags().GetString(flagName)
+		if strings.TrimSpace(val) != "" {
+			return val
+		}
+	}
+	if envVal := strings.TrimSpace(os.Getenv(envName)); envVal != "" {
+		return envVal
+	}
+	return defaultVal
 }
 
 type controllerConfig struct {

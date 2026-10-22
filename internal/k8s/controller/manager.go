@@ -15,15 +15,19 @@ import (
 )
 
 type Options struct {
-	MetricsBindAddress     string
-	HealthProbeBindAddress string
-	LeaderElect            bool
-	LeaderElectionID       string
-	GrantoryServerURL      string
-	GrantoryToken          string
-	GrantoryUser           string
-	GrantoryPassword       string
-	GrantoryNamespace      string
+	MetricsBindAddress      string
+	HealthProbeBindAddress  string
+	LeaderElect             bool
+	LeaderElectionID        string
+	GrantoryServerURL       string
+	GrantoryToken           string
+	GrantoryUser            string
+	GrantoryPassword        string
+	GrantoryNamespace       string
+	AutoCreateHost          bool
+	AutoHostName            string
+	AutoHostSecret          string
+	AutoHostSecretNamespace string
 }
 
 func Start(ctx context.Context, opts Options) error {
@@ -64,6 +68,19 @@ func Start(ctx context.Context, opts Options) error {
 		return fmt.Errorf("add ready check: %w", err)
 	}
 
+	var defaultHostProvider DefaultHostProvider
+	if opts.AutoCreateHost {
+		bootstrapper := NewClusterHostBootstrapper(manager.GetAPIReader(), manager.GetClient(), grantoryClient, ClusterHostOptions{
+			HostName:        opts.AutoHostName,
+			SecretName:      opts.AutoHostSecret,
+			SecretNamespace: opts.AutoHostSecretNamespace,
+		})
+		if err := manager.Add(bootstrapper); err != nil {
+			return fmt.Errorf("add cluster host bootstrapper: %w", err)
+		}
+		defaultHostProvider = bootstrapper
+	}
+
 	recorder := manager.GetEventRecorder("grantory-controller")
 	if err := (&GrantoryHostReconciler{
 		Client:            manager.GetClient(),
@@ -75,20 +92,22 @@ func Start(ctx context.Context, opts Options) error {
 		return fmt.Errorf("setup host controller: %w", err)
 	}
 	if err := (&GrantoryRequestReconciler{
-		Client:            manager.GetClient(),
-		Scheme:            manager.GetScheme(),
-		Recorder:          recorder,
-		GrantoryClient:    grantoryClient,
-		GrantoryNamespace: opts.GrantoryNamespace,
+		Client:              manager.GetClient(),
+		Scheme:              manager.GetScheme(),
+		Recorder:            recorder,
+		GrantoryClient:      grantoryClient,
+		GrantoryNamespace:   opts.GrantoryNamespace,
+		DefaultHostProvider: defaultHostProvider,
 	}).SetupWithManager(manager); err != nil {
 		return fmt.Errorf("setup request controller: %w", err)
 	}
 	if err := (&GrantoryRegisterReconciler{
-		Client:            manager.GetClient(),
-		Scheme:            manager.GetScheme(),
-		Recorder:          recorder,
-		GrantoryClient:    grantoryClient,
-		GrantoryNamespace: opts.GrantoryNamespace,
+		Client:              manager.GetClient(),
+		Scheme:              manager.GetScheme(),
+		Recorder:            recorder,
+		GrantoryClient:      grantoryClient,
+		GrantoryNamespace:   opts.GrantoryNamespace,
+		DefaultHostProvider: defaultHostProvider,
 	}).SetupWithManager(manager); err != nil {
 		return fmt.Errorf("setup register controller: %w", err)
 	}

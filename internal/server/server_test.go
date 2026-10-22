@@ -1446,7 +1446,8 @@ func TestServer_MultiListenerTeardown(t *testing.T) {
 		require.NoError(t, tcpLn.Close())
 
 		select {
-		case <-serverErrCh:
+		case err := <-serverErrCh:
+			_ = err
 			// Server shut down cleanly
 		case <-time.After(3 * time.Second):
 			t.Fatal("server hung: closing one listener did not trigger shutdown of sibling listener")
@@ -1473,7 +1474,8 @@ func TestServer_MultiListenerTeardown(t *testing.T) {
 		_ = ln2.Close()
 
 		select {
-		case <-serverErrCh:
+		case err := <-serverErrCh:
+			_ = err
 			// Both listeners exited promptly
 		case <-time.After(3 * time.Second):
 			t.Fatal("server hung waiting for sibling listener to exit")
@@ -1512,7 +1514,8 @@ func TestServer_Serve_ListenerUnification(t *testing.T) {
 
 		_ = app.Shutdown()
 		select {
-		case <-serverErrCh:
+		case err := <-serverErrCh:
+			_ = err
 		case <-time.After(3 * time.Second):
 			t.Fatal("server did not shut down cleanly")
 		}

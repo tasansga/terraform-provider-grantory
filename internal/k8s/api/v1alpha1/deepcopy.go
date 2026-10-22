@@ -14,6 +14,10 @@ func (in *GrantoryHost) DeepCopyObject() runtime.Object {
 	out.ObjectMeta = *in.ObjectMeta.DeepCopy() //nolint:staticcheck
 	out.Spec.Labels = copyStringMap(in.Spec.Labels)
 	out.Status.Conditions = copyConditions(in.Status.Conditions)
+	if in.Spec.DeleteOnRemoval != nil {
+		del := *in.Spec.DeleteOnRemoval
+		out.Spec.DeleteOnRemoval = &del
+	}
 	return out
 }
 
@@ -49,6 +53,14 @@ func (in *GrantoryRequest) DeepCopyObject() runtime.Object {
 		hostRef := *in.Spec.HostRef
 		out.Spec.HostRef = &hostRef
 	}
+	if in.Spec.PrivateKeySecretRef != nil {
+		ref := *in.Spec.PrivateKeySecretRef
+		out.Spec.PrivateKeySecretRef = &ref
+	}
+	if in.Spec.DeleteOnRemoval != nil {
+		del := *in.Spec.DeleteOnRemoval
+		out.Spec.DeleteOnRemoval = &del
+	}
 	return out
 }
 
@@ -81,6 +93,14 @@ func (in *GrantoryRegister) DeepCopyObject() runtime.Object {
 	if in.Spec.HostRef != nil {
 		hostRef := *in.Spec.HostRef
 		out.Spec.HostRef = &hostRef
+	}
+	if in.Spec.PrivateKeySecretRef != nil {
+		ref := *in.Spec.PrivateKeySecretRef
+		out.Spec.PrivateKeySecretRef = &ref
+	}
+	if in.Spec.DeleteOnRemoval != nil {
+		del := *in.Spec.DeleteOnRemoval
+		out.Spec.DeleteOnRemoval = &del
 	}
 	return out
 }

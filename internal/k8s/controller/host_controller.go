@@ -3,6 +3,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
+	"strings"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -34,7 +36,7 @@ func (r *GrantoryHostReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	if host.DeletionTimestamp != nil {
-		if host.Spec.DeleteOnRemoval && host.Status.ID != "" {
+		if host.Spec.ShouldDeleteOnRemoval() && host.Status.ID != "" && !hasForceRemoveAnnotation(&host) {
 			if err := r.GrantoryClient.DeleteHost(ctx, host.Status.ID); err != nil {
 				if apiclient.IsNotFound(err) {
 					// Already gone.
@@ -49,7 +51,19 @@ func (r *GrantoryHostReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, nil
 	}
 
-	if ensureFinalizer(host.Spec.DeleteOnRemoval, &host) {
+	if host.Status.ID != "" && host.Spec.GrantoryHostID != "" && host.Status.ID != host.Spec.GrantoryHostID {
+		err := fmt.Errorf("host grantoryHostID is immutable on existing host (status=%s, spec=%s); recreating is blocked to prevent cascading deletion", host.Status.ID, host.Spec.GrantoryHostID)
+		status := host.Status
+		status.ObservedGeneration = host.Generation
+		status.Conditions = setReadyCondition(status.Conditions, metav1.ConditionFalse, "ImmutableFieldChanged", err.Error(), host.Generation)
+		_ = updateHostStatus(ctx, r.Client, &host, status)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(&host, nil, "Warning", "ImmutableFieldChanged", "Update", "%s", err.Error())
+		}
+		return ctrl.Result{}, err
+	}
+
+	if syncFinalizer(host.Spec.ShouldDeleteOnRemoval(), &host) {
 		return ctrl.Result{}, r.Update(ctx, &host)
 	}
 
@@ -73,14 +87,23 @@ func (r *GrantoryHostReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			return ctrl.Result{}, err
 		}
 		remoteID = existing.ID
-		if _, err := r.GrantoryClient.UpdateHostLabels(ctx, existing.ID, labels); err != nil {
-			status.Conditions = setReadyCondition(status.Conditions, metav1.ConditionFalse, "UpdateFailed", err.Error(), host.Generation)
+		if host.Spec.Labels != nil && !maps.Equal(existing.Labels, host.Spec.Labels) {
+			if _, err := r.GrantoryClient.UpdateHostLabels(ctx, existing.ID, host.Spec.Labels); err != nil {
+				status.Conditions = setReadyCondition(status.Conditions, metav1.ConditionFalse, "UpdateFailed", err.Error(), host.Generation)
+				_ = updateHostStatus(ctx, r.Client, &host, status)
+				return ctrl.Result{}, err
+			}
+		}
+	} else if host.Status.ID == "" {
+		pubKeyHex, err := resolvePublicKeyHex(host.Spec.PublicKey, host.Spec.KeyFormat)
+		if err != nil {
+			status.Conditions = setReadyCondition(status.Conditions, metav1.ConditionFalse, "InvalidPublicKey", err.Error(), host.Generation)
 			_ = updateHostStatus(ctx, r.Client, &host, status)
 			return ctrl.Result{}, err
 		}
-	} else if host.Status.ID == "" {
 		created, err := r.GrantoryClient.CreateHost(ctx, apiclient.HostCreatePayload{
 			UniqueKey: host.Spec.UniqueKey,
+			PublicKey: pubKeyHex,
 			Labels:    labels,
 		})
 		if err != nil {
@@ -96,20 +119,61 @@ func (r *GrantoryHostReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			r.Recorder.Eventf(&host, nil, "Normal", "Created", "Create", "Created Grantory host %s", created.ID)
 		}
 	} else {
-		remoteID = host.Status.ID
-		if _, err := r.GrantoryClient.UpdateHostLabels(ctx, host.Status.ID, labels); err != nil {
+		existing, err := r.GrantoryClient.GetHost(ctx, host.Status.ID)
+		if err != nil {
 			if apiclient.IsNotFound(err) {
 				status.ID = ""
 				status.Conditions = setReadyCondition(status.Conditions, metav1.ConditionFalse, "NotFound", "Host not found in Grantory, will recreate", host.Generation)
 				_ = updateHostStatus(ctx, r.Client, &host, status)
 				return ctrl.Result{}, nil
 			}
-			status.Conditions = setReadyCondition(status.Conditions, metav1.ConditionFalse, "UpdateFailed", err.Error(), host.Generation)
+			status.Conditions = setReadyCondition(status.Conditions, metav1.ConditionFalse, "GetFailed", err.Error(), host.Generation)
+			_ = updateHostStatus(ctx, r.Client, &host, status)
+			return ctrl.Result{}, err
+		}
+
+		if host.Spec.GrantoryHostID != "" && host.Status.ID != host.Spec.GrantoryHostID {
+			err := fmt.Errorf("host grantoryHostID is immutable on existing host (status=%s, spec=%s); recreating is blocked to prevent cascading deletion", host.Status.ID, host.Spec.GrantoryHostID)
+			status.Conditions = setReadyCondition(status.Conditions, metav1.ConditionFalse, "ImmutableFieldChanged", err.Error(), host.Generation)
 			_ = updateHostStatus(ctx, r.Client, &host, status)
 			if r.Recorder != nil {
-				r.Recorder.Eventf(&host, nil, "Warning", "UpdateFailed", "Update", "%s", err.Error())
+				r.Recorder.Eventf(&host, nil, "Warning", "ImmutableFieldChanged", "Update", "%s", err.Error())
 			}
 			return ctrl.Result{}, err
+		}
+
+		if host.Spec.GrantoryHostID == "" {
+			pubKeyHex, err := resolvePublicKeyHex(host.Spec.PublicKey, host.Spec.KeyFormat)
+			if err != nil {
+				status.Conditions = setReadyCondition(status.Conditions, metav1.ConditionFalse, "InvalidPublicKey", err.Error(), host.Generation)
+				_ = updateHostStatus(ctx, r.Client, &host, status)
+				return ctrl.Result{}, err
+			}
+
+			if existing.UniqueKey != host.Spec.UniqueKey || !strings.EqualFold(existing.PublicKey, pubKeyHex) {
+				err := fmt.Errorf("host uniqueKey and publicKey are immutable on existing host %s; recreating is blocked to prevent cascading deletion", existing.ID)
+				status.Conditions = setReadyCondition(status.Conditions, metav1.ConditionFalse, "ImmutableFieldChanged", err.Error(), host.Generation)
+				_ = updateHostStatus(ctx, r.Client, &host, status)
+				if r.Recorder != nil {
+					r.Recorder.Eventf(&host, nil, "Warning", "ImmutableFieldChanged", "Update", "%s", err.Error())
+				}
+				return ctrl.Result{}, err
+			}
+		}
+
+		remoteID = existing.ID
+		shouldSyncLabels := host.Spec.Labels != nil || host.Spec.GrantoryHostID == ""
+		if shouldSyncLabels && !maps.Equal(existing.Labels, labels) {
+			updated, err := r.GrantoryClient.UpdateHostLabels(ctx, host.Status.ID, labels)
+			if err != nil {
+				status.Conditions = setReadyCondition(status.Conditions, metav1.ConditionFalse, "UpdateFailed", err.Error(), host.Generation)
+				_ = updateHostStatus(ctx, r.Client, &host, status)
+				if r.Recorder != nil {
+					r.Recorder.Eventf(&host, nil, "Warning", "UpdateFailed", "Update", "%s", err.Error())
+				}
+				return ctrl.Result{}, err
+			}
+			remoteID = updated.ID
 		}
 	}
 

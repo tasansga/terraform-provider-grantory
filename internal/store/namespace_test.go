@@ -244,8 +244,8 @@ func TestNamespaceStore_Close_CoordinatesWithRestoreLock(t *testing.T) {
 	<-closeStarted
 	// Ensure Close() is blocked while restoreMu is held
 	select {
-	case <-closeDone:
-		t.Fatal("Close() should be blocked while restoreMu is locked")
+	case err := <-closeDone:
+		t.Fatalf("Close() should be blocked while restoreMu is locked, returned: %v", err)
 	default:
 	}
 
@@ -371,8 +371,8 @@ func TestNamespaceStore_Reset_CoordinatesWithRestoreLock(t *testing.T) {
 	<-resetStarted
 	// Ensure Reset() is blocked while restoreMu is held
 	select {
-	case <-resetDone:
-		t.Fatal("Reset() should be blocked while restoreMu is locked")
+	case err := <-resetDone:
+		t.Fatalf("Reset() should be blocked while restoreMu is locked, returned: %v", err)
 	default:
 	}
 

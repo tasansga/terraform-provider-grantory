@@ -22,11 +22,18 @@ type HostRef struct {
 	Namespace string `json:"namespace,omitempty"`
 }
 
+type SecretKeyRef struct {
+	Name string `json:"name"`
+	Key  string `json:"key,omitempty"`
+}
+
 type GrantoryHostSpec struct {
 	UniqueKey       string            `json:"uniqueKey,omitempty"`
 	GrantoryHostID  string            `json:"grantoryHostID,omitempty"`
+	PublicKey       string            `json:"publicKey,omitempty"`
+	KeyFormat       string            `json:"keyFormat,omitempty"`
 	Labels          map[string]string `json:"labels,omitempty"`
-	DeleteOnRemoval bool              `json:"deleteOnRemoval,omitempty"`
+	DeleteOnRemoval *bool             `json:"deleteOnRemoval,omitempty"`
 }
 
 type GrantoryHostStatus struct {
@@ -59,8 +66,11 @@ type GrantoryRequestSpec struct {
 	GrantOutputName           string               `json:"grantOutputName,omitempty"`
 	GrantOutputKeys           map[string]string    `json:"grantOutputKeys,omitempty"`
 	Payload                   runtime.RawExtension `json:"payload,omitempty"`
+	Mutable                   bool                 `json:"mutable,omitempty"`
 	Labels                    map[string]string    `json:"labels,omitempty"`
-	DeleteOnRemoval           bool                 `json:"deleteOnRemoval,omitempty"`
+	PrivateKeySecretRef       *SecretKeyRef        `json:"privateKeySecretRef,omitempty"`
+	KeyFormat                 string               `json:"keyFormat,omitempty"`
+	DeleteOnRemoval           *bool                `json:"deleteOnRemoval,omitempty"`
 }
 
 type GrantoryRequestStatus struct {
@@ -92,8 +102,33 @@ type GrantoryRegisterSpec struct {
 	UniqueKey          string               `json:"uniqueKey,omitempty"`
 	SchemaDefinitionID string               `json:"schemaDefinitionID,omitempty"`
 	Payload            runtime.RawExtension `json:"payload,omitempty"`
+	Mutable            bool                 `json:"mutable,omitempty"`
 	Labels             map[string]string    `json:"labels,omitempty"`
-	DeleteOnRemoval    bool                 `json:"deleteOnRemoval,omitempty"`
+	PrivateKeySecretRef *SecretKeyRef       `json:"privateKeySecretRef,omitempty"`
+	KeyFormat          string               `json:"keyFormat,omitempty"`
+	DeleteOnRemoval    *bool                `json:"deleteOnRemoval,omitempty"`
+}
+
+func shouldDeleteOnRemoval(val *bool) bool {
+	if val == nil {
+		return true
+	}
+	return *val
+}
+
+func (s *GrantoryHostSpec) ShouldDeleteOnRemoval() bool {
+	if s.GrantoryHostID != "" {
+		return false
+	}
+	return shouldDeleteOnRemoval(s.DeleteOnRemoval)
+}
+
+func (s *GrantoryRequestSpec) ShouldDeleteOnRemoval() bool {
+	return shouldDeleteOnRemoval(s.DeleteOnRemoval)
+}
+
+func (s *GrantoryRegisterSpec) ShouldDeleteOnRemoval() bool {
+	return shouldDeleteOnRemoval(s.DeleteOnRemoval)
 }
 
 type GrantoryRegisterStatus struct {

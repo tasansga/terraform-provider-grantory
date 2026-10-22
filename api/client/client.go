@@ -57,6 +57,14 @@ func WithPrivateKey(parent context.Context, key ed25519.PrivateKey) context.Cont
 	return context.WithValue(parent, privateKeyCtxKey, key)
 }
 
+// PrivateKeyFromContext returns the Ed25519 private key stored in ctx, if any.
+func PrivateKeyFromContext(ctx context.Context) ed25519.PrivateKey {
+	if val, ok := ctx.Value(privateKeyCtxKey).(ed25519.PrivateKey); ok {
+		return val
+	}
+	return nil
+}
+
 // APIError is returned for non-2xx HTTP responses.
 type APIError struct {
 	// StatusCode is the HTTP response status.
@@ -76,6 +84,18 @@ func (e *APIError) Error() string {
 func IsNotFound(err error) bool {
 	var apiErr *APIError
 	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound
+}
+
+// IsConflict reports whether err is an APIError with HTTP 409 status.
+func IsConflict(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict
+}
+
+// IsUnauthorized reports whether err is an APIError with HTTP 401 status.
+func IsUnauthorized(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnauthorized
 }
 
 // New constructs a Client from Options.
@@ -441,7 +461,7 @@ func (c *Client) doJSON(ctx context.Context, method, endpoint string, reqBody an
 		req.SetBasicAuth(c.user, c.password)
 	}
 
-	if privKey, ok := ctx.Value(privateKeyCtxKey).(ed25519.PrivateKey); ok && privKey != nil {
+	if privKey := PrivateKeyFromContext(ctx); privKey != nil {
 		timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 
 		nonceBytes := make([]byte, 16)

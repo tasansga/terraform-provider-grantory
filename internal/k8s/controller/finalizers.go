@@ -6,18 +6,26 @@ import (
 )
 
 const (
-	grantoryFinalizer = "grantory.ansgar.tasler.net/finalizer"
+	grantoryFinalizer              = "grantory.ansgar.tasler.net/finalizer"
+	ForceRemoveFinalizerAnnotation = "grantory.ansgar.tasler.net/force-remove-finalizer"
 )
 
-func ensureFinalizer(needed bool, obj client.Object) bool {
-	if !needed {
-		return false
+func hasForceRemoveAnnotation(obj client.Object) bool {
+	annotations := obj.GetAnnotations()
+	return annotations != nil && annotations[ForceRemoveFinalizerAnnotation] == "true"
+}
+
+func syncFinalizer(needed bool, obj client.Object) bool {
+	has := controllerutil.ContainsFinalizer(obj, grantoryFinalizer)
+	if needed && !has {
+		controllerutil.AddFinalizer(obj, grantoryFinalizer)
+		return true
 	}
-	if controllerutil.ContainsFinalizer(obj, grantoryFinalizer) {
-		return false
+	if !needed && has {
+		controllerutil.RemoveFinalizer(obj, grantoryFinalizer)
+		return true
 	}
-	controllerutil.AddFinalizer(obj, grantoryFinalizer)
-	return true
+	return false
 }
 
 func removeFinalizer(obj client.Object) bool {

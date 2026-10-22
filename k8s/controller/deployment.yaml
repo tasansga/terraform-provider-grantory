@@ -24,6 +24,11 @@ spec:
               value: http://grantory.default.svc.cluster.local:8080
             - name: GRANTORY_CONTROLLER_NAMESPACE
               value: _def
+            # Optional: automatically provision and use a cluster-wide host identity
+            # - name: GRANTORY_CONTROLLER_AUTO_CREATE_HOST
+            #   value: "true"
+            # - name: GRANTORY_CONTROLLER_AUTO_HOST_NAME
+            #   value: "k8s-cluster"
           resources:
             requests:
               cpu: 50m

@@ -42,6 +42,16 @@ spec:
                 grantoryHostID:
                   type: string
                   description: Optional Grantory host ID to import and manage.
+                publicKey:
+                  type: string
+                  description: Optional Ed25519 public key in hex or SPKI PEM format for signing requests.
+                keyFormat:
+                  type: string
+                  enum:
+                    - hex
+                    - pem
+                  default: hex
+                  description: "Format of the public key: hex or pem (SPKI PEM; OpenSSH format is not supported)."
                 labels:
                   type: object
                   additionalProperties:
@@ -49,8 +59,7 @@ spec:
                   description: Optional labels to attach to the host.
                 deleteOnRemoval:
                   type: boolean
-                  default: false
-                  description: Delete the Grantory host when this resource is deleted.
+                  description: Delete the Grantory host when this resource is deleted. Defaults to true for created hosts; adopted hosts (grantoryHostID) are never deleted remotely.
             status:
               type: object
               properties:
