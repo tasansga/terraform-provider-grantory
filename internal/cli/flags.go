@@ -18,6 +18,8 @@ const (
 	EnvGrantoryControllerUser      = "GRANTORY_CONTROLLER_USER"
 	EnvGrantoryControllerPassword  = "GRANTORY_CONTROLLER_PASSWORD"
 	EnvGrantoryControllerNamespace               = "GRANTORY_CONTROLLER_NAMESPACE"
+	EnvGrantoryControllerLogLevel                = "GRANTORY_CONTROLLER_LOG_LEVEL"
+	FlagLogLevel                                 = "log-level"
 	FlagAutoCreateHost                           = "auto-create-host"
 	FlagAutoHostName                             = "auto-host-name"
 	FlagAutoHostSecret                           = "auto-host-secret"

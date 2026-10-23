@@ -70,7 +70,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	}
 	cfg.ServerVersion = versionString()
 
-	configureLogging(cfg)
+	configureLogging(cfg.LogLevel)
 	fields := serverStartupFields(cfg)
 	logrus.WithFields(fields).Info("starting Grantory server")
 
@@ -132,9 +132,9 @@ func redactPostgresDSN(dsn string) string {
 	return fmt.Sprintf("%s://%s%s", parsed.Scheme, parsed.Host, parsed.Path)
 }
 
-func configureLogging(cfg config.Config) {
+func configureLogging(level logrus.Level) {
 	logrus.SetOutput(os.Stdout)
-	logrus.SetLevel(cfg.LogLevel)
+	logrus.SetLevel(level)
 	logrus.SetFormatter(&logrus.TextFormatter{
 		FullTimestamp: true,
 	})

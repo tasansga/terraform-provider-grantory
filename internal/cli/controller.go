@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 
+	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
+	"github.com/tasansga/terraform-provider-grantory/internal/config"
 	k8scontroller "github.com/tasansga/terraform-provider-grantory/internal/k8s/controller"
 	"github.com/tasansga/terraform-provider-grantory/internal/store"
 )
@@ -33,6 +36,13 @@ func newControllerCmd() *cobra.Command {
 			healthAddr, _ := cmd.Flags().GetString(flagHealthProbeBindAddress)
 			leaderElect, _ := cmd.Flags().GetBool(flagLeaderElect)
 			leaderElectionID, _ := cmd.Flags().GetString(flagLeaderElectionID)
+
+			logLevel, err := resolveLogLevel(cmd)
+			if err != nil {
+				return err
+			}
+			configureLogging(logLevel)
+
 			controllerCfg, err := resolveControllerConfig(cmd)
 			if err != nil {
 				return err
@@ -48,6 +58,7 @@ func newControllerCmd() *cobra.Command {
 			autoHostSecretNs := resolveStringFlagOrEnv(cmd, FlagAutoHostSecretNamespace, EnvGrantoryControllerAutoHostSecretNamespace, "grantory-system")
 
 			return k8scontroller.Start(ctx, k8scontroller.Options{
+				Logger:                  logrus.StandardLogger(),
 				MetricsBindAddress:      metricsAddr,
 				HealthProbeBindAddress:  healthAddr,
 				LeaderElect:             leaderElect,
@@ -77,20 +88,49 @@ func newControllerCmd() *cobra.Command {
 	return cmd
 }
 
+func resolveLogLevel(cmd *cobra.Command) (logrus.Level, error) {
+	if flag := cmd.Flag(FlagLogLevel); flag != nil && flag.Changed {
+		val := strings.TrimSpace(flag.Value.String())
+		if val != "" {
+			level, err := logrus.ParseLevel(val)
+			if err != nil {
+				return config.DefaultLogLevel, fmt.Errorf("invalid log level %q: %w", val, err)
+			}
+			return level, nil
+		}
+	}
+	levelStr := firstNonEmpty(
+		os.Getenv(EnvGrantoryControllerLogLevel),
+		os.Getenv(config.EnvLogLevel),
+		config.DefaultLogLevel.String(),
+	)
+	level, err := logrus.ParseLevel(levelStr)
+	if err != nil {
+		return config.DefaultLogLevel, fmt.Errorf("invalid log level %q: %w", levelStr, err)
+	}
+	return level, nil
+}
+
 func resolveBoolFlagOrEnv(cmd *cobra.Command, flagName, envName string) bool {
-	if flag := cmd.Flags().Lookup(flagName); flag != nil && flag.Changed {
-		val, _ := cmd.Flags().GetBool(flagName)
-		return val
+	if flag := cmd.Flag(flagName); flag != nil && flag.Changed {
+		val, err := strconv.ParseBool(flag.Value.String())
+		if err == nil {
+			return val
+		}
+		return strings.EqualFold(flag.Value.String(), "true")
 	}
 	envVal := strings.TrimSpace(os.Getenv(envName))
+	val, err := strconv.ParseBool(envVal)
+	if err == nil {
+		return val
+	}
 	return strings.EqualFold(envVal, "true") || envVal == "1"
 }
 
 func resolveStringFlagOrEnv(cmd *cobra.Command, flagName, envName, defaultVal string) string {
-	if flag := cmd.Flags().Lookup(flagName); flag != nil && flag.Changed {
-		val, _ := cmd.Flags().GetString(flagName)
-		if strings.TrimSpace(val) != "" {
-			return val
+	if flag := cmd.Flag(flagName); flag != nil && flag.Changed {
+		if strings.TrimSpace(flag.Value.String()) != "" {
+			return flag.Value.String()
 		}
 	}
 	if envVal := strings.TrimSpace(os.Getenv(envName)); envVal != "" {

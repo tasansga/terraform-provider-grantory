@@ -10,11 +10,43 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	"github.com/bombsimon/logrusr/v4"
+	"github.com/go-logr/logr"
+	"github.com/sirupsen/logrus"
+
 	apiclient "github.com/tasansga/terraform-provider-grantory/api/client"
 	"github.com/tasansga/terraform-provider-grantory/internal/k8s/api/v1alpha1"
 )
 
+// SetupLogger initializes controller-runtime's root logger using logrus and returns the configured logr.Logger.
+// If logger is nil, logrus.StandardLogger() is used.
+func SetupLogger(logger logrus.FieldLogger) logr.Logger {
+	if isNilLogger(logger) {
+		logger = logrus.StandardLogger()
+	}
+	l := logrusr.New(logger)
+	ctrl.SetLogger(l)
+	return l
+}
+
+func isNilLogger(l logrus.FieldLogger) bool {
+	if l == nil {
+		return true
+	}
+	switch v := l.(type) {
+	case *logrus.Logger:
+		return v == nil
+	case *logrus.Entry:
+		return v == nil
+	default:
+		return false
+	}
+}
+
 type Options struct {
+	// Logger is the Logrus logger to use for controller-runtime and reconciler logging.
+	// If nil, logrus.StandardLogger() is used.
+	Logger                  logrus.FieldLogger
 	MetricsBindAddress      string
 	HealthProbeBindAddress  string
 	LeaderElect             bool
@@ -31,6 +63,8 @@ type Options struct {
 }
 
 func Start(ctx context.Context, opts Options) error {
+	logrLogger := SetupLogger(opts.Logger)
+
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
 		return fmt.Errorf("add core scheme: %w", err)
@@ -52,6 +86,7 @@ func Start(ctx context.Context, opts Options) error {
 
 	manager, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
+		Logger:                 logrLogger,
 		Metrics:                metricsserver.Options{BindAddress: opts.MetricsBindAddress},
 		HealthProbeBindAddress: opts.HealthProbeBindAddress,
 		LeaderElection:         opts.LeaderElect,
