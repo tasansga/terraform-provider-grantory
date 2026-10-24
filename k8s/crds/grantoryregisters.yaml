@@ -54,9 +54,8 @@ spec:
                   type: string
                   description: Optional schema definition used to validate register payloads.
                 payload:
-                  type: object
-                  x-kubernetes-preserve-unknown-fields: true
-                  description: JSON payload describing the register entry.
+                  type: string
+                  description: JSON-encoded payload string describing the register entry.
                 mutable:
                   type: boolean
                   default: false

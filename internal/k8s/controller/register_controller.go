@@ -117,7 +117,7 @@ func (r *GrantoryRegisterReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		labels = map[string]string{}
 	}
 
-	desiredPayload, err := rawExtensionToMap(register.Spec.Payload)
+	desiredPayload, err := parsePayloadString(register.Spec.Payload)
 	if err != nil {
 		status := register.Status
 		status.ObservedGeneration = register.Generation
@@ -200,8 +200,12 @@ func (r *GrantoryRegisterReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 		remoteID = existing.ID
 		if register.Spec.Mutable && (payloadChanged || labelsChanged) {
+			patchPayload := desiredPayload
+			if payloadChanged && patchPayload == nil {
+				patchPayload = map[string]any{}
+			}
 			updated, err := r.GrantoryClient.UpdateRegister(ctx, register.Status.ID, apiclient.RegisterUpdatePayload{
-				Payload: desiredPayload,
+				Payload: patchPayload,
 				Labels:  labels,
 			})
 			if err != nil {

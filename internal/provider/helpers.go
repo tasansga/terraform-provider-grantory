@@ -16,6 +16,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 
 	apiclient "github.com/tasansga/terraform-provider-grantory/api/client"
+	"github.com/tasansga/terraform-provider-grantory/internal/jsonutil"
 )
 
 func contextWithPrivateKey(ctx context.Context, d *schema.ResourceData) (context.Context, error) {
@@ -147,26 +148,11 @@ func flattenStringMap(input map[string]string) map[string]any {
 }
 
 func parseJSONString(payload string) (map[string]any, error) {
-	trimmed := strings.TrimSpace(payload)
-	if trimmed == "" {
-		return nil, nil
-	}
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
-		return nil, err
-	}
-	if parsed == nil {
-		return nil, fmt.Errorf("json object is required; null is not allowed")
-	}
-	return parsed, nil
+	return jsonutil.ParsePayload(payload)
 }
 
 func parseJSONPatchPayload(payload string) (map[string]any, error) {
-	if strings.TrimSpace(payload) == "" {
-		// PATCH endpoints require payload presence; empty object is explicit clear.
-		return map[string]any{}, nil
-	}
-	return parseJSONString(payload)
+	return jsonutil.ParsePatchPayload(payload)
 }
 
 func parseRawJSON(payload string) (json.RawMessage, error) {
@@ -264,10 +250,5 @@ func payloadStringsEquivalent(oldValue, newValue any) bool {
 }
 
 func isEmptyPayloadString(value string) bool {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return true
-	}
-	parsed, err := parseJSONString(trimmed)
-	return err == nil && len(parsed) == 0
+	return jsonutil.IsEmptyPayloadString(value)
 }

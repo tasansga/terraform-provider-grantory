@@ -115,7 +115,7 @@ func TestRequestReconcileInvalidPayload(t *testing.T) {
 		},
 		Spec: v1alpha1.GrantoryRequestSpec{
 			HostID:  "host-1",
-			Payload: runtime.RawExtension{Raw: []byte(`["x"]`)},
+			Payload: `["x"]`,
 		},
 	}
 
@@ -165,7 +165,7 @@ func TestRequestReconcileRecreatesOnSpecChange(t *testing.T) {
 		},
 		Spec: v1alpha1.GrantoryRequestSpec{
 			HostID:  "host-1",
-			Payload: runtime.RawExtension{Raw: []byte(`{"token":"new"}`)},
+			Payload: `{"token":"new"}`,
 		},
 		Status: v1alpha1.GrantoryRequestStatus{
 			ID: "req-1",
@@ -509,7 +509,7 @@ func TestRequestReconcileStoresGrantPayloadOnly(t *testing.T) {
 		t.Fatalf("get request: %v", err)
 	}
 	var payload map[string]any
-	if err := json.Unmarshal(updated.Status.GrantPayload.Raw, &payload); err != nil {
+	if err := json.Unmarshal([]byte(updated.Status.GrantPayload), &payload); err != nil {
 		t.Fatalf("unmarshal grant payload: %v", err)
 	}
 	if payload["token"] != "abc" {
@@ -1076,7 +1076,7 @@ func TestRegisterReconcileMutableUpdatesPayload(t *testing.T) {
 			HostID:    "host-1",
 			UniqueKey: "reg-key",
 			Mutable:   true,
-			Payload:   runtime.RawExtension{Raw: []byte(`{"key":"new-val"}`)},
+			Payload:   `{"key":"new-val"}`,
 		},
 		Status: v1alpha1.GrantoryRegisterStatus{
 			ID: "reg-1",
@@ -1101,6 +1101,96 @@ func TestRegisterReconcileMutableUpdatesPayload(t *testing.T) {
 
 	if !patchCalled.Load() {
 		t.Fatalf("expected PATCH /registers/reg-1 to be called for mutable register payload update")
+	}
+}
+
+func TestRegisterReconcileMutableClearsPayload(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+
+	var patchCalled atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/registers/reg-1" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":         "reg-1",
+				"host_id":    "host-1",
+				"unique_key": "reg-key",
+				"payload":    map[string]any{"key": "old-val"},
+				"mutable":    true,
+				"labels":     map[string]string{},
+			})
+			return
+		}
+		if r.Method == http.MethodPatch && r.URL.Path == "/registers/reg-1" {
+			patchCalled.Store(true)
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode patch body: %v", err)
+			}
+			payloadMap, ok := body["payload"].(map[string]any)
+			if !ok {
+				t.Fatalf("expected payload to be present in patch body, got %v", body)
+			}
+			if len(payloadMap) != 0 {
+				t.Fatalf("expected payload to be empty map, got %v", payloadMap)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":         "reg-1",
+				"host_id":    "host-1",
+				"unique_key": "reg-key",
+				"payload":    payloadMap,
+				"mutable":    true,
+			})
+			return
+		}
+		t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+	}))
+	defer server.Close()
+
+	register := &v1alpha1.GrantoryRegister{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: v1alpha1.GroupVersion.String(),
+			Kind:       "GrantoryRegister",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "reg-mut-clear",
+			Namespace:  "default",
+			Finalizers: []string{grantoryFinalizer},
+		},
+		Spec: v1alpha1.GrantoryRegisterSpec{
+			HostID:    "host-1",
+			UniqueKey: "reg-key",
+			Mutable:   true,
+			Payload:   "",
+		},
+		Status: v1alpha1.GrantoryRegisterStatus{
+			ID: "reg-1",
+		},
+	}
+
+	cl := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.GrantoryRegister{}).
+		WithObjects(register).
+		Build()
+
+	reconciler := &GrantoryRegisterReconciler{
+		Client:         cl,
+		Scheme:         scheme,
+		GrantoryClient: clienttest.New(t, server, "", "", ""),
+	}
+
+	res, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "reg-mut-clear", Namespace: "default"}})
+	if err != nil {
+		t.Fatalf("unexpected reconcile error: %v", err)
+	}
+	if res.RequeueAfter != 0 {
+		t.Fatalf("expected no requeue after updating mutable register payload")
+	}
+
+	if !patchCalled.Load() {
+		t.Fatalf("expected PATCH /registers/reg-1 to be called for mutable register payload clear")
 	}
 }
 
@@ -1145,7 +1235,7 @@ func TestRegisterReconcileImmutableRecreatesOnPayloadChange(t *testing.T) {
 			HostID:    "host-1",
 			UniqueKey: "reg-key",
 			Mutable:   false,
-			Payload:   runtime.RawExtension{Raw: []byte(`{"key":"new-val"}`)},
+			Payload:   `{"key":"new-val"}`,
 		},
 		Status: v1alpha1.GrantoryRegisterStatus{
 			ID: "reg-1",
@@ -1237,7 +1327,7 @@ func TestRequestReconcileMutableUpdatesInPlace(t *testing.T) {
 			HostID:    "host-1",
 			UniqueKey: "req-key",
 			Mutable:   true,
-			Payload:   runtime.RawExtension{Raw: []byte(`{"key":"new-val"}`)},
+			Payload:   `{"key":"new-val"}`,
 		},
 		Status: v1alpha1.GrantoryRequestStatus{
 			ID: "req-1",
@@ -1262,6 +1352,98 @@ func TestRequestReconcileMutableUpdatesInPlace(t *testing.T) {
 
 	if !patchCalled.Load() {
 		t.Fatalf("expected PATCH /requests/req-1 to be called for mutable request payload update")
+	}
+}
+
+func TestRequestReconcileMutableClearsPayload(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+
+	var patchCalled atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/requests/req-1" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":         "req-1",
+				"host_id":    "host-1",
+				"unique_key": "req-key",
+				"payload":    map[string]any{"key": "old-val"},
+				"mutable":    true,
+				"has_grant":  true,
+				"grant_id":   "grant-1",
+				"grant":      map[string]any{"secret": "val"},
+				"labels":     map[string]string{},
+			})
+			return
+		}
+		if r.Method == http.MethodPatch && r.URL.Path == "/requests/req-1" {
+			patchCalled.Store(true)
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode patch body: %v", err)
+			}
+			payloadMap, ok := body["payload"].(map[string]any)
+			if !ok {
+				t.Fatalf("expected payload to be present in patch body, got %v", body)
+			}
+			if len(payloadMap) != 0 {
+				t.Fatalf("expected payload to be empty map, got %v", payloadMap)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":        "req-1",
+				"host_id":   "host-1",
+				"payload":   payloadMap,
+				"mutable":   true,
+				"has_grant": true,
+				"grant_id":  "grant-1",
+				"grant":     map[string]any{"secret": "val"},
+			})
+			return
+		}
+		t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+	}))
+	defer server.Close()
+
+	request := &v1alpha1.GrantoryRequest{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: v1alpha1.GroupVersion.String(),
+			Kind:       "GrantoryRequest",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "req-mut-clear",
+			Namespace:  "default",
+			Finalizers: []string{grantoryFinalizer},
+		},
+		Spec: v1alpha1.GrantoryRequestSpec{
+			HostID:    "host-1",
+			UniqueKey: "req-key",
+			Mutable:   true,
+			Payload:   "",
+		},
+		Status: v1alpha1.GrantoryRequestStatus{
+			ID: "req-1",
+		},
+	}
+
+	cl := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.GrantoryRequest{}).
+		WithObjects(request).
+		Build()
+
+	reconciler := &GrantoryRequestReconciler{
+		Client:         cl,
+		Scheme:         scheme,
+		GrantoryClient: clienttest.New(t, server, "", "", ""),
+	}
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "req-mut-clear", Namespace: "default"}})
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	if !patchCalled.Load() {
+		t.Fatalf("expected PATCH /requests/req-1 to be called for mutable request payload clear")
 	}
 }
 
@@ -2112,7 +2294,7 @@ func TestRequestReconcileEmptyHostRefFailsFastWithoutRequeue(t *testing.T) {
 		},
 		Spec: v1alpha1.GrantoryRequestSpec{
 			HostRef: &v1alpha1.HostRef{Name: ""},
-			Payload: runtime.RawExtension{Raw: []byte(`{"action":"login"}`)},
+			Payload: `{"action":"login"}`,
 		},
 	}
 
@@ -2159,7 +2341,7 @@ func TestRegisterReconcileEmptyHostRefFailsFastWithoutRequeue(t *testing.T) {
 		},
 		Spec: v1alpha1.GrantoryRegisterSpec{
 			HostRef: &v1alpha1.HostRef{Name: ""},
-			Payload: runtime.RawExtension{Raw: []byte(`{"service":"db"}`)},
+			Payload: `{"service":"db"}`,
 		},
 	}
 
@@ -2223,7 +2405,7 @@ func TestRequestReconcileRejectsImmutableHostChange(t *testing.T) {
 		},
 		Spec: v1alpha1.GrantoryRequestSpec{
 			HostID:  "host-changed",
-			Payload: runtime.RawExtension{Raw: []byte(`{"action":"login"}`)},
+			Payload: `{"action":"login"}`,
 		},
 		Status: v1alpha1.GrantoryRequestStatus{
 			ID: "req-1",
@@ -2285,7 +2467,7 @@ func TestRegisterReconcileRejectsImmutableHostChange(t *testing.T) {
 		},
 		Spec: v1alpha1.GrantoryRegisterSpec{
 			HostID:  "host-changed",
-			Payload: runtime.RawExtension{Raw: []byte(`{"service":"db"}`)},
+			Payload: `{"service":"db"}`,
 		},
 		Status: v1alpha1.GrantoryRegisterStatus{
 			ID: "reg-1",
@@ -2445,7 +2627,7 @@ func TestRequestReconcileDoesNotDeleteUnownedSecretOnMissingGrant(t *testing.T) 
 			HostID:          "host-1",
 			GrantOutputKind: "secret",
 			GrantOutputName: "pre-existing-secret",
-			Payload:         runtime.RawExtension{Raw: []byte(`{"action":"read"}`)},
+			Payload:         `{"action":"read"}`,
 		},
 		Status: v1alpha1.GrantoryRequestStatus{
 			ID: "req-1",
@@ -2570,8 +2752,8 @@ func TestRequestReconcileRedactsGrantPayloadForSecret(t *testing.T) {
 	if err := cl.Get(ctx, types.NamespacedName{Name: "req-secret-output", Namespace: "default"}, &updated); err != nil {
 		t.Fatalf("get request: %v", err)
 	}
-	if len(updated.Status.GrantPayload.Raw) != 0 {
-		t.Fatalf("expected status.GrantPayload to be redacted when grantOutputKind=secret, but got: %s", string(updated.Status.GrantPayload.Raw))
+	if updated.Status.GrantPayload != "" {
+		t.Fatalf("expected status.GrantPayload to be redacted when grantOutputKind=secret, but got: %s", updated.Status.GrantPayload)
 	}
 }
 
@@ -2588,13 +2770,13 @@ func TestRequestReconcileClearsGrantStatusOnRecreation(t *testing.T) {
 		},
 		Spec: v1alpha1.GrantoryRequestSpec{
 			HostID:  "host-1",
-			Payload: runtime.RawExtension{Raw: []byte(`{"version":2}`)},
+			Payload: `{"version":2}`,
 		},
 		Status: v1alpha1.GrantoryRequestStatus{
 			ID:           "req-1",
 			HasGrant:     true,
 			GrantID:      "grant-1",
-			GrantPayload: runtime.RawExtension{Raw: []byte(`{"token":"old-token"}`)},
+			GrantPayload: `{"token":"old-token"}`,
 		},
 	}
 
@@ -2652,7 +2834,7 @@ func TestRequestReconcileClearsGrantStatusOnRecreation(t *testing.T) {
 	if updated.Status.GrantID != "" {
 		t.Fatalf("expected status.GrantID to be empty upon recreation, got %q", updated.Status.GrantID)
 	}
-	if len(updated.Status.GrantPayload.Raw) != 0 {
+	if updated.Status.GrantPayload != "" {
 		t.Fatalf("expected status.GrantPayload to be cleared upon recreation")
 	}
 }

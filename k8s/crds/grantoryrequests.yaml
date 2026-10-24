@@ -74,9 +74,8 @@ spec:
                     type: string
                   description: Optional mapping of JSON pointers to keys in the output Secret/ConfigMap.
                 payload:
-                  type: object
-                  x-kubernetes-preserve-unknown-fields: true
-                  description: JSON payload describing the request.
+                  type: string
+                  description: JSON-encoded payload string describing the request.
                 mutable:
                   type: boolean
                   default: false
@@ -120,8 +119,8 @@ spec:
                 grantID:
                   type: string
                 grantPayload:
-                  type: object
-                  x-kubernetes-preserve-unknown-fields: true
+                  type: string
+                  description: JSON-encoded payload string describing the grant.
                 observedGeneration:
                   type: integer
                   format: int64

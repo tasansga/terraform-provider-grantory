@@ -46,8 +46,6 @@ func (in *GrantoryRequest) DeepCopyObject() runtime.Object {
 	out.ObjectMeta = *in.ObjectMeta.DeepCopy() //nolint:staticcheck
 	out.Spec.Labels = copyStringMap(in.Spec.Labels)
 	out.Spec.GrantOutputKeys = copyStringMap(in.Spec.GrantOutputKeys)
-	out.Spec.Payload = copyRawExtension(in.Spec.Payload)
-	out.Status.GrantPayload = copyRawExtension(in.Status.GrantPayload)
 	out.Status.Conditions = copyConditions(in.Status.Conditions)
 	if in.Spec.HostRef != nil {
 		hostRef := *in.Spec.HostRef
@@ -88,7 +86,6 @@ func (in *GrantoryRegister) DeepCopyObject() runtime.Object {
 	*out = *in
 	out.ObjectMeta = *in.ObjectMeta.DeepCopy() //nolint:staticcheck
 	out.Spec.Labels = copyStringMap(in.Spec.Labels)
-	out.Spec.Payload = copyRawExtension(in.Spec.Payload)
 	out.Status.Conditions = copyConditions(in.Status.Conditions)
 	if in.Spec.HostRef != nil {
 		hostRef := *in.Spec.HostRef
@@ -139,11 +136,4 @@ func copyConditions(input []metav1.Condition) []metav1.Condition {
 	out := make([]metav1.Condition, len(input))
 	copy(out, input)
 	return out
-}
-
-func copyRawExtension(input runtime.RawExtension) runtime.RawExtension {
-	if len(input.Raw) == 0 {
-		return runtime.RawExtension{}
-	}
-	return runtime.RawExtension{Raw: append([]byte(nil), input.Raw...)}
 }

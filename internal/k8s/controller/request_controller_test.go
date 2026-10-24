@@ -2,8 +2,6 @@ package controller
 
 import (
 	"testing"
-
-	"k8s.io/apimachinery/pkg/runtime"
 )
 
 func TestResolveJSONPointer(t *testing.T) {
@@ -51,33 +49,34 @@ func TestBuildGrantOutputData(t *testing.T) {
 	}
 }
 
-func TestRawExtensionToMap(t *testing.T) {
-	raw := runtime.RawExtension{Raw: []byte(`{"k":"v"}`)}
-	mapped, err := rawExtensionToMap(raw)
+func TestGrantPayloadRaw(t *testing.T) {
+	// nil grant
+	raw, err := grantPayloadRaw(nil)
+	if err != nil || raw != nil {
+		t.Fatalf("expected nil, nil for nil grant, got %v, %v", raw, err)
+	}
+
+	// grant with payload: nil
+	raw, err = grantPayloadRaw(map[string]any{"id": "grant-1", "payload": nil})
+	if err != nil || raw != nil {
+		t.Fatalf("expected nil, nil when payload is nil, got %s, %v", raw, err)
+	}
+
+	// unwrapped grant (payload key absent)
+	raw, err = grantPayloadRaw(map[string]any{"token": "unwrapped"})
 	if err != nil {
-		t.Fatalf("rawExtensionToMap: %v", err)
+		t.Fatalf("unexpected error for unwrapped grant: %v", err)
 	}
-	if mapped["k"] != "v" {
-		t.Fatalf("expected k=v, got %v", mapped["k"])
+	if string(raw) != `{"token":"unwrapped"}` {
+		t.Fatalf("expected {\"token\":\"unwrapped\"}, got %s", raw)
 	}
 
-	mapped, err = rawExtensionToMap(runtime.RawExtension{Raw: []byte(``)})
+	// grant with valid nested payload
+	raw, err = grantPayloadRaw(map[string]any{"id": "grant-1", "payload": map[string]any{"token": "xyz"}})
 	if err != nil {
-		t.Fatalf("rawExtensionToMap empty: %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if mapped != nil {
-		t.Fatalf("expected empty raw extension to return nil")
-	}
-}
-
-func TestRawExtensionToMapInvalid(t *testing.T) {
-	_, err := rawExtensionToMap(runtime.RawExtension{Raw: []byte(`{`)})
-	if err == nil {
-		t.Fatalf("expected error for invalid json")
-	}
-
-	_, err = rawExtensionToMap(runtime.RawExtension{Raw: []byte(`["x"]`)})
-	if err == nil {
-		t.Fatalf("expected error for non-object json")
+	if string(raw) != `{"token":"xyz"}` {
+		t.Fatalf("expected {\"token\":\"xyz\"}, got %s", raw)
 	}
 }

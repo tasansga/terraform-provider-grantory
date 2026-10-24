@@ -57,29 +57,29 @@ type GrantoryHostList struct {
 }
 
 type GrantoryRequestSpec struct {
-	HostID                    string               `json:"hostID,omitempty"`
-	HostRef                   *HostRef             `json:"hostRef,omitempty"`
-	UniqueKey                 string               `json:"uniqueKey,omitempty"`
-	RequestSchemaDefinitionID string               `json:"requestSchemaDefinitionID,omitempty"`
-	GrantSchemaDefinitionID   string               `json:"grantSchemaDefinitionID,omitempty"`
-	GrantOutputKind           string               `json:"grantOutputKind,omitempty"`
-	GrantOutputName           string               `json:"grantOutputName,omitempty"`
-	GrantOutputKeys           map[string]string    `json:"grantOutputKeys,omitempty"`
-	Payload                   runtime.RawExtension `json:"payload,omitempty"`
-	Mutable                   bool                 `json:"mutable,omitempty"`
-	Labels                    map[string]string    `json:"labels,omitempty"`
-	PrivateKeySecretRef       *SecretKeyRef        `json:"privateKeySecretRef,omitempty"`
-	KeyFormat                 string               `json:"keyFormat,omitempty"`
-	DeleteOnRemoval           *bool                `json:"deleteOnRemoval,omitempty"`
+	HostID                    string            `json:"hostID,omitempty"`
+	HostRef                   *HostRef          `json:"hostRef,omitempty"`
+	UniqueKey                 string            `json:"uniqueKey,omitempty"`
+	RequestSchemaDefinitionID string            `json:"requestSchemaDefinitionID,omitempty"`
+	GrantSchemaDefinitionID   string            `json:"grantSchemaDefinitionID,omitempty"`
+	GrantOutputKind           string            `json:"grantOutputKind,omitempty"`
+	GrantOutputName           string            `json:"grantOutputName,omitempty"`
+	GrantOutputKeys           map[string]string `json:"grantOutputKeys,omitempty"`
+	Payload                   string            `json:"payload,omitempty"`
+	Mutable                   bool              `json:"mutable,omitempty"`
+	Labels                    map[string]string `json:"labels,omitempty"`
+	PrivateKeySecretRef       *SecretKeyRef     `json:"privateKeySecretRef,omitempty"`
+	KeyFormat                 string            `json:"keyFormat,omitempty"`
+	DeleteOnRemoval           *bool             `json:"deleteOnRemoval,omitempty"`
 }
 
 type GrantoryRequestStatus struct {
-	ID                 string               `json:"id,omitempty"`
-	HasGrant           bool                 `json:"hasGrant,omitempty"`
-	GrantID            string               `json:"grantID,omitempty"`
-	GrantPayload       runtime.RawExtension `json:"grantPayload,omitempty"`
-	ObservedGeneration int64                `json:"observedGeneration,omitempty"`
-	Conditions         []metav1.Condition   `json:"conditions,omitempty"`
+	ID                 string             `json:"id,omitempty"`
+	HasGrant           bool               `json:"hasGrant,omitempty"`
+	GrantID            string             `json:"grantID,omitempty"`
+	GrantPayload       string             `json:"grantPayload,omitempty"`
+	ObservedGeneration int64              `json:"observedGeneration,omitempty"`
+	Conditions         []metav1.Condition `json:"conditions,omitempty"`
 }
 
 type GrantoryRequest struct {
@@ -97,16 +97,16 @@ type GrantoryRequestList struct {
 }
 
 type GrantoryRegisterSpec struct {
-	HostID             string               `json:"hostID,omitempty"`
-	HostRef            *HostRef             `json:"hostRef,omitempty"`
-	UniqueKey          string               `json:"uniqueKey,omitempty"`
-	SchemaDefinitionID string               `json:"schemaDefinitionID,omitempty"`
-	Payload            runtime.RawExtension `json:"payload,omitempty"`
-	Mutable            bool                 `json:"mutable,omitempty"`
-	Labels             map[string]string    `json:"labels,omitempty"`
-	PrivateKeySecretRef *SecretKeyRef       `json:"privateKeySecretRef,omitempty"`
-	KeyFormat          string               `json:"keyFormat,omitempty"`
-	DeleteOnRemoval    *bool                `json:"deleteOnRemoval,omitempty"`
+	HostID              string            `json:"hostID,omitempty"`
+	HostRef             *HostRef          `json:"hostRef,omitempty"`
+	UniqueKey           string            `json:"uniqueKey,omitempty"`
+	SchemaDefinitionID  string            `json:"schemaDefinitionID,omitempty"`
+	Payload             string            `json:"payload,omitempty"`
+	Mutable             bool              `json:"mutable,omitempty"`
+	Labels              map[string]string `json:"labels,omitempty"`
+	PrivateKeySecretRef *SecretKeyRef     `json:"privateKeySecretRef,omitempty"`
+	KeyFormat           string            `json:"keyFormat,omitempty"`
+	DeleteOnRemoval     *bool             `json:"deleteOnRemoval,omitempty"`
 }
 
 func shouldDeleteOnRemoval(val *bool) bool {

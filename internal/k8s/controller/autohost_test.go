@@ -14,7 +14,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -325,7 +324,7 @@ func TestRequestReconcileFallsBackToDefaultClusterHostAndKey(t *testing.T) {
 			Finalizers: []string{grantoryFinalizer},
 		},
 		Spec: v1alpha1.GrantoryRequestSpec{
-			Payload: runtime.RawExtension{Raw: []byte(`{"app":"test"}`)},
+			Payload: `{"app":"test"}`,
 		},
 	}
 
@@ -400,7 +399,7 @@ func TestRegisterReconcileFallsBackToDefaultClusterHostAndKey(t *testing.T) {
 			Finalizers: []string{grantoryFinalizer},
 		},
 		Spec: v1alpha1.GrantoryRegisterSpec{
-			Payload: runtime.RawExtension{Raw: []byte(`{"service":"gatus"}`)},
+			Payload: `{"service":"gatus"}`,
 		},
 	}
 

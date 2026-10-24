@@ -121,7 +121,7 @@ func (r *GrantoryRequestReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	var response apiclient.Request
-	desiredPayload, err := rawExtensionToMap(request.Spec.Payload)
+	desiredPayload, err := parsePayloadString(request.Spec.Payload)
 	if err != nil {
 		status := request.Status
 		status.ObservedGeneration = request.Generation
@@ -166,7 +166,7 @@ func (r *GrantoryRequestReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 				status.ID = ""
 				status.HasGrant = false
 				status.GrantID = ""
-				status.GrantPayload = runtime.RawExtension{}
+				status.GrantPayload = ""
 				status.Conditions = setReadyCondition(status.Conditions, metav1.ConditionFalse, "NotFound", "Request not found in Grantory, will recreate", request.Generation)
 				_ = updateRequestStatus(ctx, r.Client, &request, status)
 				return ctrl.Result{}, nil
@@ -206,7 +206,7 @@ func (r *GrantoryRequestReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			status.ID = ""
 			status.HasGrant = false
 			status.GrantID = ""
-			status.GrantPayload = runtime.RawExtension{}
+			status.GrantPayload = ""
 			status.ObservedGeneration = request.Generation
 			status.Conditions = setReadyCondition(status.Conditions, metav1.ConditionFalse, "SpecChanged", "Request immutable fields changed, recreating", request.Generation)
 			_ = updateRequestStatus(ctx, r.Client, &request, status)
@@ -215,8 +215,12 @@ func (r *GrantoryRequestReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 		response = existing
 		if request.Spec.Mutable && (payloadChanged || labelsChanged) {
+			patchPayload := desiredPayload
+			if payloadChanged && patchPayload == nil {
+				patchPayload = map[string]any{}
+			}
 			updated, err := r.GrantoryClient.UpdateRequest(ctx, request.Status.ID, apiclient.RequestUpdatePayload{
-				Payload: desiredPayload,
+				Payload: patchPayload,
 				Labels:  labels,
 			})
 			if err != nil {
@@ -260,12 +264,12 @@ func (r *GrantoryRequestReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		}
 		grantRaw = raw
 		if !strings.EqualFold(strings.TrimSpace(request.Spec.GrantOutputKind), "secret") {
-			status.GrantPayload = runtime.RawExtension{Raw: raw}
+			status.GrantPayload = string(raw)
 		} else {
-			status.GrantPayload = runtime.RawExtension{}
+			status.GrantPayload = ""
 		}
 	} else {
-		status.GrantPayload = runtime.RawExtension{}
+		status.GrantPayload = ""
 	}
 
 	if err := updateRequestStatus(ctx, r.Client, &request, status); err != nil {
@@ -388,6 +392,9 @@ func grantPayloadRaw(grant map[string]any) ([]byte, error) {
 		return nil, nil
 	}
 	if payload, ok := grant["payload"]; ok {
+		if payload == nil {
+			return nil, nil
+		}
 		return json.Marshal(payload)
 	}
 	return json.Marshal(grant)
