@@ -53,9 +53,10 @@ func newControllerCmd() *cobra.Command {
 			}
 
 			autoCreateHost := resolveBoolFlagOrEnv(cmd, FlagAutoCreateHost, EnvGrantoryControllerAutoCreateHost)
-			autoHostName := resolveStringFlagOrEnv(cmd, FlagAutoHostName, EnvGrantoryControllerAutoHostName, "grantory-cluster")
+			autoHostUniqueKey := resolveStringFlagOrEnv(cmd, FlagAutoHostUniqueKey, EnvGrantoryControllerAutoHostUniqueKey, "grantory-cluster")
 			autoHostSecret := resolveStringFlagOrEnv(cmd, FlagAutoHostSecret, EnvGrantoryControllerAutoHostSecret, "grantory-cluster-host")
 			autoHostSecretNs := resolveStringFlagOrEnv(cmd, FlagAutoHostSecretNamespace, EnvGrantoryControllerAutoHostSecretNamespace, "grantory-system")
+			autoHostLabels := resolveStringFlagOrEnv(cmd, FlagAutoHostLabels, EnvGrantoryControllerAutoHostLabels, "")
 
 			return k8scontroller.Start(ctx, k8scontroller.Options{
 				Logger:                  logrus.StandardLogger(),
@@ -69,9 +70,10 @@ func newControllerCmd() *cobra.Command {
 				GrantoryPassword:        controllerCfg.password,
 				GrantoryNamespace:       namespace,
 				AutoCreateHost:          autoCreateHost,
-				AutoHostName:            autoHostName,
+				AutoHostUniqueKey:       autoHostUniqueKey,
 				AutoHostSecret:          autoHostSecret,
 				AutoHostSecretNamespace: autoHostSecretNs,
+				AutoHostLabels:          autoHostLabels,
 			})
 		},
 	}
@@ -81,9 +83,10 @@ func newControllerCmd() *cobra.Command {
 	cmd.Flags().Bool(flagLeaderElect, false, "enable leader election")
 	cmd.Flags().String(flagLeaderElectionID, "grantory-controller", "leader election ID")
 	cmd.Flags().Bool(FlagAutoCreateHost, false, "automatically create and register a default cluster host identity")
-	cmd.Flags().String(FlagAutoHostName, "grantory-cluster", "unique key / name for auto-created cluster host")
+	cmd.Flags().String(FlagAutoHostUniqueKey, "grantory-cluster", "unique key for auto-created cluster host")
 	cmd.Flags().String(FlagAutoHostSecret, "grantory-cluster-host", "Secret name used to persist cluster host keys")
 	cmd.Flags().String(FlagAutoHostSecretNamespace, "grantory-system", "Namespace for the cluster host secret")
+	cmd.Flags().String(FlagAutoHostLabels, "", "comma-separated key=value labels for auto-created cluster host (e.g. type=plateau_service,service=k3s_controller)")
 
 	return cmd
 }

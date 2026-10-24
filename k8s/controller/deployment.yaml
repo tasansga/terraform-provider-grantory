@@ -27,7 +27,7 @@ spec:
             # Optional: automatically provision and use a cluster-wide host identity
             # - name: GRANTORY_CONTROLLER_AUTO_CREATE_HOST
             #   value: "true"
-            # - name: GRANTORY_CONTROLLER_AUTO_HOST_NAME
+            # - name: GRANTORY_CONTROLLER_AUTO_HOST_UNIQUE_KEY
             #   value: "k8s-cluster"
           resources:
             requests:

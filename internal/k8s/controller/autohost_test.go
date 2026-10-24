@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -54,7 +55,7 @@ func TestEnsureClusterHostCreatesSecretAndHostWhenMissing(t *testing.T) {
 	grantoryClient := clienttest.New(t, server, "", "", "")
 
 	identity, err := EnsureClusterHostIdentity(ctx, cl, cl, grantoryClient, ClusterHostOptions{
-		HostName:        "k8s-cluster",
+		UniqueKey:       "k8s-cluster",
 		SecretName:      "grantory-cluster-host",
 		SecretNamespace: "grantory-system",
 	})
@@ -124,7 +125,7 @@ func TestEnsureClusterHostReusesExistingSecret(t *testing.T) {
 	grantoryClient := clienttest.New(t, server, "", "", "")
 
 	identity, err := EnsureClusterHostIdentity(ctx, cl, cl, grantoryClient, ClusterHostOptions{
-		HostName:        "k8s-cluster",
+		UniqueKey:       "k8s-cluster",
 		SecretName:      "grantory-cluster-host",
 		SecretNamespace: "grantory-system",
 	})
@@ -186,7 +187,7 @@ func TestEnsureClusterHostReusesPreProvisionedSecretKeyWithoutHostID(t *testing.
 	grantoryClient := clienttest.New(t, server, "", "", "")
 
 	identity, err := EnsureClusterHostIdentity(ctx, cl, cl, grantoryClient, ClusterHostOptions{
-		HostName:        "k8s-cluster",
+		UniqueKey:       "k8s-cluster",
 		SecretName:      "grantory-cluster-host",
 		SecretNamespace: "grantory-system",
 	})
@@ -238,7 +239,7 @@ func TestEnsureClusterHostFailsOnTransientNetworkErrorWithoutOverwritingSecret(t
 	grantoryClient := clienttest.New(t, server, "", "", "")
 
 	_, err = EnsureClusterHostIdentity(ctx, cl, cl, grantoryClient, ClusterHostOptions{
-		HostName:        "k8s-cluster",
+		UniqueKey:       "k8s-cluster",
 		SecretName:      "grantory-cluster-host",
 		SecretNamespace: "grantory-system",
 	})
@@ -270,7 +271,7 @@ func TestEnsureClusterHostFailsFastOn409WithoutLocalSecret(t *testing.T) {
 	grantoryClient := clienttest.New(t, server, "", "", "")
 
 	_, err := EnsureClusterHostIdentity(ctx, cl, cl, grantoryClient, ClusterHostOptions{
-		HostName:        "k8s-cluster",
+		UniqueKey:       "k8s-cluster",
 		SecretName:      "grantory-cluster-host",
 		SecretNamespace: "grantory-system",
 	})
@@ -453,7 +454,7 @@ func TestClusterHostBootstrapperLeaderElection(t *testing.T) {
 	grantoryClient := clienttest.New(t, server, "", "", "")
 
 	bootstrapper := NewClusterHostBootstrapper(cl, cl, grantoryClient, ClusterHostOptions{
-		HostName:        "k8s-cluster",
+		UniqueKey:       "k8s-cluster",
 		SecretName:      "grantory-cluster-host",
 		SecretNamespace: "grantory-system",
 	})
@@ -510,7 +511,7 @@ func TestClusterHostBootstrapperIsReadyAndDefensiveCopy(t *testing.T) {
 	grantoryClient := clienttest.New(t, server, "", "", "")
 
 	bootstrapper := NewClusterHostBootstrapper(cl, cl, grantoryClient, ClusterHostOptions{
-		HostName:        "k8s-cluster",
+		UniqueKey:       "k8s-cluster",
 		SecretName:      "grantory-cluster-host-copy",
 		SecretNamespace: "grantory-system",
 	})
@@ -661,7 +662,7 @@ func TestEnsureClusterHostRejectsStaleSecretKeyMismatch(t *testing.T) {
 	grantoryClient := clienttest.New(t, server, "", "", "")
 
 	identity, err := EnsureClusterHostIdentity(ctx, cl, cl, grantoryClient, ClusterHostOptions{
-		HostName:        "k8s-cluster",
+		UniqueKey:       "k8s-cluster",
 		SecretName:      "grantory-cluster-host",
 		SecretNamespace: "grantory-system",
 	})
@@ -709,7 +710,7 @@ func TestEnsureClusterHost409MismatchProvidesClearError(t *testing.T) {
 	grantoryClient := clienttest.New(t, server, "", "", "")
 
 	_, err := EnsureClusterHostIdentity(ctx, cl, cl, grantoryClient, ClusterHostOptions{
-		HostName:        "k8s-cluster",
+		UniqueKey:       "k8s-cluster",
 		SecretName:      "grantory-cluster-host",
 		SecretNamespace: "grantory-system",
 	})
@@ -718,5 +719,264 @@ func TestEnsureClusterHost409MismatchProvidesClearError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "already exists in Grantory with a different public key") {
 		t.Fatalf("expected descriptive mismatch error, got: %v", err)
+	}
+}
+
+func TestEnsureClusterHostWithCustomLabels(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+
+	var capturedLabels map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/hosts" {
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			if rawLabels, ok := body["labels"].(map[string]any); ok {
+				capturedLabels = make(map[string]string)
+				for k, v := range rawLabels {
+					capturedLabels[k] = fmt.Sprint(v)
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":         "host-cluster-custom-labels",
+				"unique_key": body["unique_key"],
+				"public_key": body["public_key"],
+				"labels":     body["labels"],
+			})
+			return
+		}
+		t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+	}))
+	defer server.Close()
+
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	grantoryClient := clienttest.New(t, server, "", "", "")
+
+	identity, err := EnsureClusterHostIdentity(ctx, cl, cl, grantoryClient, ClusterHostOptions{
+		UniqueKey:       "k8s-cluster",
+		SecretName:      "grantory-cluster-host-custom",
+		SecretNamespace: "grantory-system",
+		HostLabels: map[string]string{
+			"type":    "plateau_service",
+			"service": "k3s_controller",
+		},
+	})
+	if err != nil {
+		t.Fatalf("EnsureClusterHostIdentity: %v", err)
+	}
+	if identity.HostID != "host-cluster-custom-labels" {
+		t.Fatalf("expected hostID host-cluster-custom-labels, got %s", identity.HostID)
+	}
+
+	if capturedLabels["type"] != "plateau_service" {
+		t.Fatalf("expected label type=plateau_service, got %s", capturedLabels["type"])
+	}
+	if capturedLabels["service"] != "k3s_controller" {
+		t.Fatalf("expected label service=k3s_controller, got %s", capturedLabels["service"])
+	}
+	if capturedLabels["managed-by"] != "grantory-controller" {
+		t.Fatalf("expected label managed-by=grantory-controller, got %s", capturedLabels["managed-by"])
+	}
+}
+
+func TestEnsureClusterHostDefaultsTypeToClusterAndProtectsSystemLabels(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+
+	var capturedLabels map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/hosts" {
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			if rawLabels, ok := body["labels"].(map[string]any); ok {
+				capturedLabels = make(map[string]string)
+				for k, v := range rawLabels {
+					capturedLabels[k] = fmt.Sprint(v)
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":         "host-cluster-default-type",
+				"unique_key": body["unique_key"],
+				"public_key": body["public_key"],
+				"labels":     body["labels"],
+			})
+			return
+		}
+		t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+	}))
+	defer server.Close()
+
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	grantoryClient := clienttest.New(t, server, "", "", "")
+
+	identity, err := EnsureClusterHostIdentity(ctx, cl, cl, grantoryClient, ClusterHostOptions{
+		UniqueKey:       "k8s-cluster",
+		SecretName:      "grantory-cluster-host-default",
+		SecretNamespace: "grantory-system",
+		HostLabels: map[string]string{
+			"managed-by":   "evil-controller",
+			"cluster-host": "false",
+			"custom":       "val",
+		},
+	})
+	if err != nil {
+		t.Fatalf("EnsureClusterHostIdentity: %v", err)
+	}
+	if identity.HostID != "host-cluster-default-type" {
+		t.Fatalf("expected hostID host-cluster-default-type, got %s", identity.HostID)
+	}
+
+	if capturedLabels["type"] != "cluster" {
+		t.Fatalf("expected default label type=cluster, got %s", capturedLabels["type"])
+	}
+	if capturedLabels["managed-by"] != "grantory-controller" {
+		t.Fatalf("expected system label managed-by=grantory-controller, got %s", capturedLabels["managed-by"])
+	}
+	if capturedLabels["cluster-host"] != "true" {
+		t.Fatalf("expected system label cluster-host=true, got %s", capturedLabels["cluster-host"])
+	}
+	if capturedLabels["custom"] != "val" {
+		t.Fatalf("expected custom label custom=val, got %s", capturedLabels["custom"])
+	}
+}
+
+func TestEnsureClusterHostUpdatesExistingHostLabels(t *testing.T) {
+	ctx := context.Background()
+	scheme := newTestScheme(t)
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	pubHex := hex.EncodeToString(pub)
+	privHex := hex.EncodeToString(priv)
+
+	var patchCalled atomic.Bool
+	var patchedLabels map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/hosts/host-existing-update" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":         "host-existing-update",
+				"unique_key": "k8s-cluster",
+				"public_key": pubHex,
+				"labels": map[string]string{
+					"managed-by":   "grantory-controller",
+					"cluster-host": "true",
+				},
+			})
+			return
+		}
+		if r.Method == http.MethodPatch && r.URL.Path == "/hosts/host-existing-update/labels" {
+			patchCalled.Store(true)
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode patch request: %v", err)
+			}
+			if rawLabels, ok := body["labels"].(map[string]any); ok {
+				patchedLabels = make(map[string]string)
+				for k, v := range rawLabels {
+					patchedLabels[k] = fmt.Sprint(v)
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":         "host-existing-update",
+				"unique_key": "k8s-cluster",
+				"public_key": pubHex,
+				"labels":     patchedLabels,
+			})
+			return
+		}
+		t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+	}))
+	defer server.Close()
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "grantory-cluster-host-existing-update",
+			Namespace: "grantory-system",
+		},
+		Data: map[string][]byte{
+			"publicKey":  []byte(pubHex),
+			"privateKey": []byte(privHex),
+			"hostID":     []byte("host-existing-update"),
+		},
+	}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build()
+	grantoryClient := clienttest.New(t, server, "", "", "")
+
+	identity, err := EnsureClusterHostIdentity(ctx, cl, cl, grantoryClient, ClusterHostOptions{
+		UniqueKey:       "k8s-cluster",
+		SecretName:      "grantory-cluster-host-existing-update",
+		SecretNamespace: "grantory-system",
+		HostLabels: map[string]string{
+			"type":    "plateau_service",
+			"service": "k3s_controller",
+		},
+	})
+	if err != nil {
+		t.Fatalf("EnsureClusterHostIdentity: %v", err)
+	}
+	if identity.HostID != "host-existing-update" {
+		t.Fatalf("expected hostID host-existing-update, got %s", identity.HostID)
+	}
+	if !patchCalled.Load() {
+		t.Fatalf("expected UpdateHostLabels to be called")
+	}
+	if patchedLabels["type"] != "plateau_service" {
+		t.Fatalf("expected patched label type=plateau_service, got %s", patchedLabels["type"])
+	}
+	if patchedLabels["service"] != "k3s_controller" {
+		t.Fatalf("expected patched label service=k3s_controller, got %s", patchedLabels["service"])
+	}
+}
+
+func TestParseHostLabels(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected map[string]string
+	}{
+		{input: "", expected: nil},
+		{input: "   ", expected: nil},
+		{input: "type=plateau_service,service=k3s_controller", expected: map[string]string{
+			"type":    "plateau_service",
+			"service": "k3s_controller",
+		}},
+		{input: " type=plateau_service , service=k3s_controller , instance=plateau-default ", expected: map[string]string{
+			"type":     "plateau_service",
+			"service":  "k3s_controller",
+			"instance": "plateau-default",
+		}},
+		{input: "invalid,type=plateau_service,=empty,no_val=", expected: map[string]string{
+			"type": "plateau_service",
+		}},
+		{input: "managed-by=override,cluster-host=override,type=cluster,good-key.1_2=val-1.2", expected: map[string]string{
+			"type":           "cluster",
+			"good-key.1_2": "val-1.2",
+		}},
+		{input: "bad$key=val,key=bad$val,good=val", expected: map[string]string{
+			"good": "val",
+		}},
+	}
+
+	for _, tt := range tests {
+		actual := parseHostLabels(tt.input)
+		if len(actual) != len(tt.expected) {
+			t.Fatalf("input %q: expected len %d, got len %d (%v)", tt.input, len(tt.expected), len(actual), actual)
+		}
+		for k, v := range tt.expected {
+			if actual[k] != v {
+				t.Fatalf("input %q: expected key %s=%s, got %s", tt.input, k, v, actual[k])
+			}
+		}
 	}
 }

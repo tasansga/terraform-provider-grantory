@@ -21,9 +21,10 @@ import (
 )
 
 type ClusterHostOptions struct {
-	HostName        string
+	UniqueKey       string
 	SecretName      string
 	SecretNamespace string
+	HostLabels      map[string]string
 }
 
 type ClusterHostIdentity struct {
@@ -32,10 +33,55 @@ type ClusterHostIdentity struct {
 	PrivateKey ed25519.PrivateKey
 }
 
+func initialHostLabels(desiredLabels map[string]string) map[string]string {
+	labels := make(map[string]string, len(desiredLabels)+3)
+	labels["type"] = "cluster"
+	for k, v := range desiredLabels {
+		if k != "" && v != "" && k != "managed-by" && k != "cluster-host" {
+			labels[k] = v
+		}
+	}
+	labels["managed-by"] = "grantory-controller"
+	labels["cluster-host"] = "true"
+	return labels
+}
+
+func syncHostLabels(ctx context.Context, grantoryClient *apiclient.Client, hostID string, existingLabels, desiredLabels map[string]string) error {
+	if len(desiredLabels) == 0 {
+		return nil
+	}
+	needsUpdate := false
+	merged := make(map[string]string, len(existingLabels)+len(desiredLabels)+2)
+	for k, v := range existingLabels {
+		merged[k] = v
+	}
+	for k, v := range desiredLabels {
+		if k != "" && v != "" && k != "managed-by" && k != "cluster-host" {
+			if existingLabels[k] != v {
+				needsUpdate = true
+			}
+			merged[k] = v
+		}
+	}
+	if merged["managed-by"] != "grantory-controller" {
+		merged["managed-by"] = "grantory-controller"
+		needsUpdate = true
+	}
+	if merged["cluster-host"] != "true" {
+		merged["cluster-host"] = "true"
+		needsUpdate = true
+	}
+	if !needsUpdate {
+		return nil
+	}
+	_, err := grantoryClient.UpdateHostLabels(ctx, hostID, merged)
+	return err
+}
+
 func EnsureClusterHostIdentity(ctx context.Context, reader client.Reader, writer client.Writer, grantoryClient *apiclient.Client, opts ClusterHostOptions) (*ClusterHostIdentity, error) {
-	hostName := strings.TrimSpace(opts.HostName)
-	if hostName == "" {
-		hostName = "grantory-cluster"
+	uniqueKey := strings.TrimSpace(opts.UniqueKey)
+	if uniqueKey == "" {
+		uniqueKey = "grantory-cluster"
 	}
 	secretName := strings.TrimSpace(opts.SecretName)
 	if secretName == "" {
@@ -74,7 +120,10 @@ func EnsureClusterHostIdentity(ctx context.Context, reader client.Reader, writer
 				if hostID != "" {
 					existing, err := grantoryClient.GetHost(ctx, hostID)
 					if err == nil {
-						if strings.EqualFold(existing.PublicKey, pubHex) && existing.UniqueKey == hostName {
+						if strings.EqualFold(existing.PublicKey, pubHex) && existing.UniqueKey == uniqueKey {
+							if err := syncHostLabels(ctx, grantoryClient, existing.ID, existing.Labels, opts.HostLabels); err != nil {
+								return nil, fmt.Errorf("sync cluster host labels: %w", err)
+							}
 							return &ClusterHostIdentity{
 								HostID:     existing.ID,
 								PublicKey:  pubHex,
@@ -135,30 +184,30 @@ func EnsureClusterHostIdentity(ctx context.Context, reader client.Reader, writer
 
 		privHex := hex.EncodeToString(priv)
 		created, err := grantoryClient.CreateHost(ctx, apiclient.HostCreatePayload{
-			UniqueKey: hostName,
+			UniqueKey: uniqueKey,
 			PublicKey: pubHex,
-			Labels: map[string]string{
-				"managed-by":   "grantory-controller",
-				"cluster-host": "true",
-			},
+			Labels:    initialHostLabels(opts.HostLabels),
 		})
+		recoveredFromConflict := false
 		if err != nil {
 			if apiclient.IsConflict(err) || strings.Contains(err.Error(), "already exists") {
 				// Recover existing host ID from Grantory server
 				hosts, listErr := grantoryClient.ListHosts(ctx)
 				if listErr == nil {
 					for _, h := range hosts {
-						if h.UniqueKey == hostName {
+						if h.UniqueKey == uniqueKey {
 							if strings.EqualFold(h.PublicKey, pubHex) {
 								created = apiclient.Host{
 									ID:        h.ID,
 									UniqueKey: h.UniqueKey,
 									PublicKey: h.PublicKey,
+									Labels:    h.Labels,
 								}
 								err = nil
+								recoveredFromConflict = true
 								break
 							} else {
-								return nil, fmt.Errorf("cluster host uniqueKey %q already exists in Grantory with a different public key (%s != %s)", hostName, h.PublicKey, pubHex)
+								return nil, fmt.Errorf("cluster host uniqueKey %q already exists in Grantory with a different public key (%s != %s)", uniqueKey, h.PublicKey, pubHex)
 							}
 						}
 					}
@@ -166,6 +215,12 @@ func EnsureClusterHostIdentity(ctx context.Context, reader client.Reader, writer
 			}
 			if err != nil {
 				return nil, fmt.Errorf("register cluster host on grantory: %w", err)
+			}
+		}
+
+		if recoveredFromConflict {
+			if err := syncHostLabels(ctx, grantoryClient, created.ID, created.Labels, opts.HostLabels); err != nil {
+				return nil, fmt.Errorf("sync cluster host labels: %w", err)
 			}
 		}
 

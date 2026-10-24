@@ -3,6 +3,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -57,9 +59,43 @@ type Options struct {
 	GrantoryPassword        string
 	GrantoryNamespace       string
 	AutoCreateHost          bool
-	AutoHostName            string
+	AutoHostUniqueKey       string
 	AutoHostSecret          string
 	AutoHostSecretNamespace string
+	AutoHostLabels          string
+}
+
+var (
+	labelKeyRegex   = regexp.MustCompile(`^[a-zA-Z0-9_.-]+$`)
+	labelValueRegex = regexp.MustCompile(`^[a-zA-Z0-9_.-]+$`)
+)
+
+func parseHostLabels(s string) map[string]string {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return nil
+	}
+	labels := make(map[string]string)
+	for _, part := range strings.Split(trimmed, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		k, v, found := strings.Cut(part, "=")
+		if found {
+			k = strings.TrimSpace(k)
+			v = strings.TrimSpace(v)
+			if k != "" && v != "" && k != "managed-by" && k != "cluster-host" {
+				if labelKeyRegex.MatchString(k) && labelValueRegex.MatchString(v) {
+					labels[k] = v
+				}
+			}
+		}
+	}
+	if len(labels) == 0 {
+		return nil
+	}
+	return labels
 }
 
 func Start(ctx context.Context, opts Options) error {
@@ -106,9 +142,10 @@ func Start(ctx context.Context, opts Options) error {
 	var defaultHostProvider DefaultHostProvider
 	if opts.AutoCreateHost {
 		bootstrapper := NewClusterHostBootstrapper(manager.GetAPIReader(), manager.GetClient(), grantoryClient, ClusterHostOptions{
-			HostName:        opts.AutoHostName,
+			UniqueKey:       opts.AutoHostUniqueKey,
 			SecretName:      opts.AutoHostSecret,
 			SecretNamespace: opts.AutoHostSecretNamespace,
+			HostLabels:      parseHostLabels(opts.AutoHostLabels),
 		})
 		if err := manager.Add(bootstrapper); err != nil {
 			return fmt.Errorf("add cluster host bootstrapper: %w", err)
